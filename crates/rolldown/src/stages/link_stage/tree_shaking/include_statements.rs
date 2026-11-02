@@ -668,16 +668,20 @@ fn include_side_effectful_dependencies(ctx: &mut IncludeContext, module: &Normal
     match &ctx.modules[dependency_idx] {
       Module::Normal(importee) => {
         if ctx.options.is_dev_mode_enabled() && !importee.side_effects.has_side_effects() {
-          let mut records = module.import_records.iter_enumerated()
+          let mut records = module
+            .import_records
+            .iter_enumerated()
             .filter(|(_, record)| record.resolved_module == Some(dependency_idx))
             .peekable();
           if records.peek().is_some()
-            && records.all(|(record_idx, _)| crate::hmr::utils::unused_side_effect_free_import(
-              module,
-              record_idx,
-              ctx.modules,
-              ctx.symbols[module.idx].as_ref().unwrap().ast_scopes.scoping(),
-            ))
+            && records.all(|(record_idx, _)| {
+              crate::hmr::utils::unused_side_effect_free_import(
+                module,
+                record_idx,
+                ctx.modules,
+                ctx.symbols[module.idx].as_ref().unwrap().ast_scopes.scoping(),
+              )
+            })
           {
             return;
           }

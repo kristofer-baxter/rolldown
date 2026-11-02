@@ -45,7 +45,7 @@ use super::{GenerateStage, chunk_ext::ChunkCreationReason};
 /// are classified `Bare` on Windows even though Node treats them as
 /// absolute; leaving them out here would make the input base and the
 /// preserve-modules chunk names disagree about where the module lives.
-pub(crate) fn common_dir_input<'a>(id: &'a ModuleId, cwd: &Path) -> Option<Cow<'a, str>> {
+pub fn common_dir_input<'a>(id: &'a ModuleId, cwd: &Path) -> Option<Cow<'a, str>> {
   if id.is_path() {
     return Some(Cow::Borrowed(id.as_ref()));
   }
@@ -910,6 +910,7 @@ impl GenerateStage<'_> {
     }
   }
 
+  #[expect(clippy::too_many_lines)]
   async fn split_chunks(
     &mut self,
     index_splitting_info: &mut IndexSplittingInfo,
@@ -1148,13 +1149,15 @@ impl GenerateStage<'_> {
       RuntimeMergeCascade::Full,
       used_symbol_refs_builder,
     );
-    self.enforce_entry_request_budgets(chunk_graph);
-    self.try_merge_runtime_chunk(
-      chunk_graph,
-      None,
-      RuntimeMergeCascade::Full,
-      used_symbol_refs_builder,
-    );
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
+      self.enforce_entry_request_budgets(chunk_graph);
+      self.try_merge_runtime_chunk(
+        chunk_graph,
+        None,
+        RuntimeMergeCascade::Full,
+        used_symbol_refs_builder,
+      );
+    }
 
     Ok(())
   }
@@ -1212,6 +1215,9 @@ impl GenerateStage<'_> {
   /// the entry walks otherwise reach only the leaves behind the names that importers import.
   /// A namespace nested in it is a route of its own, which the walk reaches the same way.
   fn route_namespace_object_modules(&self, route: ModuleIdx) -> Vec<ModuleIdx> {
+    if !self.options.experimental.is_lazy_barrel_enabled() {
+      return Vec::new();
+    }
     let meta = &self.link_output.metas[route];
     if !meta.stmt_info_included.has_bit(StmtInfos::NAMESPACE_STMT_IDX) {
       return Vec::new();

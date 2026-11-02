@@ -13,10 +13,7 @@ fn finalized_reference_expr_mut<'a, 'ast>(
   match expr {
     Expression::ParenthesizedExpression(expr) => finalized_reference_expr_mut(&mut expr.expression),
     Expression::SequenceExpression(expr) => finalized_reference_expr_mut(
-      expr
-        .expressions
-        .last_mut()
-        .expect("sequence expression should not be empty"),
+      expr.expressions.last_mut().expect("sequence expression should not be empty"),
     ),
     expr => expr,
   }
@@ -125,13 +122,11 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
       return Some(target);
     }
     if id_ref.name != canonical_name {
-      return Some(
-        ast::SimpleAssignmentTarget::new_assignment_target_identifier(
-          id_ref.span,
-          oxc::ast::ast::Str::from_str_in(canonical_name, self),
-          self,
-        ),
-      );
+      return Some(ast::SimpleAssignmentTarget::new_assignment_target_identifier(
+        id_ref.span,
+        oxc::ast::ast::Str::from_str_in(canonical_name, self),
+        self,
+      ));
     }
 
     None
@@ -142,12 +137,7 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
     ident_ref: &ast::IdentifierReference<'ast>,
     is_callee: bool,
   ) -> Option<Expression<'ast>> {
-    if self
-      .ctx
-      .module
-      .dummy_record_set
-      .contains(&ident_ref.node_id())
-    {
+    if self.ctx.module.dummy_record_set.contains(&ident_ref.node_id()) {
       // use `__require` instead of `require`
       return Some(self.finalized_expr_for_runtime_symbol("__require"));
     }

@@ -82,8 +82,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     // The callback gets the exports of a module that it accepts once the module updates, so a
     // CommonJS module's exports object escapes to it (#693).
     let namespace = self.result.import_records[record_idx].namespace_ref;
-    *namespace.flags_mut(&mut self.result.symbol_ref_db) |=
-      SymbolRefFlags::HasComputedMemberWrite;
+    *namespace.flags_mut(&mut self.result.symbol_ref_db) |= SymbolRefFlags::HasComputedMemberWrite;
     self
       .result
       .hmr_info

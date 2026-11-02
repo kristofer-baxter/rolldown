@@ -342,6 +342,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     self.state = pre;
   }
 
+  #[expect(clippy::too_many_lines)]
   fn visit_program(&mut self, program: &mut ast::Program<'ast>) {
     // Drop the hashbang since we already store them in ast_scan phase and
     // we don't want oxc to generate hashbang statement and directives in module level since we already handle
@@ -377,11 +378,13 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     }
 
     let wrapper_mode = self.ctx.wrapper_mode();
-    let schedule_async = self.ctx.linking_info.is_tla_or_contains_tla_dependency
-      && matches!(
-        wrapper_mode,
-        ModuleWrapperMode::InteropEsm(_) | ModuleWrapperMode::ExecutionOrder(_)
-      );
+    let schedule_async =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+        && self.ctx.linking_info.is_tla_or_contains_tla_dependency
+        && matches!(
+          wrapper_mode,
+          ModuleWrapperMode::InteropEsm(_) | ModuleWrapperMode::ExecutionOrder(_)
+        );
     if schedule_async {
       program.body.insert(imports_end, self.async_body_marker());
     }
@@ -445,7 +448,10 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     }
 
     // Insert keep_name statements for top-level declarations
-    let mut function_names = self.insert_keep_name_statements(&mut program.body, true);
+    let mut function_names = self.insert_keep_name_statements(
+      &mut program.body,
+      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options),
+    );
     function_names.extend(self.top_level_function_names.take_in(&self.ast_builder));
     self.keep_name_statement_to_insert.clear();
     let async_pending_name = schedule_async.then(|| self.async_pending_name(program));
@@ -606,7 +612,9 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
           return;
         }
 
-        let leading_deps = if !schedule_async {
+        let leading_deps = if !schedule_async
+          && crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+        {
           self.extract_leading_esm_init_deps(wrap_ref_name, &mut stmts_inside_closure)
         } else {
           allocator::Vec::new_in(self)
@@ -627,7 +635,12 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
             } else {
               EsmWrapperCallKind::Plain
             },
-            body_kind: EsmWrapperBodyKind::Sync,
+            body_kind: if !schedule_async && self.ctx.linking_info.is_tla_or_contains_tla_dependency
+            {
+              EsmWrapperBodyKind::Async
+            } else {
+              EsmWrapperBodyKind::Sync
+            },
             decl_kind: if matches!(wrapper_mode, ModuleWrapperMode::ExecutionOrder(_)) {
               EsmWrapperDeclKind::HoistedFunction
             } else {
@@ -636,7 +649,9 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
           },
           self,
         );
-        self.attach_esm_wrapper_deps(&mut wrapper_stmt, leading_deps, fn_is_empty);
+        if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+          self.attach_esm_wrapper_deps(&mut wrapper_stmt, leading_deps, fn_is_empty);
+        }
         program.body.push(wrapper_stmt);
       }
       ModuleWrapperMode::None => {
@@ -720,8 +735,11 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
       self.visit_statement(stmt);
     }
 
-    let names =
-      self.insert_keep_name_statements(it, self.scope_stack.iter().all(|flags| flags.is_top()));
+    let names = self.insert_keep_name_statements(
+      it,
+      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+        && self.scope_stack.iter().all(|flags| flags.is_top()),
+    );
     self.top_level_function_names.extend(names);
     self.cur_stmt_index = previous_stmt_index;
     self.keep_name_statement_to_insert = previous_keep_name_statement;
@@ -737,6 +755,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     );
   }
 
+  #[expect(clippy::too_many_lines)]
   fn visit_expression(&mut self, expr: &mut ast::Expression<'ast>) {
     crate::utils::temporal_reads::unwrap_temporal_read(expr);
     // Handle keep_names for named class/function expressions in any expression context
@@ -816,9 +835,12 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         );
         let json = target == Some(true);
         let text = crate::utils::import_options::dynamic_import_is_text(
-          import_expr, self.ctx.module, self.ctx.modules,
+          import_expr,
+          self.ctx.module,
+          self.ctx.modules,
         );
-        if import_expr.phase.is_none()
+        if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+          && import_expr.phase.is_none()
           && target.is_some()
           && (import_expr.options.is_some() || json && !self.ctx.options.is_dev_mode_enabled())
         {
@@ -1062,13 +1084,15 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
   }
 
   fn visit_call_expression(&mut self, it: &mut ast::CallExpression<'ast>) {
-    self.callee_member = member_callee(&it.callee);
+    let prev = std::mem::replace(&mut self.callee_member, member_callee(&it.callee));
     walk_js_mut::walk_call_expression(self, it);
+    self.callee_member = prev;
   }
 
   fn visit_tagged_template_expression(&mut self, it: &mut ast::TaggedTemplateExpression<'ast>) {
-    self.callee_member = member_callee(&it.tag);
+    let prev = std::mem::replace(&mut self.callee_member, member_callee(&it.tag));
     walk_js_mut::walk_tagged_template_expression(self, it);
+    self.callee_member = prev;
   }
 
   fn visit_member_expression(&mut self, expr: &mut ast::MemberExpression<'ast>) {

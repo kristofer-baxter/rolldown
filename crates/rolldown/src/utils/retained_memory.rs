@@ -24,7 +24,7 @@ use crate::stages::link_stage::LinkStageOutput;
 const SCRATCH_CAPACITY_LIMIT: usize = 256 * 1024;
 
 thread_local! {
-  static SCRATCH: RefCell<Allocator> = RefCell::new(Allocator::default());
+  static SCRATCH: RefCell<Allocator> = RefCell::default();
 }
 
 /// Replaces a module's AST and scope tree with copies in right-sized arenas, where they are
@@ -87,7 +87,7 @@ pub fn compact_ast(ast: &mut EcmaAst) -> usize {
 /// indexed by module keep the room that fast relinks append modules into.
 pub fn shrink_link_tables(link_output: &mut LinkStageOutput) {
   link_output.stmt_infos.raw.par_iter_mut().for_each(|stmt_infos| {
-    for stmt_info in stmt_infos.infos.iter_mut() {
+    for stmt_info in &mut stmt_infos.infos {
       stmt_info.declared_symbols.shrink_to_fit();
       stmt_info.referenced_symbols.shrink_to_fit();
       stmt_info.import_records.shrink_to_fit();

@@ -81,7 +81,9 @@ pub fn dynamic_import_is_text(
   owner: &NormalModule,
   modules: &IndexModules,
 ) -> bool {
-  owner.imports.get(&import.node_id())
+  owner
+    .imports
+    .get(&import.node_id())
     .and_then(|record| owner.import_records[*record].resolved_module)
     .and_then(|target| modules[target].as_normal())
     .is_some_and(is_text_module)

@@ -506,8 +506,11 @@ fn collect_esm_init_targets_for_record(
           // to a namespace whose downstream member reads were statically folded (issue #10690).
           let binding_is_opaque = symbol_is_used(*imported_as_ref)
             || ctx.order_wrap_state.is_consumed_reexport_facade(*imported_as_ref)
-            || (namespace_owner(ctx, *imported_as_ref).is_some()
-              && namespace_binding_is_delegated(ctx, *imported_as_ref))
+            || if namespace_owner(ctx, *imported_as_ref).is_some() {
+              namespace_binding_is_delegated(ctx, *imported_as_ref)
+            } else {
+              importer_reexports_binding(ctx.importer, *imported_as_ref)
+            }
             || add_wrapped_esm_init_targets_for_static_member_reads(
               ctx,
               *imported_as_ref,
@@ -787,7 +790,10 @@ fn add_wrapped_esm_init_targets_for_namespace_consumer(
 /// read, so the importer uses the namespace opaquely. An importer without a wrapper of its own, or
 /// with a transparent one, and one whose re-export of the namespace no importer uses, leave each
 /// importer to initialize what it reads.
-fn namespace_binding_is_delegated(ctx: &WrappedEsmInitTargetContext<'_>, binding: SymbolRef) -> bool {
+fn namespace_binding_is_delegated(
+  ctx: &WrappedEsmInitTargetContext<'_>,
+  binding: SymbolRef,
+) -> bool {
   ctx.order_wrap_state.esm_init_target(ctx.importer.idx, ctx.importer_meta).is_some()
     && !ctx.order_wrap_state.reexport_init_is_transparent(ctx.importer.idx)
     && (ctx.order_wrap_state.is_consumed_reexport_facade(binding)
@@ -795,7 +801,10 @@ fn namespace_binding_is_delegated(ctx: &WrappedEsmInitTargetContext<'_>, binding
 }
 
 /// The module whose namespace object `symbol_ref` holds, if it holds one.
-fn namespace_owner(ctx: &WrappedEsmInitTargetContext<'_>, symbol_ref: SymbolRef) -> Option<ModuleIdx> {
+fn namespace_owner(
+  ctx: &WrappedEsmInitTargetContext<'_>,
+  symbol_ref: SymbolRef,
+) -> Option<ModuleIdx> {
   let canonical_ref = ctx.symbol_db.canonical_ref_for(symbol_ref);
   ctx.modules[canonical_ref.owner]
     .as_normal()
@@ -881,7 +890,7 @@ fn symbol_is_always_inlined(ctx: &WrappedEsmInitTargetContext<'_>, symbol_ref: S
 
 /// Whether the build replaces every read of `canonical_ref` with its constant value, so that a
 /// read of it reads nothing at run time.
-pub(crate) fn constant_is_always_inlined(
+pub fn constant_is_always_inlined(
   constant_value_map: &FxHashMap<SymbolRef, ConstExportMeta>,
   inline_const_mode: Option<InlineConstMode>,
   canonical_ref: SymbolRef,

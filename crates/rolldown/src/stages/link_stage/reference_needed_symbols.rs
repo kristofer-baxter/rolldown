@@ -239,22 +239,26 @@ impl LinkStage<'_> {
                         .referenced_symbols
                         .push(self.runtime.resolve_symbol("__rethrowModuleLinkError").into());
                     }
-                    if !self.options.is_dev_mode_enabled() && !importee.exports_kind.is_commonjs() {
-                      stmt_info
-                        .referenced_symbols
-                        .push(self.runtime.resolve_symbol("__importNamespace").into());
-                      // Do not pull an otherwise dynamic-only module into its importer chunk.
-                      // Other canonical namespaces must already be retained by static consumers.
-                      if importee.idx == importer.idx {
-                        stmt_info.referenced_symbols.push(importee.namespace_object_ref.into());
-                        if let Some(wrapper) = importee_linking_info.wrapper_ref {
-                          stmt_info.referenced_symbols.push(wrapper.into());
+                    if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+                    {
+                      if !self.options.is_dev_mode_enabled() && !importee.exports_kind.is_commonjs()
+                      {
+                        stmt_info
+                          .referenced_symbols
+                          .push(self.runtime.resolve_symbol("__importNamespace").into());
+                        // Do not pull an otherwise dynamic-only module into its importer chunk.
+                        // Other canonical namespaces must already be retained by static consumers.
+                        if importee.idx == importer.idx {
+                          stmt_info.referenced_symbols.push(importee.namespace_object_ref.into());
+                          if let Some(wrapper) = importee_linking_info.wrapper_ref {
+                            stmt_info.referenced_symbols.push(wrapper.into());
+                          }
                         }
                       }
+                      stmt_info
+                        .referenced_symbols
+                        .push(self.runtime.resolve_symbol("__withImportOptions").into());
                     }
-                    stmt_info
-                      .referenced_symbols
-                      .push(self.runtime.resolve_symbol("__withImportOptions").into());
                     if crate::deferred_resolution_error::failure_message(
                       &self.module_table.modules,
                       module_idx,

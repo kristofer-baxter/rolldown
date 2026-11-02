@@ -36,15 +36,8 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
         self.0.insert(id.name.to_string());
       }
     }
-    let mut names = Names(
-      self
-        .ctx
-        .chunk
-        .canonical_names
-        .values()
-        .map(ToString::to_string)
-        .collect(),
-    );
+    let mut names =
+      Names(self.ctx.chunk.canonical_names.values().map(ToString::to_string).collect());
     names.visit_program(program);
     for index in 0.. {
       let name = format!("__asyncDependencies{index}");
@@ -61,7 +54,6 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
     body: allocator::Vec<'ast, Statement<'ast>>,
     pending: &str,
   ) -> allocator::Vec<'ast, Statement<'ast>> {
-    let pending = ast::Str::from_str_in(pending, self);
     struct Start<'a, 'me, 'ast> {
       finalizer: &'a ScopeHoistingFinalizer<'me, 'ast>,
       pending: ast::Str<'ast>,
@@ -73,16 +65,10 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
           let result = awaited.argument.take_in(self.finalizer);
           *expression = Expression::new_call_expression(
             SPAN,
-            self
-              .finalizer
-              .finalized_expr_for_runtime_symbol("__startAsync"),
+            self.finalizer.finalized_expr_for_runtime_symbol("__startAsync"),
             None,
             [
-              ast::Argument::from(Expression::new_identifier(
-                SPAN,
-                self.pending,
-                self.finalizer,
-              )),
+              ast::Argument::from(Expression::new_identifier(SPAN, self.pending, self.finalizer)),
               ast::Argument::from(result),
             ],
             false,
@@ -91,28 +77,18 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
         }
       }
     }
-    let mut start = Start {
-      finalizer: self,
-      pending,
-    };
+    let pending = ast::Str::from_str_in(pending, self);
+    let mut start = Start { finalizer: self, pending };
     for statement in &mut imports {
       start.visit_statement(statement);
     }
     imports.insert(
       0,
-      Statement::new_var_decl(
-        &pending,
-        Expression::new_array_expression(SPAN, [], self),
-        self,
-      ),
+      Statement::new_var_decl(&pending, Expression::new_array_expression(SPAN, [], self), self),
     );
     let execute = Expression::new_arrow_function_expression(
       SPAN,
-      self
-        .ctx
-        .module
-        .ast_usage
-        .contains(EcmaModuleAstUsage::TopLevelAwait),
+      self.ctx.module.ast_usage.contains(EcmaModuleAstUsage::TopLevelAwait),
       None,
       ast::FormalParameters::boxed(
         SPAN,

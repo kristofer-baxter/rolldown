@@ -163,7 +163,10 @@ impl BundleFactory {
         if let Some(module) = module.as_normal() {
           self.module_infos_for_incremental_build.insert(
             module.id.as_arc_str().clone(),
-            Arc::new(module.to_module_info(None, snapshot.user_defined_entry_modules.contains(&module.idx))),
+            Arc::new(
+              module
+                .to_module_info(None, snapshot.user_defined_entry_modules.contains(&module.idx)),
+            ),
           );
         }
       }

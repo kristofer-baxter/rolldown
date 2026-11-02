@@ -15,8 +15,8 @@ use anyhow::Context;
 use arcstr::ArcStr;
 use dashmap::DashMap;
 use rolldown_common::{
-  ModuleDefFormat, ModuleId, ModuleIdx, ModuleInfo, ModuleLoaderMsg, PluginIdx,
-  SharedFileEmitter, SharedModuleInfoDashMap, WatchPath,
+  ModuleDefFormat, ModuleId, ModuleIdx, ModuleInfo, ModuleLoaderMsg, PluginIdx, SharedFileEmitter,
+  SharedModuleInfoDashMap, WatchPath,
 };
 use rolldown_utils::dashmap::FxDashSet;
 use tokio::sync::broadcast;

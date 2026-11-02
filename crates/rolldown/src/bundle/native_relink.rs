@@ -283,6 +283,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
   /// Computes the link data of every changed and appended module against the cached link
   /// output, which this seeds with the appended modules. `None` when the update is not
   /// provably equal to linking the whole graph; the caller then discards the cached output.
+  #[expect(clippy::too_many_lines)]
   #[inline(never)]
   pub(super) fn try_prepare_fast_native_relink(
     &self,
@@ -375,7 +376,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         // order initializes entries through its own lowering, and linking lowers a lazy export,
         // as a JSON or text module's, into the module's AST (`generate_lazy_export`), which the
         // cache holds as the scan left it.
-        let chunk_idx = cached.generate_state.chunk_graph.module_to_chunk.get(idx).copied().flatten();
+        let chunk_idx =
+          cached.generate_state.chunk_graph.module_to_chunk.get(idx).copied().flatten();
         let Some(chunk_idx) = chunk_idx.filter(|_| {
           !cached.generate_state.decision_dependencies.contains(&idx)
             && !self.options.is_strict_execution_order_enabled()
@@ -417,14 +419,10 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     if self.options.is_dev_mode_enabled() && crate::utils::native_records::enabled(&self.options) {
       let mut row_dirty = FxHashSet::default();
       for &idx in &dirty_modules {
-        let (
-          Some(old),
-          Some(new),
-        ) = (
+        let (Some(old), Some(new)) = (
           cached.link_output.module_table.modules[idx].as_normal(),
           snapshot.module_table.modules[idx].as_normal(),
-        )
-        else {
+        ) else {
           row_dirty.insert(idx);
           continue;
         };
@@ -452,9 +450,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         }
       }
       if !row_dirty.is_empty() {
-        for (chunk_idx, chunk) in
-          cached.generate_state.chunk_graph.chunk_table.iter_enumerated()
-        {
+        for (chunk_idx, chunk) in cached.generate_state.chunk_graph.chunk_table.iter_enumerated() {
           if !is_live_chunk(&cached.generate_state.chunk_graph, chunk_idx) {
             continue;
           }
@@ -506,7 +502,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       cached.link_output.stmt_infos[idx] = item.new_stmt_infos.clone();
       let meta = &mut cached.link_output.metas[idx];
       meta.stmt_info_included = item.stmt_info_included.clone();
-      meta.resolved_member_expr_refs = item.new_resolved_member_expr_refs.clone();
+      meta.resolved_member_expr_refs.clone_from(&item.new_resolved_member_expr_refs);
       meta.depended_runtime_helper = item.depended_runtime_helper;
       meta.native_default_expression = item.native_default_expression;
       // A refreshed module's stale retained exports must agree with the ones it now uses.
@@ -955,15 +951,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       );
       check_or_none!(
         current.ecma_view.dynamic_importers.is_empty()
-          && current
-            .ecma_view
-            .importers_idx
-            .iter()
-            .all(|importer| {
-              *importer == idx
-                || retired.contains(importer)
-                || plan.exec_orders[*importer] == u32::MAX
-            }),
+          && current.ecma_view.importers_idx.iter().all(|importer| {
+            *importer == idx
+              || retired.contains(importer)
+              || plan.exec_orders[*importer] == u32::MAX
+          }),
         "retired_importers"
       );
       // A wrapped module wraps the ES modules that its records import, which linking the updated
@@ -1265,10 +1257,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       .retired
       .iter()
       .flat_map(|&idx| {
-        [
-          cached.link_output.module_table.modules.get(idx),
-          snapshot.module_table.modules.get(idx),
-        ]
+        [cached.link_output.module_table.modules.get(idx), snapshot.module_table.modules.get(idx)]
       })
       .filter_map(|module| module.and_then(Module::as_normal))
       .flat_map(|module| module.import_records.iter().filter_map(|rec| rec.resolved_module))
@@ -1465,6 +1454,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
   /// Appends the modules that partial scans added to the cached link output, with the link
   /// data that linking the whole graph gives them. Their scope trees stay in the scan snapshot
   /// until the relink applies.
+  #[expect(clippy::too_many_lines)]
   fn seed_added_modules(
     &self,
     cached: &mut CachedNativeRelinkState,
@@ -1590,10 +1580,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         is_commonjs
           || matches!(module.exports_kind, ExportsKind::Esm)
           || (!module.meta.has_lazy_export()
-            && matches!(
-              linked_exports_kind(snapshot, &plan.unreachable, idx),
-              ExportsKind::Esm
-            )),
+            && matches!(linked_exports_kind(snapshot, &plan.unreachable, idx), ExportsKind::Esm)),
         "added_exports_kind"
       );
       // Linking drops every constant that a CommonJS module exports once an importer lets its
@@ -1836,9 +1823,10 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         idx,
         oxc::semantic::ScopeId::new(0),
       );
-      local_db.classic_data = scanned_db.classic_data.clone();
-      local_db.flags = scanned_db.flags.clone();
+      local_db.classic_data.clone_from(&scanned_db.classic_data);
+      local_db.flags.clone_from(&scanned_db.flags);
       if let Some(wrapper) = meta.wrapper_ref {
+        #[expect(clippy::default_trait_access)]
         local_db.classic_data.push(Default::default());
         local_db.flags.entry(wrapper.symbol).or_default().insert(SymbolRefFlags::IsFacade);
       }
@@ -2504,8 +2492,14 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
             // references as linking the whole graph does (#621).
             if matches!(target_meta.wrap_kind(), WrapKind::Cjs) {
               check_or_none!(
-                old_db.flags.get(&old_rec.namespace_ref.symbol).map(|f| f.bits())
-                  == new_db.flags.get(&new_rec.namespace_ref.symbol).map(|f| f.bits()),
+                old_db
+                  .flags
+                  .get(&old_rec.namespace_ref.symbol)
+                  .map(rolldown_common::SymbolRefFlags::bits)
+                  == new_db
+                    .flags
+                    .get(&new_rec.namespace_ref.symbol)
+                    .map(rolldown_common::SymbolRefFlags::bits),
                 "cjs_ns_ref"
               );
             }
@@ -2682,8 +2676,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
             == new_db.is_facade_symbol(new_exp.referenced.symbol)
           && old_scope_db.symbol_name(old_exp.referenced.symbol)
             == new_db.symbol_name(new_exp.referenced.symbol)
-          && old_db.flags.get(&old_exp.referenced.symbol).map(|f| f.bits())
-            == new_db.flags.get(&new_exp.referenced.symbol).map(|f| f.bits()),
+          && old_db.flags.get(&old_exp.referenced.symbol).map(rolldown_common::SymbolRefFlags::bits)
+            == new_db.flags.get(&new_exp.referenced.symbol).map(rolldown_common::SymbolRefFlags::bits),
         "named_export_item"
       );
     }
@@ -2759,17 +2753,18 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
           }
         }
         Statement::ExportDefaultDeclaration(export) => match &export.declaration {
-          ExportDefaultDeclarationKind::FunctionDeclaration(_) => {}
           ExportDefaultDeclarationKind::ClassDeclaration(class) => {
-            authored_lexical.insert(
-              class.id.as_ref().map_or(new_n.default_export_ref.symbol, |id| id.symbol_id()),
-            );
+            authored_lexical.insert(class.id.as_ref().map_or(
+              new_n.default_export_ref.symbol,
+              oxc::ast::ast::BindingIdentifier::symbol_id,
+            ));
           }
           oxc::ast::ast::match_expression!(ExportDefaultDeclarationKind) => {
             authored_lexical.insert(new_n.default_export_ref.symbol);
             native_default_expression = true;
           }
-          _ => {}
+          ExportDefaultDeclarationKind::FunctionDeclaration(_)
+          | ExportDefaultDeclarationKind::TSInterfaceDeclaration(_) => {}
         },
         _ => {}
       }
@@ -2820,6 +2815,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     // statements, as `create_wrapper` declares it.
     let wrapper = if is_commonjs { old_meta.wrapper_ref } else { None };
     if let Some(wrapper) = wrapper {
+      #[expect(clippy::default_trait_access)]
       let symbol = new_classic_data.push(Default::default());
       debug_assert_eq!(symbol, wrapper.symbol);
       new_flags.insert(wrapper.symbol, SymbolRefFlags::IsFacade);

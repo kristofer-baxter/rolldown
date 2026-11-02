@@ -31,10 +31,8 @@ pub async fn render_chunks(
   }
   for asset in assets.iter() {
     if let InstantiationKind::Ecma(ecma_meta) = &asset.kind {
-      chunks_map.insert(
-        ecma_meta.rendered_chunk.filename.clone(),
-        Arc::clone(&ecma_meta.rendered_chunk),
-      );
+      chunks_map
+        .insert(ecma_meta.rendered_chunk.filename.clone(), Arc::clone(&ecma_meta.rendered_chunk));
     }
   }
   let chunks = Arc::new(chunks_map);

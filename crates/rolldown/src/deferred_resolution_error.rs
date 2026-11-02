@@ -20,9 +20,9 @@ impl std::fmt::Display for DeferredResolutionError {
 
 impl std::error::Error for DeferredResolutionError {}
 
-pub(crate) const FAILURE_MODULE_PREFIX: &str = "\0rolldown/deferred-resolution:";
+pub const FAILURE_MODULE_PREFIX: &str = "\0rolldown/deferred-resolution:";
 
-pub(crate) fn is_link_failure(
+pub fn is_link_failure(
   modules: &oxc_index::IndexVec<rolldown_common::ModuleIdx, rolldown_common::Module>,
   idx: rolldown_common::ModuleIdx,
 ) -> bool {
@@ -35,7 +35,7 @@ pub(crate) fn is_link_failure(
   })
 }
 
-pub(crate) fn failure_message(
+pub fn failure_message(
   modules: &oxc_index::IndexVec<rolldown_common::ModuleIdx, rolldown_common::Module>,
   idx: rolldown_common::ModuleIdx,
 ) -> Option<String> {

@@ -146,8 +146,8 @@ impl LinkStage<'_> {
         // names of its own.
         if !meta.is_canonical_exports_empty()
           || self.options.generated_code.symbols
-          || meta.has_dynamic_exports
-          || !meta.star_exports_from_external_modules.is_empty()
+          || (crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+            && (meta.has_dynamic_exports || !meta.star_exports_from_external_modules.is_empty()))
         {
           referenced_symbols.push(self.runtime.resolve_symbol("__exportAll").into());
           referenced_symbols

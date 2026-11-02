@@ -124,7 +124,12 @@ fn object<'ast, 'n>(
     } else if identifier_key(name) {
       ast::PropertyKey::new_static_identifier(SPAN, ast::Ident::from_str_in(name, builder), builder)
     } else {
-      ast::PropertyKey::new_string_literal(SPAN, ast::Str::from_str_in(name, builder), None, builder)
+      ast::PropertyKey::new_string_literal(
+        SPAN,
+        ast::Str::from_str_in(name, builder),
+        None,
+        builder,
+      )
     };
     ast::ObjectPropertyKind::new_object_property(
       SPAN,
@@ -171,10 +176,7 @@ pub fn cells<'ast, 'n>(
   builder: &AstBuilder<'ast>,
   entries: impl IntoIterator<Item = (&'n str, Cell<'n>)>,
 ) -> Expression<'ast> {
-  object(
-    builder,
-    entries.into_iter().map(|(name, value)| (name, cell(builder, name, value))),
-  )
+  object(builder, entries.into_iter().map(|(name, value)| (name, cell(builder, name, value))))
 }
 
 /// `{name:()=>flag,…}` in the given order.

@@ -92,8 +92,10 @@ impl GenerateStage<'_> {
       }
     }
 
-    self.redirect_namespace_observable_dynamic_facades(chunk_graph, &order_state);
-    self.route_public_namespace_extractions(chunk_graph);
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
+      self.redirect_namespace_observable_dynamic_facades(chunk_graph, &order_state);
+      self.route_public_namespace_extractions(chunk_graph);
+    }
 
     let (mut final_esm_init_metadata, mut link_state) =
       self.compute_final_chunk_links(chunk_graph, used_symbol_refs_builder.view(), &order_state);

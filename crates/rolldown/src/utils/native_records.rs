@@ -22,6 +22,7 @@ pub const NATIVE_CELL_PREFIX: &str = "\0native-cell:";
 pub const NATIVE_JSON_RECORD_PREFIX: &str = "__native/json-values/";
 pub const NATIVE_JSON_NAMESPACE_PREFIX: &str = "__native/json-namespaces/";
 
+#[must_use]
 pub fn deferred_json_import_path(importer: &Chunk, importee: &Chunk) -> String {
   let filename = importee.preliminary_filename.as_ref().expect("chunk filename");
   let Some(facade) = filename.strip_prefix(NATIVE_JSON_RECORD_PREFIX) else {
@@ -52,9 +53,19 @@ pub fn is_native_cell(id: &str) -> bool {
 }
 
 pub fn enabled(options: &NormalizedBundlerOptions) -> bool {
-  options.preserve_modules
+  (options.experimental.is_resolve_new_url_to_asset_enabled()
+    || options.experimental.is_incremental_build_enabled()
+    || options.is_dev_mode_enabled())
+    && options.preserve_modules
     && !options.is_strict_execution_order_enabled()
     && matches!(options.format, OutputFormat::Esm)
+}
+
+pub fn runtime_module_semantics_enabled(options: &NormalizedBundlerOptions) -> bool {
+  options.experimental.is_resolve_new_url_to_asset_enabled()
+    && (options.is_strict_execution_order_enabled()
+      || options.preserve_modules
+      || options.is_dev_mode_enabled())
 }
 
 pub fn has_native_namespace(
@@ -82,15 +93,11 @@ fn reexports_commonjs_property(linking_info: &LinkingMetadata, symbol_db: &Symbo
     _ => {
       let res = linking_info.resolved_exports.values().any(|export| {
         export.came_from_commonjs
-          || symbol_db
-            .get(symbol_db.canonical_ref_for(export.symbol_ref))
-            .namespace_alias
-            .is_some()
+          || symbol_db.get(symbol_db.canonical_ref_for(export.symbol_ref)).namespace_alias.is_some()
       });
-      linking_info.reexports_commonjs_property_cache.store(
-        if res { 2 } else { 1 },
-        std::sync::atomic::Ordering::Relaxed,
-      );
+      linking_info
+        .reexports_commonjs_property_cache
+        .store(if res { 2 } else { 1 }, std::sync::atomic::Ordering::Relaxed);
       res
     }
   }
@@ -354,8 +361,9 @@ fn binding_only_statement(statement: &Statement<'_>) -> bool {
       import.specifiers.as_ref().is_some_and(|specifiers| !specifiers.is_empty())
     }
     Statement::ExportFromDeclaration(export) => !export.specifiers.is_empty(),
-    Statement::ExportAllDeclaration(_) | Statement::ExportNamedDeclaration(_) => true,
-    Statement::EmptyStatement(_) => true,
+    Statement::ExportAllDeclaration(_)
+    | Statement::ExportNamedDeclaration(_)
+    | Statement::EmptyStatement(_) => true,
     _ => false,
   }
 }
@@ -442,7 +450,7 @@ pub fn dev_graph_rows(
   chunk: &Chunk,
   module_table: &rolldown_common::ModuleTable,
   chunk_graph: &crate::chunk_graph::ChunkGraph,
-  metas: & crate::types::linking_metadata::LinkingMetadataVec,
+  metas: &crate::types::linking_metadata::LinkingMetadataVec,
   native_records: bool,
 ) -> Vec<ModuleIdx> {
   let mut rows: Vec<ModuleIdx> = chunk.modules.clone();
@@ -456,13 +464,13 @@ pub fn dev_graph_rows(
   let mut next = 0;
   while next < rows.len() {
     let is_own = next < own;
-    let Some(module) = module_table[rows[next]].as_normal() else {
-      next += 1;
+    let row = rows[next];
+    next += 1;
+    let Some(module) = module_table[row].as_normal() else {
       continue;
     };
-    next += 1;
     for record in &module.import_records {
-      if !record.kind.is_static() && !(is_own && record.kind.is_dynamic()) {
+      if !(record.kind.is_static() || (is_own && record.kind.is_dynamic())) {
         continue;
       }
       let Some(target) = record.resolved_module else {

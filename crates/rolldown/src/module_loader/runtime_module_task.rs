@@ -35,12 +35,210 @@ const RUNTIME_TAIL_JS: &str = include_str!("../runtime/runtime-tail.js");
 const RUNTIME_HEAD_NODE_JS: &str = include_str!("../runtime/runtime-head-node.js");
 const RUNTIME_TAIL_NODE_JS: &str = include_str!("../runtime/runtime-tail-node.js");
 
-fn get_runtime_js() -> String {
-  concat_string!(RUNTIME_BASE_JS, RUNTIME_TAIL_JS)
+const UPSTREAM_ESM_HELPERS: &str = "export var __esm = (fn, res, err) =>
+  function () {
+    if (err) throw err[0];
+    try {
+      return (fn && (res = (0, fn[__getOwnPropNames(fn)[0]])((fn = 0))), res);
+    } catch (e) {
+      throw ((err = [e]), e);
+    }
+  };
+export var __esmMin = (fn, res, err) => () => {
+  if (err) throw err[0];
+  try {
+    return (fn && (res = fn((fn = 0))), res);
+  } catch (e) {
+    throw ((err = [e]), e);
+  }
+};";
+
+const RUNTIME_SEMANTICS_ESM_HELPERS: &str =
+  "export var __esm = (fn, deps) => __esmMin(fn, deps, true);
+export var __esmMin = (fn, deps, named) => {
+  let state = { fn, deps, named, started: false, res: void 0, err: void 0, _esm: 1 };
+  return () => (__esmProbe ? ((__esmProbe = 0), state) : __esmRun(state));
+};";
+
+const UPSTREAM_EXPORT_AND_INTEROP_HELPERS: &str = "export var __exportAll = (all, no_symbols) => {
+  let target = {};
+  for (var name in all) {
+    __defProp(target, name, { get: all[name], enumerable: true });
+  }
+  if (!no_symbols) {
+    __defProp(target, Symbol.toStringTag, { value: 'Module' });
+  }
+  return target;
+};
+export var __copyProps = (to, from, except, desc) => {
+  if ((from && typeof from === 'object') || typeof from === 'function') {
+    for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+      key = keys[i];
+      if (!__hasOwnProp.call(to, key) && key !== except) {
+        __defProp(to, key, {
+          get: ((k) => from[k]).bind(null, key),
+          enumerable: !(desc = __getOwnPropDesc(from, key)) || desc.enumerable,
+        });
+      }
+    }
+  }
+  return to;
+};
+export var __reExport = (target, mod, secondTarget) => (
+  __copyProps(target, mod, 'default'), secondTarget && __copyProps(secondTarget, mod, 'default')
+);
+export var __toESM = (mod, isNodeMode, target) => (
+  (target = mod != null ? __create(__getProtoOf(mod)) : {}),
+  __copyProps(
+    // `__esModule` alone is not enough: the module must own a `default` (#10360).
+    isNodeMode || !mod || !mod.__esModule || !__hasOwnProp.call(mod, 'default')
+      ? __defProp(target, 'default', { value: mod, enumerable: true })
+      : target,
+    mod,
+  )
+);";
+
+const RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS: &str = "export var __exportAll = (all, no_symbols, fixed) => {
+  let star = __starNamespaces.get(all);
+  if (star) {
+    Object.preventExtensions(star[1]);
+    return all;
+  }
+  if (fixed === void 0) {
+    let target = {};
+    for (var name in all) {
+      __defProp(target, name, { get: all[name], enumerable: true });
+    }
+    if (!no_symbols) {
+      __defProp(target, Symbol.toStringTag, { value: 'Module' });
+    }
+    return target;
+  }
+  let target = __create(null);
+  let names = __getOwnPropNames(all).sort();
+  for (let name of names) {
+    __defProp(target, name, { value: undefined, writable: true, enumerable: true });
+  }
+  if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: 'Module' });
+  if (fixed) Object.preventExtensions(target);
+  let namespace = new Proxy(target, {
+    get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+    ownKeys: (target) => {
+      let keys = fixed ? names : __getOwnPropNames(target).sort();
+      return no_symbols ? keys : [...keys, Symbol.toStringTag];
+    },
+    getOwnPropertyDescriptor(target, key) {
+      let descriptor = __getOwnPropDesc(target, key);
+      if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+      return descriptor;
+    },
+    set: () => false,
+    defineProperty(target, key, descriptor) {
+      if (!__hasOwnProp.call(all, key)) {
+        return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+      }
+      let value = all[key]();
+      return !descriptor.configurable && descriptor.enumerable !== false &&
+        descriptor.writable !== false && !('get' in descriptor) && !('set' in descriptor) &&
+        (!('value' in descriptor) || Object.is(descriptor.value, value));
+    },
+    preventExtensions: (target) => !Object.isExtensible(target),
+    setPrototypeOf: (_, prototype) => prototype === null,
+  });
+  if (!fixed) __starNamespaces.set(namespace, [all, target]);
+  return namespace;
+};
+export var __copyProps = (to, from, except, desc) => {
+  if ((from && typeof from === 'object') || typeof from === 'function') {
+    let star = __starNamespaces.get(to);
+    for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+      key = keys[i];
+      if (key === except) continue;
+      if (star) {
+        if (!__hasOwnProp.call(star[0], key) && Object.isExtensible(star[1])) {
+          __defProp(star[0], key, { value: ((k) => from[k]).bind(null, key), enumerable: true });
+          __defProp(star[1], key, { value: undefined, writable: true, enumerable: true });
+        }
+      } else if (!__hasOwnProp.call(to, key)) {
+        __defProp(to, key, {
+          get: ((k) => from[k]).bind(null, key),
+          enumerable: __starNamespaces.has(from) || !(desc = __getOwnPropDesc(from, key)) || desc.enumerable,
+        });
+      }
+    }
+  }
+  return to;
+};
+export var __reExport = (target, mod, secondTarget) => (
+  __copyProps(target, mod, 'default'), secondTarget && __copyProps(secondTarget, mod, 'default')
+);
+export var __toESM = (mod, isNodeMode, key, target) => {
+  let modes = key && __dynamicNamespaces.get(key);
+  let mode = isNodeMode ? 1 : 0;
+  if (modes && modes.has(mode)) return modes.get(mode);
+  if (mod != null && (typeof mod == 'object' || typeof mod == 'function')) {
+    let proto = __getProtoOf(mod);
+    let hide = !__hasOwnProp.call(mod, 'then') && !(proto != null && 'then' in proto);
+    let ownWhenCreated = new Set(__getOwnPropNames(mod));
+    target = __create(
+      new Proxy(__create(proto), {
+        get: (_, name) =>
+          hide && name === 'then'
+            ? undefined
+            : __hasOwnProp.call(mod, name) && !ownWhenCreated.has(name)
+              ? Reflect.get(proto || {}, name, mod)
+              : Reflect.get(mod, name, mod),
+        has: (_, name) =>
+          !(hide && name === 'then')
+          && (__hasOwnProp.call(mod, name) && !ownWhenCreated.has(name)
+            ? proto != null && Reflect.has(proto, name)
+            : Reflect.has(mod, name)),
+        ownKeys: () => {
+          let names = [];
+          for (let name in __create(proto)) names.push(name);
+          return names;
+        },
+        getOwnPropertyDescriptor: (_, name) => {
+          for (let from = proto, desc; from != null; from = __getProtoOf(from))
+            if ((desc = __getOwnPropDesc(from, name))) return { ...desc, configurable: true };
+        },
+        defineProperty: () => false,
+        preventExtensions: () => false,
+        setPrototypeOf: () => false,
+      }),
+    );
+  } else target = mod != null ? __create(__getProtoOf(mod)) : {};
+  __copyProps(
+    isNodeMode || !mod || !mod.__esModule || !__hasOwnProp.call(mod, 'default')
+      ? __defProp(target, 'default', { value: mod, enumerable: true })
+      : target,
+    mod,
+  );
+  if (key) {
+    if (!modes) __dynamicNamespaces.set(key, modes = new Map());
+    modes.set(mode, target);
+  }
+  return target;
+};";
+
+fn get_runtime_base_js(runtime_semantics: bool) -> String {
+  if runtime_semantics {
+    RUNTIME_BASE_JS
+      .replace(UPSTREAM_ESM_HELPERS, RUNTIME_SEMANTICS_ESM_HELPERS)
+      .replace(UPSTREAM_EXPORT_AND_INTEROP_HELPERS, RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS)
+  } else {
+    RUNTIME_BASE_JS.to_string()
+  }
 }
 
-fn get_runtime_js_with_node_platform() -> String {
-  concat_string!(RUNTIME_HEAD_NODE_JS, RUNTIME_BASE_JS, RUNTIME_TAIL_NODE_JS)
+fn get_runtime_js(runtime_semantics: bool) -> String {
+  let base = get_runtime_base_js(runtime_semantics);
+  concat_string!(base, RUNTIME_TAIL_JS)
+}
+
+fn get_runtime_js_with_node_platform(runtime_semantics: bool) -> String {
+  let base = get_runtime_base_js(runtime_semantics);
+  concat_string!(RUNTIME_HEAD_NODE_JS, base, RUNTIME_TAIL_NODE_JS)
 }
 
 pub struct RuntimeModuleTask<Fs: FileSystem + Clone + 'static> {
@@ -67,10 +265,12 @@ impl<Fs: FileSystem + Clone + 'static> RuntimeModuleTask<Fs> {
   }
 
   async fn run_inner(&self) -> BuildResult<()> {
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(&self.ctx.options);
     let source: String = if self.ctx.options.is_esm_format_with_node_platform() {
-      get_runtime_js_with_node_platform()
+      get_runtime_js_with_node_platform(runtime_semantics)
     } else {
-      get_runtime_js()
+      get_runtime_js(runtime_semantics)
     };
 
     let original_source = source.clone();

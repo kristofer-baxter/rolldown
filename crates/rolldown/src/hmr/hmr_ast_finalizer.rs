@@ -56,6 +56,7 @@ pub struct HmrAstFinalizer<'me, 'ast> {
   /// The `context` option, which a top-level `this` reads in a module that the scan didn't
   /// find CommonJS, as in the main build; `void 0` when empty.
   pub context: &'me str,
+  pub runtime_module_semantics: bool,
 
   // Each module has a unique index, which is used to generate something that needs to be unique.
   pub unique_index: usize,
@@ -106,6 +107,7 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
       .then(|| if self.module.def_format.is_esm() { Interop::Node } else { Interop::Babel })
   }
 
+  #[expect(clippy::too_many_lines)]
   pub fn handle_top_level_stmt(
     &mut self,
     program_body: &mut oxc::allocator::Vec<'ast, ast::Statement<'ast>>,
@@ -125,7 +127,9 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         // console.log(import_foo.default, import_foo.bar);
         // ```
         let rec_id = self.module.imports[&import_decl.node_id()];
-        if super::utils::unused_pure_import(self.module, rec_id, self.pure, scoping) {
+        if self.runtime_module_semantics
+          && super::utils::unused_pure_import(self.module, rec_id, self.pure, scoping)
+        {
           return;
         }
         let rec = &self.module.import_records[rec_id];
@@ -137,8 +141,7 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         if matches!(
           import_decl.source.value.as_str(),
           Some("\0rolldown/json-module" | "\0rolldown/text-module")
-        )
-          && import_decl.specifiers.is_none()
+        ) && import_decl.specifiers.is_none()
           && importee.id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
         {
           return;
@@ -173,10 +176,9 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         // A JSON module's binding holds its namespace, whose default is the JSON value, unless
         // the link makes the module CommonJS and reads its exports without `__toESM`, where the
         // binding holds the value itself (#748).
-        let json_namespace = importee
-          .as_normal()
-          .is_some_and(crate::utils::import_options::is_json_module)
-          && !self.unconverted_commonjs.contains(&importee_idx);
+        let json_namespace =
+          importee.as_normal().is_some_and(crate::utils::import_options::is_json_module)
+            && !self.unconverted_commonjs.contains(&importee_idx);
         import_decl.specifiers.as_ref().inspect(|specifiers| {
           specifiers.iter().for_each(|spec| match spec {
             ast::ImportDeclarationSpecifier::ImportSpecifier(import_specifier) => {
@@ -215,10 +217,9 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         let importee = &self.modules[importee_idx];
         self.dependencies.insert(importee_idx);
         let binding_name = self.ensure_static_import_info(importee_idx, rec_id).to_string();
-        let json_namespace = importee
-          .as_normal()
-          .is_some_and(crate::utils::import_options::is_json_module)
-          && !self.unconverted_commonjs.contains(&importee_idx);
+        let json_namespace =
+          importee.as_normal().is_some_and(crate::utils::import_options::is_json_module)
+            && !self.unconverted_commonjs.contains(&importee_idx);
         self.exports.extend(decl.specifiers.iter().map(|specifier| {
           let binding_name = if specifier.local.name() != "default" && json_namespace {
             format!("{binding_name}.default")
@@ -353,7 +354,8 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         expr @ ast::match_expression!(ExportDefaultDeclarationKind) => {
           let mut expr = expr.into_expression();
           let mut json_properties = Vec::new();
-          if self.module.meta.has_lazy_export() && self.json_namespace_properties
+          if self.module.meta.has_lazy_export()
+            && self.json_namespace_properties
             && let Expression::ObjectExpression(object) = expr.without_parentheses()
           {
             for property in &object.properties {
@@ -368,38 +370,42 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
               json_properties.push(key.to_owned());
             }
           }
-          let anonymous = match expr.without_parentheses() {
-            Expression::FunctionExpression(function) => function.id.is_none(),
-            Expression::ClassExpression(class) => class.id.is_none(),
-            Expression::ArrowFunctionExpression(_) => true,
-            _ => false,
-          };
-          if anonymous {
-            // Preserve NamedEvaluation("default") without changing initialization timing
-            // or introducing another lexical scope around the authored expression.
-            expr = Expression::new_static_member_expression(
-              SPAN,
-              Expression::new_object_expression(
+          if self.runtime_module_semantics {
+            let anonymous = match expr.without_parentheses() {
+              Expression::FunctionExpression(function) => function.id.is_none(),
+              Expression::ClassExpression(class) => class.id.is_none(),
+              Expression::ArrowFunctionExpression(_) => true,
+              _ => false,
+            };
+            if anonymous {
+              // Preserve NamedEvaluation("default") without changing initialization timing
+              // or introducing another lexical scope around the authored expression.
+              expr = Expression::new_static_member_expression(
                 SPAN,
-                [ObjectPropertyKind::new_object_property(
+                Expression::new_object_expression(
                   SPAN,
-                  ast::PropertyKind::Init,
-                  ast::PropertyKey::new_static_identifier(SPAN, "default", self),
-                  expr,
-                  false,
-                  false,
-                  false,
+                  [ObjectPropertyKind::new_object_property(
+                    SPAN,
+                    ast::PropertyKind::Init,
+                    ast::PropertyKey::new_static_identifier(SPAN, "default", self),
+                    expr,
+                    false,
+                    false,
+                    false,
+                    self,
+                  )],
                   self,
-                )],
+                ),
+                IdentifierName::new(SPAN, "default", self),
+                false,
                 self,
-              ),
-              IdentifierName::new(SPAN, "default", self),
-              false,
-              self,
-            );
+              );
+            }
           }
           let mut statement = Statement::new_var_decl("__rolldown_default__", expr, self);
-          if let Statement::VariableDeclaration(declaration) = &mut statement {
+          if self.runtime_module_semantics
+            && let Statement::VariableDeclaration(declaration) = &mut statement
+          {
             declaration.kind = ast::VariableDeclarationKind::Let;
           }
           program_body.push(statement);
@@ -561,11 +567,12 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
 
     // Use stable module ID for consistent runtime lookup
     let id = importee.stable_id.as_ref();
-    let interop = if self.unconverted_commonjs.contains(&importee.idx) {
-      None
-    } else {
-      self.interop(importee)
-    };
+    let interop =
+      if self.runtime_module_semantics && self.unconverted_commonjs.contains(&importee.idx) {
+        None
+      } else {
+        self.interop(importee)
+      };
     let call_expr = Expression::new_call_with_arg(
       Expression::new_member_access_expr("__rolldown_runtime__", "loadExports", self),
       ast::Expression::new_string_literal(SPAN, Str::from_str_in(id, self), None, self),
@@ -720,21 +727,30 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
     );
 
     // construct `__export(ns_name, { prop_name: () => returned, ... })`
+    let mut export_args = oxc::allocator::Vec::with_capacity_in(3, self);
+    export_args
+      .push(ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.ast_builder.allocator())));
+    if self.runtime_module_semantics {
+      export_args.push(ast::Argument::new_numeric_literal(
+        SPAN,
+        0.0,
+        None,
+        ast::NumberBase::Decimal,
+        self,
+      ));
+      export_args.push(ast::Argument::new_numeric_literal(
+        SPAN,
+        if self.re_export_all_dependencies.is_empty() { 1.0 } else { 0.0 },
+        None,
+        ast::NumberBase::Decimal,
+        self,
+      ));
+    }
     let export_call_expr = ast::Expression::new_call_expression(
       SPAN,
       Expression::new_identifier(SPAN, "__rolldown_runtime__.__exportAll", self),
       None,
-      [
-        ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.ast_builder.allocator())),
-        ast::Argument::new_numeric_literal(SPAN, 0.0, None, ast::NumberBase::Decimal, self),
-        ast::Argument::new_numeric_literal(
-          SPAN,
-          if self.re_export_all_dependencies.is_empty() { 1.0 } else { 0.0 },
-          None,
-          ast::NumberBase::Decimal,
-          self,
-        ),
-      ],
+      export_args,
       false,
       self,
     );
@@ -759,7 +775,8 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
       return;
     };
 
-    let text = crate::utils::import_options::dynamic_import_is_text(import_expr, self.module, self.modules);
+    let text =
+      crate::utils::import_options::dynamic_import_is_text(import_expr, self.module, self.modules);
     if self.modules[importee_idx]
       .as_normal()
       .is_some_and(|module| module.module_type != rolldown_common::ModuleType::Json)
@@ -1063,13 +1080,14 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
 
     let load_exports_expr = if is_importee_cjs
       || (importee.meta.has_lazy_export()
-        && !crate::utils::import_options::is_json_module(importee))
+        && (!self.runtime_module_semantics
+          || !crate::utils::import_options::is_json_module(importee)))
     {
       // CommonJS records hold the value itself. Non-JSON lazy exports keep the existing
       // CommonJS lowering; JSON can instead be ESM data even while it has a lazy export.
       load_exports_call
     } else if rec.meta.contains(ImportRecordMeta::JsonModule)
-      || crate::utils::import_options::is_json_module(importee)
+      || (self.runtime_module_semantics && crate::utils::import_options::is_json_module(importee))
     {
       // Vite-mode JSON, or a JSON module loaded as JavaScript: ESM-wrapped at runtime, unwrap to
       // the JSON value.

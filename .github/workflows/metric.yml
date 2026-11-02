@@ -18,7 +18,7 @@ on:
 jobs:
   compile-time-and-binary-size:
     name: Compile Time and Binary Size
-    runs-on: namespace-profile-linux-x64-default
+    runs-on: ubuntu-latest
     outputs:
       time: ${{ steps.run.outputs.COMPILE_TIME }}
       binary_size: ${{ steps.run.outputs.BINARY_SIZE }}
@@ -46,7 +46,8 @@ jobs:
   metric:
     name: Metric
     needs: [compile-time-and-binary-size]
-    runs-on: namespace-profile-linux-x64-default
+    if: github.repository_owner == 'rolldown'
+    runs-on: ubuntu-latest
     steps:
       - uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
         id: app-token

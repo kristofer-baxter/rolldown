@@ -28,7 +28,6 @@ impl LinkStage<'_> {
     let processed_module_results = self
       .metas
       .par_iter_enumerated()
-      .filter(|(_module_idx, meta)| meta.is_included)
       .map(|(module_idx, meta)| {
         let mut extended_dependencies = FxIndexSet::default();
         if !meta.depended_runtime_helper.is_empty() {
@@ -88,29 +87,27 @@ impl LinkStage<'_> {
             .iter_enumerated()
             .filter(|(idx, _)| meta.stmt_info_included.has_bit(*idx))
             .for_each(|(_, stmt_info)| {
-              stmt_info.referenced_symbols.iter().for_each(|reference_ref| {
-                match reference_ref {
-                  rolldown_common::SymbolOrMemberExprRef::Symbol(sym_ref) => {
-                    let canonical_ref = self.symbols.canonical_ref_for(*sym_ref);
+              stmt_info.referenced_symbols.iter().for_each(|reference_ref| match reference_ref {
+                rolldown_common::SymbolOrMemberExprRef::Symbol(sym_ref) => {
+                  let canonical_ref = self.symbols.canonical_ref_for(*sym_ref);
+                  extended_dependencies.insert(canonical_ref.owner);
+                  let symbol = self.symbols.get(canonical_ref);
+                  if let Some(ns) = &symbol.namespace_alias {
+                    extended_dependencies.insert(ns.namespace_ref.owner);
+                  }
+                  note_external_interop(canonical_ref);
+                }
+                rolldown_common::SymbolOrMemberExprRef::MemberExpr(member_expr) => {
+                  if let Some(sym_ref) =
+                    member_expr.represent_symbol_ref(&meta.resolved_member_expr_refs)
+                  {
+                    let canonical_ref = self.symbols.canonical_ref_for(sym_ref);
                     extended_dependencies.insert(canonical_ref.owner);
                     let symbol = self.symbols.get(canonical_ref);
                     if let Some(ns) = &symbol.namespace_alias {
                       extended_dependencies.insert(ns.namespace_ref.owner);
                     }
                     note_external_interop(canonical_ref);
-                  }
-                  rolldown_common::SymbolOrMemberExprRef::MemberExpr(member_expr) => {
-                    if let Some(sym_ref) =
-                      member_expr.represent_symbol_ref(&meta.resolved_member_expr_refs)
-                    {
-                      let canonical_ref = self.symbols.canonical_ref_for(sym_ref);
-                      extended_dependencies.insert(canonical_ref.owner);
-                      let symbol = self.symbols.get(canonical_ref);
-                      if let Some(ns) = &symbol.namespace_alias {
-                        extended_dependencies.insert(ns.namespace_ref.owner);
-                      }
-                      note_external_interop(canonical_ref);
-                    }
                   }
                 }
               });
@@ -122,9 +119,7 @@ impl LinkStage<'_> {
             if self.metas[*dep_module_idx].is_included {
               return false;
             }
-            self.metas[*dep_module_idx]
-              .depended_runtime_helper
-              .contains(RuntimeHelper::ToEsm)
+            self.metas[*dep_module_idx].depended_runtime_helper.contains(RuntimeHelper::ToEsm)
           });
           if needs_inherit_to_esm_runtime || reads_external_as_esm {
             RuntimeHelper::ToEsm

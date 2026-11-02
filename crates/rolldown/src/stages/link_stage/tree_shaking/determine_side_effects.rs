@@ -76,7 +76,7 @@ impl LinkStage<'_> {
 /// on modules that nothing imports any more. This instead carries side effects from every module
 /// that has them to the modules that import it until nothing changes, which depends on the graph
 /// alone.
-pub(crate) fn linked_side_effects(
+pub fn linked_side_effects(
   modules: &IndexModules,
   metas: &LinkingMetadataVec,
 ) -> IndexVec<ModuleIdx, bool> {
@@ -92,7 +92,7 @@ pub(crate) fn linked_side_effects(
 /// [`linked_side_effects`], with `star_keeps_call` saying whether a module's `export *` of the
 /// normal module that it names keeps the call that initializes it or re-exports its dynamic
 /// exports, as `export *` of a wrapped module or of one with dynamic exports does.
-pub(crate) fn propagate_side_effects(
+pub fn propagate_side_effects(
   modules: &IndexModules,
   star_keeps_call: impl Fn(ModuleIdx) -> bool,
 ) -> IndexVec<ModuleIdx, bool> {
@@ -101,6 +101,7 @@ pub(crate) fn propagate_side_effects(
   // First resolve modules whose direct imports already have side effects or require a re-export
   // call, and count remaining Analyzed(false) modules. Only build reverse edges for those.
   let mut unresolved = Vec::new();
+  let mut pending = Vec::new();
   for (idx, module) in modules.iter_enumerated() {
     let Module::Normal(module) = module else {
       continue;
@@ -128,6 +129,7 @@ pub(crate) fn propagate_side_effects(
     }
     if direct_se {
       has_side_effects[idx] = true;
+      pending.push(idx);
     } else if !module.import_records.is_empty() {
       unresolved.push(idx);
     }
@@ -138,7 +140,6 @@ pub(crate) fn propagate_side_effects(
   // The modules without side effects of their own that import each module.
   let mut importers: IndexVec<ModuleIdx, Vec<ModuleIdx>> =
     IndexVec::from_vec(vec![Vec::new(); modules.len()]);
-  let mut pending = Vec::new();
   for idx in unresolved {
     let Module::Normal(module) = &modules[idx] else {
       continue;

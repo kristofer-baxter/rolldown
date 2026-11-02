@@ -46,6 +46,7 @@ type ChunkGeneratorFuture<'a> = Pin<
 >;
 
 impl GenerateStage<'_> {
+  #[expect(clippy::too_many_arguments)]
   pub async fn render_chunk_to_assets(
     &mut self,
     chunk_graph: &ChunkGraph,
@@ -252,7 +253,10 @@ impl GenerateStage<'_> {
       let live_single_modules: FxHashSet<ModuleIdx> = chunk_graph
         .chunk_table
         .iter()
-        .filter_map(|c| (c.modules.len() == 1).then(|| c.modules[0]))
+        .filter_map(|c| match c.modules.as_slice() {
+          [m] => Some(*m),
+          _ => None,
+        })
         .collect();
       cache.cached_native_chunks.retain(|idx, _| live_single_modules.contains(idx));
       cache.cached_chunk_namings.retain(|idx, _| live_single_modules.contains(idx));
@@ -319,9 +323,7 @@ impl GenerateStage<'_> {
       {
         continue;
       }
-      if !chunk.module_groups.is_empty()
-        || !chunk.entry_level_external_module_idx.is_empty()
-      {
+      if !chunk.module_groups.is_empty() || !chunk.entry_level_external_module_idx.is_empty() {
         continue;
       }
       let kind_key = match &chunk.kind {
@@ -334,8 +336,8 @@ impl GenerateStage<'_> {
       // Every module's rendered code is a cached finalize result, which its digest determines.
       let mut all_finalize_digests = true;
       let mut all_hit = true;
-      let mut h0 = Xxh3::with_seed(0x9e3779b97f4a7c15);
-      let mut h1 = Xxh3::with_seed(0x6a09e667f3bcc908);
+      let mut h0 = Xxh3::with_seed(0x9e37_79b9_7f4a_7c15);
+      let mut h1 = Xxh3::with_seed(0x6a09_e667_f3bc_c908);
       let hash_norm_filename = |f: Option<&str>, h0: &mut Xxh3, h1: &mut Xxh3| match f {
         None => {
           0u8.hash(h0);
@@ -370,7 +372,7 @@ impl GenerateStage<'_> {
       header.hash(&mut h0);
       header.hash(&mut h1);
       hash_norm_filename(
-        chunk.preliminary_filename.as_ref().map(|f| f.as_str()),
+        chunk.preliminary_filename.as_deref().map(ArcStr::as_str),
         &mut h0,
         &mut h1,
       );
@@ -382,16 +384,13 @@ impl GenerateStage<'_> {
           hash_norm_filename(
             chunk_graph.chunk_table[*exporter_id]
               .preliminary_filename
-              .as_ref()
-              .map(|f| f.as_str()),
+              .as_deref()
+              .map(ArcStr::as_str),
             &mut h0,
             &mut h1,
           );
           let v = (
-            chunk
-              .require_binding_names_for_other_chunks
-              .get(exporter_id)
-              .map(|s| s.as_str()),
+            chunk.require_binding_names_for_other_chunks.get(exporter_id).map(String::as_str),
             items.is_empty(),
             items.len(),
           );
@@ -400,7 +399,7 @@ impl GenerateStage<'_> {
           for item in items {
             let iv = (
               item.import_ref.owner.raw(),
-              item.import_ref.symbol.index() as u32,
+              u32::try_from(item.import_ref.symbol.index()).unwrap_or(u32::MAX),
             );
             iv.hash(&mut h0);
             iv.hash(&mut h1);
@@ -408,22 +407,24 @@ impl GenerateStage<'_> {
         }
         let mut exp_acc = (0u128, 0u128);
         for (sym_ref, names) in &chunk.exports_to_other_chunks {
-          let mut eh0 = Xxh3::with_seed(0x9e3779b97f4a7c15);
-          let mut eh1 = Xxh3::with_seed(0x6a09e667f3bcc908);
-          let ev = (sym_ref.owner.raw(), sym_ref.symbol.index() as u32, names.as_slice());
+          let mut eh0 = Xxh3::with_seed(0x9e37_79b9_7f4a_7c15);
+          let mut eh1 = Xxh3::with_seed(0x6a09_e667_f3bc_c908);
+          let ev = (
+            sym_ref.owner.raw(),
+            u32::try_from(sym_ref.symbol.index()).unwrap_or(u32::MAX),
+            names.as_slice(),
+          );
           ev.hash(&mut eh0);
           ev.hash(&mut eh1);
-          exp_acc = (
-            exp_acc.0.wrapping_add(eh0.digest128()),
-            exp_acc.1.wrapping_add(eh1.digest128()),
-          );
+          exp_acc =
+            (exp_acc.0.wrapping_add(eh0.digest128()), exp_acc.1.wrapping_add(eh1.digest128()));
         }
         (chunk.exports_to_other_chunks.len(), exp_acc).hash(&mut h0);
         (chunk.exports_to_other_chunks.len(), exp_acc).hash(&mut h1);
       }
       let (h0_head, h1_head) = (h0, h1);
-      let mut h0 = Xxh3::with_seed(0x9e3779b97f4a7c15);
-      let mut h1 = Xxh3::with_seed(0x6a09e667f3bcc908);
+      let mut h0 = Xxh3::with_seed(0x9e37_79b9_7f4a_7c15);
+      let mut h1 = Xxh3::with_seed(0x6a09_e667_f3bc_c908);
       for (ext_id, named) in &chunk.direct_imports_from_external_modules {
         let v = (link_output.module_table[*ext_id].id().as_str(), named.len());
         v.hash(&mut h0);
@@ -485,11 +486,11 @@ impl GenerateStage<'_> {
     renders: Vec<(ChunkIdx, MultiModuleChunkRender)>,
     skip_sourcemap_chunks: &mut FxHashSet<ChunkIdx>,
   ) -> FxHashMap<ChunkIdx, [u128; 2]> {
-    let mut chunks = FxHashMap::with_capacity_and_hasher(renders.len(), Default::default());
+    let mut chunks = FxHashMap::with_capacity_and_hasher(renders.len(), rustc_hash::FxBuildHasher);
     let Some(cache) = self.cache.as_deref_mut() else {
       return chunks;
     };
-    let mut live = FxHashSet::with_capacity_and_hasher(renders.len(), Default::default());
+    let mut live = FxHashSet::with_capacity_and_hasher(renders.len(), rustc_hash::FxBuildHasher);
     for (chunk_idx, render) in renders {
       if let Some(entry) = render.new_entry {
         cache.cached_multi_module_chunks.insert(render.key, entry);
@@ -506,7 +507,7 @@ impl GenerateStage<'_> {
     chunks
   }
 
-  #[allow(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, clippy::type_complexity)]
   #[tracing::instrument(level = "debug", skip_all)]
   async fn instantiate_chunks(
     &self,
@@ -527,9 +528,8 @@ impl GenerateStage<'_> {
   )> {
     let mut index_chunk_to_instances: IndexChunkToInstances =
       index_vec![FxIndexSet::default(); chunk_graph.chunk_table.len()];
-    let mut index_instantiated_chunks: IndexInstantiatedChunks = IndexVec::with_capacity(
-      chunk_graph.chunk_table.len().saturating_sub(reused_chunks.len()),
-    );
+    let mut index_instantiated_chunks: IndexInstantiatedChunks =
+      IndexVec::with_capacity(chunk_graph.chunk_table.len().saturating_sub(reused_chunks.len()));
     let chunk_index_to_codegen_rets =
       self.create_chunk_to_codegen_ret_map(chunk_graph, &mut rendered_modules, reused_chunks);
     let mut needed_exporter_chunks = FxHashSet::default();
@@ -632,51 +632,46 @@ impl GenerateStage<'_> {
         })
         .collect::<anyhow::Result<Vec<_>>>()?
     } else {
-      try_join_all(
-        items
-          .into_iter()
-          .flat_map(|(chunk_idx, chunk, module_id_to_codegen_ret, carried_renders)| {
-            let resolved_paths = self.resolved_paths.as_ref();
-            let cached_module_sources =
-              self.cache.as_ref().map(|c| &c.current_rendered_sources);
-            let skip_sourcemap_join = skip_sourcemap_chunks.contains(&chunk_idx);
-            let ast_table = &self.ast_table;
-            let inline_state = &self.inline_state;
-            let ecma_chunks_future: ChunkGeneratorFuture = Box::pin(async move {
-              let mut ecma_ctx = GenerateContext {
-                chunk_idx,
-                chunk,
-                options: self.options,
-                link_output: self.link_output,
-                used_symbol_refs,
-                order_wrap_state: order_state,
-                chunk_graph,
-                plugin_driver: self.plugin_driver,
-                module_id_to_codegen_ret,
-                cached_module_sources,
-                skip_sourcemap_join,
-                multi_module_chunk: None,
-                render_export_items_index_vec,
-                resolved_paths,
-                ast_table: Some(ast_table),
-                final_esm_init_metadata: Some(final_esm_init_metadata),
-                inline_state,
-                carried_renders,
-              };
-              let ecma_chunks_future = EcmaGenerator::instantiate_chunk(&mut ecma_ctx);
-              let ecma_chunks = ecma_chunks_future.await?;
-              Ok(ecma_chunks)
-            });
-            [ecma_chunks_future]
-          }),
-      )
+      try_join_all(items.into_iter().flat_map(
+        |(chunk_idx, chunk, module_id_to_codegen_ret, carried_renders)| {
+          let resolved_paths = self.resolved_paths.as_ref();
+          let cached_module_sources = self.cache.as_ref().map(|c| &c.current_rendered_sources);
+          let skip_sourcemap_join = skip_sourcemap_chunks.contains(&chunk_idx);
+          let ast_table = &self.ast_table;
+          let inline_state = &self.inline_state;
+          let ecma_chunks_future: ChunkGeneratorFuture = Box::pin(async move {
+            let mut ecma_ctx = GenerateContext {
+              chunk_idx,
+              chunk,
+              options: self.options,
+              link_output: self.link_output,
+              used_symbol_refs,
+              order_wrap_state: order_state,
+              chunk_graph,
+              plugin_driver: self.plugin_driver,
+              module_id_to_codegen_ret,
+              cached_module_sources,
+              skip_sourcemap_join,
+              multi_module_chunk: None,
+              render_export_items_index_vec,
+              resolved_paths,
+              ast_table: Some(ast_table),
+              final_esm_init_metadata: Some(final_esm_init_metadata),
+              inline_state,
+              carried_renders,
+            };
+            let ecma_chunks_future = EcmaGenerator::instantiate_chunk(&mut ecma_ctx);
+            let ecma_chunks = ecma_chunks_future.await?;
+            Ok(ecma_chunks)
+          });
+          [ecma_chunks_future]
+        },
+      ))
       .await?
     };
 
     let mut multi_module_renders = Vec::new();
-    results
-      .into_iter()
-      .for_each(|result| match result {
+    results.into_iter().for_each(|result| match result {
       Ok(generate_output) => {
         if let Some(render) = generate_output.multi_module_chunk
           && let Some(ins_chunk) = generate_output.chunks.first()
@@ -775,10 +770,8 @@ pub fn set_emitted_chunk_preliminary_filenames(
   file_emitter: &SharedFileEmitter,
   chunk_graph: &ChunkGraph,
 ) {
-  let emitted_chunk_info = chunk_graph
-    .chunk_idx_to_reference_ids
-    .iter()
-    .flat_map(|(&idx, reference_ids)| {
+  let emitted_chunk_info =
+    chunk_graph.chunk_idx_to_reference_ids.iter().flat_map(|(&idx, reference_ids)| {
       let chunk = &chunk_graph.chunk_table.chunks[idx];
       reference_ids.iter().map(|reference_id| EmittedChunkInfo {
         reference_id: reference_id.clone(),
@@ -804,7 +797,7 @@ impl GenerateStage<'_> {
     chunk_decisions: &IndexVec<ChunkIdx, Option<[u128; 2]>>,
     render_export_items_index_vec: &mut IndexVec<ChunkIdx, FxIndexMap<SymbolRef, Vec<CompactStr>>>,
     index_chunk_to_instances: &mut IndexChunkToInstances,
-    sorted_output_template: &mut Vec<(ChunkIdx, Output)>,
+    sorted_output_template: &mut [(ChunkIdx, Output)],
     chunk_idx_to_template_pos: &IndexVec<ChunkIdx, Option<usize>>,
     reused_chunk_filenames_pool: &mut FxHashSet<ArcStr>,
     excluded_from_reused_filenames: &mut Vec<ArcStr>,
@@ -843,33 +836,34 @@ impl GenerateStage<'_> {
       let link_output: &crate::stages::link_stage::LinkStageOutput = self.link_output;
       let plugin_driver = self.plugin_driver;
       let inline_state = &self.inline_state;
-      let futures = dirty_rendered_modules.into_iter().map(|(chunk_idx, module_id_to_codegen_ret)| {
-        let chunk = &chunk_graph.chunk_table[chunk_idx];
-        let ecma_chunks_future: ChunkGeneratorFuture = Box::pin(async move {
-          let mut ecma_ctx = GenerateContext {
-            chunk_idx,
-            chunk,
-            options,
-            link_output,
-            used_symbol_refs,
-            order_wrap_state: order_state,
-            chunk_graph,
-            plugin_driver,
-            module_id_to_codegen_ret,
-            cached_module_sources: None,
-            skip_sourcemap_join: false,
-            multi_module_chunk: None,
-            render_export_items_index_vec: render_export_items_ref,
-            resolved_paths,
-            ast_table: None,
-            final_esm_init_metadata: None,
-            inline_state,
-            carried_renders: vec![],
-          };
-          EcmaGenerator::instantiate_chunk(&mut ecma_ctx).await
+      let futures =
+        dirty_rendered_modules.into_iter().map(|(chunk_idx, module_id_to_codegen_ret)| {
+          let chunk = &chunk_graph.chunk_table[chunk_idx];
+          let ecma_chunks_future: ChunkGeneratorFuture = Box::pin(async move {
+            let mut ecma_ctx = GenerateContext {
+              chunk_idx,
+              chunk,
+              options,
+              link_output,
+              used_symbol_refs,
+              order_wrap_state: order_state,
+              chunk_graph,
+              plugin_driver,
+              module_id_to_codegen_ret,
+              cached_module_sources: None,
+              skip_sourcemap_join: false,
+              multi_module_chunk: None,
+              render_export_items_index_vec: render_export_items_ref,
+              resolved_paths,
+              ast_table: None,
+              final_esm_init_metadata: None,
+              inline_state,
+              carried_renders: vec![],
+            };
+            EcmaGenerator::instantiate_chunk(&mut ecma_ctx).await
+          });
+          ecma_chunks_future
         });
-        ecma_chunks_future
-      });
       for result in try_join_all(futures).await? {
         match result {
           Ok(generate_output) => {
@@ -935,7 +929,7 @@ impl GenerateStage<'_> {
         for &chunk_idx in &dirty_chunk_indices {
           index_chunk_to_instances[chunk_idx].clear();
         }
-        return Err(err.into());
+        return Err(err);
       }
     };
 
@@ -943,7 +937,7 @@ impl GenerateStage<'_> {
       for &chunk_idx in &dirty_chunk_indices {
         index_chunk_to_instances[chunk_idx].clear();
       }
-      return Err(err.into());
+      return Err(err);
     }
 
     let assets_res = finalize_assets(

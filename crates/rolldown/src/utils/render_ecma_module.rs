@@ -24,12 +24,16 @@ pub fn render_ecma_module(
     return RenderEcmaModuleOutput { sources: None, warnings: vec![] };
   }
   let mut sources: Vec<Box<dyn rolldown_sourcemap::Source + Send + Sync>> = Vec::with_capacity(6);
+  // Mark only where a module starts, like esbuild and bun, unless developer-bundler's
+  // native-record / HMR runtime semantics are active (which parse `//#region` / `//#endregion`).
+  let use_region_pairs = crate::utils::native_records::runtime_module_semantics_enabled(options);
   let attach_debug_info = matches!(
     options.experimental.attach_debug_info,
     Some(AttachDebugInfo::Simple | AttachDebugInfo::Full)
   );
   if attach_debug_info {
-    sources.push(Box::new(concat_string!("//#region ", module.debug_id)));
+    let prefix = if use_region_pairs { "//#region " } else { "// " };
+    sources.push(Box::new(concat_string!(prefix, module.debug_id)));
   }
 
   // A native cell is virtual, but its loaded map points at its donor's authored file.
@@ -59,7 +63,7 @@ pub fn render_ecma_module(
     sources.push(Box::new(render_output.code));
   }
 
-  if attach_debug_info {
+  if attach_debug_info && use_region_pairs {
     sources.push(Box::new("//#endregion"));
   }
 

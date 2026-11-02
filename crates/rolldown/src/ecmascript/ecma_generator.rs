@@ -75,9 +75,7 @@ impl Generator for EcmaGenerator {
           .copied()
           .zip(module_id_to_codegen_ret)
           .filter_map(|(id, codegen_ret)| {
-            ctx.link_output.module_table[id]
-              .as_normal()
-              .map(|m| (m, codegen_ret))
+            ctx.link_output.module_table[id].as_normal().map(|m| (m, codegen_ret))
           })
           .map(|(m, codegen_ret)| {
             if let Some(codegen_ret) = codegen_ret {
@@ -95,10 +93,7 @@ impl Generator for EcmaGenerator {
                     ctx, m,
                   )
                 });
-              (
-                RenderedModuleSource::new(m.idx, m.id.clone(), m.exec_order, sources),
-                Vec::new(),
-              )
+              (RenderedModuleSource::new(m.idx, m.id.clone(), m.exec_order, sources), Vec::new())
             }
           })
           .collect::<Vec<_>>();
@@ -130,10 +125,7 @@ impl Generator for EcmaGenerator {
 
     let mut built_sources: Option<(RenderedModuleSources, Vec<BuildDiagnostic>)> =
       if need_rendered_modules {
-        Some(build_rendered_module_sources(
-          ctx,
-          std::mem::take(&mut module_id_to_codegen_ret),
-        ))
+        Some(build_rendered_module_sources(ctx, std::mem::take(&mut module_id_to_codegen_ret)))
       } else {
         None
       };
@@ -330,11 +322,7 @@ impl Generator for EcmaGenerator {
     };
 
     let multi_module_chunk = ctx.multi_module_chunk.and_then(|lookup| {
-      let key = multi_module_chunk_key(
-        ctx,
-        addon_render_context(),
-        lookup.base_digest,
-      )?;
+      let key = multi_module_chunk_key(ctx, addon_render_context(), lookup.base_digest)?;
       Some((lookup, key))
     });
     if let Some((lookup, key)) = multi_module_chunk {
@@ -382,8 +370,7 @@ impl Generator for EcmaGenerator {
         }
       }
       OutputFormat::Umd => {
-        match render_umd(ctx, addon_render_context(), &rendered_module_sources, &mut warnings)
-          .await
+        match render_umd(ctx, addon_render_context(), &rendered_module_sources, &mut warnings).await
         {
           Ok(source_joiner) => source_joiner,
           Err(errors) => return Ok(Err(errors)),
@@ -403,17 +390,14 @@ impl Generator for EcmaGenerator {
     }
 
     let multi_module_chunk = multi_module_chunk.map(|(lookup, key)| {
-      let new_entry =
-        (!lookup.cached.contains_key(&key) && warnings.is_empty()).then(|| CachedMultiModuleChunk {
+      let new_entry = (!lookup.cached.contains_key(&key) && warnings.is_empty()).then(|| {
+        CachedMultiModuleChunk {
           content: Arc::from(content.as_str()),
           had_map: had_sourcemap,
           finalized: None,
-        });
-      MultiModuleChunkRender {
-        key,
-        skip_sourcemap_join: ctx.skip_sourcemap_join,
-        new_entry,
-      }
+        }
+      });
+      MultiModuleChunkRender { key, skip_sourcemap_join: ctx.skip_sourcemap_join, new_entry }
     });
 
     Ok(Ok(GenerateOutput {
@@ -496,12 +480,8 @@ fn multi_module_chunk_key(
   if !ctx.chunk.module_groups.is_empty() {
     return None;
   }
-  let mut normal_modules = ctx
-    .chunk
-    .modules
-    .iter()
-    .copied()
-    .filter_map(|id| ctx.link_output.module_table[id].as_normal());
+  let mut normal_modules =
+    ctx.chunk.modules.iter().copied().filter_map(|id| ctx.link_output.module_table[id].as_normal());
   // CJS hoists a leading runtime module above the imports, so it must not stand in for one.
   let first = normal_modules.next()?;
   if first.idx == ctx.link_output.runtime.id() {
@@ -524,8 +504,8 @@ fn multi_module_chunk_key(
   source_joiner.enable_sourcemap = false;
   let (skeleton, _) = source_joiner.join();
 
-  let mut h0 = Xxh3::with_seed(0x452821e638d01377);
-  let mut h1 = Xxh3::with_seed(0xbe5466cf34e90c6c);
+  let mut h0 = Xxh3::with_seed(0x4528_21e6_38d0_1377);
+  let mut h1 = Xxh3::with_seed(0xbe54_66cf_34e9_0c6c);
   let v = (base_digest, ctx.options.format as u8, normal_module_count, skeleton.as_str());
   v.hash(&mut h0);
   v.hash(&mut h1);

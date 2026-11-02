@@ -196,6 +196,7 @@ impl GenerateStage<'_> {
   /// and inside a cycle that edge runs the definer before an authored importee that throws or
   /// observes the order. These are the authored importee records whose evaluation edge is kept,
   /// in source order; a binding any of them exports is imported through it instead.
+  #[expect(clippy::type_complexity)]
   pub(super) fn native_authored_reexport_routes(
     &self,
     chunk_graph: &ChunkGraph,
@@ -280,9 +281,7 @@ impl GenerateStage<'_> {
     owner_chunk: ChunkIdx,
     import_ref: SymbolRef,
   ) -> Option<(ChunkIdx, SymbolRef)> {
-    if route_chunks.contains(&owner_chunk)
-      || import_ref.owner == self.link_output.runtime.id()
-    {
+    if route_chunks.contains(&owner_chunk) || import_ref.owner == self.link_output.runtime.id() {
       return None;
     }
     let owner = self.link_output.module_table[import_ref.owner].as_normal()?;
@@ -428,8 +427,7 @@ impl GenerateStage<'_> {
         (chunk_idx, cross_chunk_imports, sorted_imports)
       })
       .collect::<Vec<_>>();
-    let mut index_sorted_cross_chunk_imports =
-      vec![Vec::new(); chunk_graph.chunk_table.len()];
+    let mut index_sorted_cross_chunk_imports = vec![Vec::new(); chunk_graph.chunk_table.len()];
     let mut index_sorted_imports_from_other_chunks =
       vec![FxIndexMap::default(); chunk_graph.chunk_table.len()];
     for (chunk_idx, cross_chunk_imports, sorted_imports) in sorted_cross_and_imports {
@@ -1798,8 +1796,26 @@ impl GenerateStage<'_> {
         .collect();
       if absorbed_targets.is_empty() {
         FxHashMap::default()
-      } else {
+      } else if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
         self.live_dynamic_importers(chunk_graph, absorbed_targets)
+      } else {
+        let mut map: FxHashMap<ModuleIdx, Vec<super::order_wrapping::LiveDynamicImporter>> =
+          FxHashMap::default();
+        for (importer_idx, module) in self.link_output.module_table.iter_enumerated() {
+          let Some(module) = module.as_normal() else { continue };
+          for rec in &module.import_records {
+            if rec.kind == ImportKind::DynamicImport
+              && let Some(resolved) = rec.resolved_module
+              && absorbed_targets.contains(&resolved)
+            {
+              map.entry(resolved).or_default().push(super::order_wrapping::LiveDynamicImporter {
+                module_idx: importer_idx,
+                trigger_chunk: chunk_graph.module_to_chunk[importer_idx],
+              });
+            }
+          }
+        }
+        map
       }
     };
 
@@ -2073,9 +2089,7 @@ impl GenerateStage<'_> {
                 .filter(|(_, rec)| {
                   rec.kind != ImportKind::DynamicImport
                     && (rec.kind != ImportKind::Import
-                      || rec
-                        .resolved_module
-                        .and_then(|m| chunk_graph.module_to_chunk[m])
+                      || rec.resolved_module.and_then(|m| chunk_graph.module_to_chunk[m])
                         == Some(chunk_id))
                 })
                 .filter(|(record_idx, _)| {
@@ -2182,17 +2196,23 @@ impl GenerateStage<'_> {
               };
               if self.options.is_strict_execution_order_enabled()
                 && order_state
-                  .esm_init_target(importee_module_idx, &self.link_output.metas[importee_module_idx])
+                  .esm_init_target(
+                    importee_module_idx,
+                    &self.link_output.metas[importee_module_idx],
+                  )
                   .is_some()
               {
                 continue;
               }
-              if !self.link_output.module_table[importee_module_idx].side_effects().has_side_effects()
+              if !self.link_output.module_table[importee_module_idx]
+                .side_effects()
+                .has_side_effects()
                 && !crate::utils::native_records::enabled(self.options)
               {
                 continue;
               }
-              let Some(importee_chunk_idx) = chunk_graph.module_to_chunk[importee_module_idx] else {
+              let Some(importee_chunk_idx) = chunk_graph.module_to_chunk[importee_module_idx]
+              else {
                 continue;
               };
               if importee_chunk_idx == chunk_id {
@@ -2249,10 +2269,7 @@ impl GenerateStage<'_> {
     let preserve_export_names_modules =
       std::mem::take(&mut chunk_graph.common_chunk_preserve_export_names_modules);
     let namespace_entries = &chunk_graph.common_chunk_exported_facade_chunk_namespace;
-    chunk_graph
-      .chunk_table
-      .par_iter_mut_enumerated()
-      .for_each(|(chunk_id, chunk)| {
+    chunk_graph.chunk_table.par_iter_mut_enumerated().for_each(|(chunk_id, chunk)| {
       if allow_to_minify_internal_exports {
         // Reference: https://github.com/rollup/rollup/blob/f76339428586620ff3e4c32fce48f923e7be7b05/src/utils/exportNames.ts#L5
         let mut named_index = 0;
@@ -2396,7 +2413,7 @@ impl GenerateStage<'_> {
       // Predefined names are the module's declared interface: every one is reserved before a
       // generated export takes a name, wherever `deconflict_order_key` puts its symbol (#682).
       for (_, predefined_names) in &live_exports {
-        for item in predefined_names.iter() {
+        for item in *predefined_names {
           resolver.reserve(CompactStr::new(item));
         }
       }

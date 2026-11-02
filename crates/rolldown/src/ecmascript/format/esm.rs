@@ -523,13 +523,16 @@ fn render_esm_chunk_imports(ctx: &GenerateContext<'_>) -> Option<String> {
       .collect();
     let has_deferred_edge = ctx.chunk.modules.iter().any(|idx| {
       let Some(module) = ctx.link_output.module_table[*idx].as_normal() else { return false };
-      ctx.link_output.metas[*idx].deferred_imports.keys()
+      ctx.link_output.metas[*idx]
+        .deferred_imports
+        .keys()
         .any(|record| module.import_records[*record].resolved_module == Some(*importee_id))
     });
     let has_eager_edge = ctx.chunk.modules.iter().any(|idx| {
       let Some(module) = ctx.link_output.module_table[*idx].as_normal() else { return false };
       module.import_records.iter_enumerated().any(|(record, import)| {
-        import.kind.is_static() && import.resolved_module == Some(*importee_id)
+        import.kind.is_static()
+          && import.resolved_module == Some(*importee_id)
           && !ctx.link_output.metas[*idx].deferred_imports.contains_key(&record)
       })
     });

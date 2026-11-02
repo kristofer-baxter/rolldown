@@ -283,10 +283,7 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
     module.hmr_hot_ref = Some(recreate_facade(hot_ref));
   }
   if link_staged.options.experimental.is_incremental_build_enabled() {
-    link_staged
-      .pre_lazy_export_symbols
-      .entry(module_idx)
-      .or_insert(original_symbol_ref_db);
+    link_staged.pre_lazy_export_symbols.entry(module_idx).or_insert(original_symbol_ref_db);
   }
   let namespace_object_ref = module.namespace_object_ref;
   let default_export_ref = module.default_export_ref;

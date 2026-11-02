@@ -161,7 +161,7 @@ impl LinkStage<'_> {
 /// passes them through `__toESM`, as one default or namespace import makes all of them do
 /// ([`LinkStage::determine_safely_merge_cjs_ns`]), and the importers whose records read them
 /// through a binding, which the records of a page that loaded the output keep reading so (#660).
-pub(crate) fn commonjs_interop(link_output: &LinkStageOutput) -> BTreeMap<String, CommonjsInterop> {
+pub fn commonjs_interop(link_output: &LinkStageOutput) -> BTreeMap<String, CommonjsInterop> {
   let modules = &link_output.module_table.modules;
   let reaches = |idx| link_output.unreachable_modules.reaches(idx);
   link_output

@@ -63,6 +63,9 @@ impl GenerateStage<'_> {
     chunk_graph: &mut ChunkGraph,
     used_symbol_refs_builder: &mut UsedSymbolRefsBuilder,
   ) {
+    if !crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
+      return;
+    }
     // Even an unmerged JSON facade must expose the same default-only namespace
     // as a static namespace import, not its bundler-only named bindings. And an
     // unmerged facade whose star exports reach CommonJS modules must expose the
@@ -137,10 +140,15 @@ impl GenerateStage<'_> {
           crate::utils::topology_config::CycleMergingPolicy::AllowWrapped
         }
       });
-    let keep_acyclic = !self.options.is_strict_execution_order_enabled()
-      || self.has_raw_commonjs_module()
-      || self.options.experimental.is_on_demand_wrapping_enabled()
-      || matches!(cycle_merging, crate::utils::topology_config::CycleMergingPolicy::Forbid);
+    let keep_acyclic =
+      if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
+        !self.options.is_strict_execution_order_enabled()
+          || self.has_raw_commonjs_module()
+          || self.options.experimental.is_on_demand_wrapping_enabled()
+          || matches!(cycle_merging, crate::utils::topology_config::CycleMergingPolicy::Forbid)
+      } else {
+        true
+      };
     let atom_dependencies = self.compute_atom_dependencies(
       &atoms,
       &module_to_atom_idx,
@@ -465,7 +473,8 @@ impl GenerateStage<'_> {
         .iter()
         .any(|importer| importer.trigger_chunk.is_some_and(|chunk| chunk != host_idx));
       if host_idx == chunk_idx {
-        if !crosses {
+        if !crosses || !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+        {
           continue;
         }
         self.split_public_entry_chunk(chunk_graph, chunk_idx, module_idx);
@@ -711,7 +720,9 @@ impl GenerateStage<'_> {
             add(dep_module_idx, &mut reachability_deps);
           }
           if keep_acyclic {
-            if self.has_raw_commonjs_module() {
+            if !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+              || self.has_raw_commonjs_module()
+            {
               for &dep_module_idx in &self.link_output.metas[module_idx].dependencies {
                 add(dep_module_idx, &mut cycle_deps);
               }

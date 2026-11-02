@@ -9,8 +9,8 @@ use rolldown_common::{
   StrOrBytes, try_extract_lazy_barrel_info,
 };
 use rolldown_error::{
-  BuildDiagnostic, BuildResult, DiagnosticOptions, EventKind, EventKindSwitcher, UnloadableDependencyContext,
-  downcast_napi_error_diagnostics,
+  BuildDiagnostic, BuildResult, DiagnosticOptions, EventKind, EventKindSwitcher,
+  UnloadableDependencyContext, downcast_napi_error_diagnostics,
 };
 use rolldown_utils::{ecmascript::legitimize_identifier_name, indexmap::FxIndexSet};
 
@@ -77,7 +77,7 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
   }
 
   #[tracing::instrument(name="NormalModuleTask::run", level = "trace", skip_all, fields(module_id = %self.resolved_id.id))]
-  pub async fn run(mut self) {
+  pub async fn run(self) {
     let resolution_failure = self
       .ctx
       .deferred_resolution_targets
@@ -91,12 +91,15 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
         "import {{__moduleTypeError}} from {:?}; throw new __moduleTypeError({});",
         rolldown_common::RUNTIME_MODULE_KEY,
         serde_json::to_string(&diagnostic).expect("diagnostic strings serialize")
-      ).into()
+      )
+      .into()
     });
     let result = match self.run_inner(override_source).await {
-      Err(errs) if !self.is_user_defined_entry
-        && !errs.is_empty()
-        && errs.iter().all(|error| matches!(error.kind(), EventKind::ParseError)) =>
+      Err(errs)
+        if crate::utils::native_records::runtime_module_semantics_enabled(&self.ctx.options)
+          && !self.is_user_defined_entry
+          && !errs.is_empty()
+          && errs.iter().all(|error| matches!(error.kind(), EventKind::ParseError)) =>
       {
         let message = errs[0].to_string();
         let source = format!(
@@ -104,7 +107,11 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
           rolldown_common::RUNTIME_MODULE_KEY,
           serde_json::to_string(&message).expect("diagnostic strings serialize")
         );
-        self.ctx.deferred_parse_errors.lock().expect("parse failure state poisoned")
+        self
+          .ctx
+          .deferred_parse_errors
+          .lock()
+          .expect("parse failure state poisoned")
           .insert(self.module_idx, errs.into_vec());
         self.run_inner(Some(source.into())).await
       }
@@ -116,7 +123,7 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
     }
   }
 
-  async fn run_inner(&mut self, error_source: Option<ArcStr>) -> BuildResult<()> {
+  async fn run_inner(&self, error_source: Option<ArcStr>) -> BuildResult<()> {
     let id = self.resolved_id.id.clone();
 
     self.ctx.plugin_driver.set_module_info(

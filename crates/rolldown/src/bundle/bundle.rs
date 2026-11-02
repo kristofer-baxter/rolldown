@@ -13,7 +13,9 @@ use super::super::{
 };
 use anyhow::Context;
 use arcstr::ArcStr;
-use rolldown_common::{GetLocalDb, GetLocalDbMut, Module, ScanMode, SharedFileEmitter, SymbolRefDb};
+use rolldown_common::{
+  GetLocalDb, GetLocalDbMut, Module, ScanMode, SharedFileEmitter, SymbolRefDb,
+};
 use rolldown_devtools::{action, trace_action, trace_action_enabled};
 use rolldown_error::{BuildDiagnostic, BuildResult, Severity};
 use rolldown_fs::{FileSystem, OsFileSystem};
@@ -214,7 +216,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     // means a failed scan cannot leave the emitter stuck in the build phase, where a later emit
     // (e.g. an HMR patch after a failed rebuild) could still change an already-emitted filename.
     self.plugin_driver.file_emitter.enter_build_phase();
-    let result = self.scan_modules_impl(scan_mode).await;
+    let result = Box::pin(self.scan_modules_impl(scan_mode)).await;
     self.plugin_driver.file_emitter.enter_output_phase();
     result
   }
@@ -316,7 +318,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     }
 
-    let mut output = self.bundle_up(scan_stage_output, /* is_write */ true).await?;
+    let mut output = Box::pin(self.bundle_up(scan_stage_output, /* is_write */ true)).await?;
 
     self.fs.create_dir_all(&dist_dir).with_context(|| {
       format!("Could not create directory for output chunks: {}", dist_dir.display())
@@ -371,7 +373,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     &mut self,
     scan_stage_output: NormalizedScanStageOutput,
   ) -> BuildResult<BundleOutput> {
-    let result = self.bundle_up(scan_stage_output, false).await;
+    let result = Box::pin(self.bundle_up(scan_stage_output, false)).await;
     self.invalidate_js_side_cache(result).await
   }
 
@@ -445,6 +447,14 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     mut scan_stage_output: NormalizedScanStageOutput,
     is_write: bool,
   ) -> BuildResult<BundleOutput> {
+    struct LinkUnwindGuard<'a>(&'a mut ScanStageCache, bool);
+    impl Drop for LinkUnwindGuard<'_> {
+      fn drop(&mut self) {
+        if !self.1 {
+          std::mem::take(self.0);
+        }
+      }
+    }
     self.cache.last_fast_native_relink = false;
     self.cache.last_native_relink_fallback = None;
     self.cache.last_native_relink_fallback_detail = None;
@@ -472,23 +482,13 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         "trace_action"
       });
     }
-    if scan_stage_output.index_ecma_ast.is_empty()
-      && self.cache.has_snapshot()
-    {
+    if scan_stage_output.index_ecma_ast.is_empty() && self.cache.has_snapshot() {
       scan_stage_output.index_ecma_ast =
         std::mem::take(&mut self.cache.get_snapshot_mut().index_ecma_ast);
     }
     // The one stretch of a build with no plugin in it, which is what makes it a usable
     // baseline for "was this build plugin-bound?" — see `BuildTimings`.
     let link_start = self.plugin_driver.build_timings.start();
-    struct LinkUnwindGuard<'a>(&'a mut ScanStageCache, bool);
-    impl Drop for LinkUnwindGuard<'_> {
-      fn drop(&mut self) {
-        if !self.1 {
-          std::mem::take(self.0);
-        }
-      }
-    }
     let mut link_guard = LinkUnwindGuard(&mut self.cache, false);
     let (mut link_stage_output, ast_table, used_symbol_refs_builder) =
       LinkStage::new(scan_stage_output, &self.options).link();
@@ -709,13 +709,12 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
           idx,
           oxc::semantic::ScopeId::new(0),
         );
-        local_db_without_scoping.classic_data =
-          snapshot.symbol_ref_db.local_db(idx).classic_data.clone();
-        local_db_without_scoping.flags = snapshot.symbol_ref_db.local_db(idx).flags.clone();
-        let mut full_local_db = std::mem::replace(
-          snapshot.symbol_ref_db.local_db_mut(idx),
-          local_db_without_scoping,
-        );
+        local_db_without_scoping
+          .classic_data
+          .clone_from(&snapshot.symbol_ref_db.local_db(idx).classic_data);
+        local_db_without_scoping.flags.clone_from(&snapshot.symbol_ref_db.local_db(idx).flags);
+        let mut full_local_db =
+          std::mem::replace(snapshot.symbol_ref_db.local_db_mut(idx), local_db_without_scoping);
         full_local_db.classic_data = item.new_local_db.classic_data;
         full_local_db.flags = item.new_local_db.flags;
         if let Some((wrapper, name)) = &item.wrapper {
@@ -782,9 +781,10 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
           idx,
           oxc::semantic::ScopeId::new(0),
         );
-        scanned_without_scoping.classic_data =
-          snapshot.symbol_ref_db.local_db(idx).classic_data.clone();
-        scanned_without_scoping.flags = snapshot.symbol_ref_db.local_db(idx).flags.clone();
+        scanned_without_scoping
+          .classic_data
+          .clone_from(&snapshot.symbol_ref_db.local_db(idx).classic_data);
+        scanned_without_scoping.flags.clone_from(&snapshot.symbol_ref_db.local_db(idx).flags);
         let scanned =
           std::mem::replace(snapshot.symbol_ref_db.local_db_mut(idx), scanned_without_scoping);
         cached_relink.link_output.symbol_db[idx] = Some(scanned);
@@ -810,8 +810,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         ) {
           cached_module.sourcemap_chain.clone_from(&scanned.sourcemap_chain);
         }
-        let used = cached_relink.generate_state.used_overrides.get(&idx).cloned().unwrap_or_else(
-          || {
+        let used =
+          cached_relink.generate_state.used_overrides.get(&idx).cloned().unwrap_or_else(|| {
             let count = cached_relink.link_output.symbol_db[idx]
               .as_ref()
               .map_or(0, |db| db.classic_data.len());
@@ -821,8 +821,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
               })
               .filter(|symbol| cached_relink.generate_state.used_symbol_refs.contains(symbol))
               .collect()
-          },
-        );
+          });
         dirty_modules_with_used.push((idx, chunk_idx, used));
       }
       self.cache.dirty_native_modules.clear();
@@ -1044,11 +1043,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     if !ast_table.is_empty() {
       snapshot.index_ecma_ast = ast_table;
     }
-    for (snap_mod, build_mod) in snapshot
-      .module_table
-      .modules
-      .iter_mut()
-      .zip(module_table.modules.iter_mut())
+    for (snap_mod, build_mod) in
+      snapshot.module_table.modules.iter_mut().zip(module_table.modules.iter_mut())
     {
       if let (Some(snap_normal), Some(build_normal)) =
         (snap_mod.as_normal_mut(), build_mod.as_normal_mut())

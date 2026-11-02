@@ -353,8 +353,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // Without clients, the update only rescans and merges the changed modules: nothing renders
     // a patch, so nothing captures what a patch compares against.
     let rescan_only = clients.is_empty();
-    let pre_rebuild_cell_routes =
-      if rescan_only { Vec::new() } else { self.native_cell_routes() };
+    let pre_rebuild_cell_routes = if rescan_only { Vec::new() } else { self.native_cell_routes() };
     let pre_rebuild_side_effects = self.linked_side_effects();
     let pre_rebuild_renders = if last_build_errored || rescan_only {
       FxHashMap::default()
@@ -950,7 +949,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           .min()
           .map(|leaf| (leaf, wrapped.contains(&leaf)))
       };
-      let reason = if let Some(module_idx) = affected {
+      if let Some(module_idx) = affected {
         Some(format!(
           "native evaluation omission certificate affected by {}",
           self.module_table().modules[*module_idx].stable_id()
@@ -978,8 +977,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         ))
       } else {
         None
-      };
-      reason
+      }
     } else {
       None
     };
@@ -1377,7 +1375,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         let Module::Normal(importer) = &self.module_table().modules[importer_idx] else {
           continue;
         };
-        if !reach.reaches(importer_idx)
+        if crate::utils::native_records::runtime_module_semantics_enabled(&self.options)
+          && !reach.reaches(importer_idx)
           && importer.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
         {
           continue;
@@ -1443,11 +1442,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
   /// that selection goes on to, and those of a resident factory, which stands for its closure, so
   /// that the caller can tell which factories may run where the entry's factory runs, also
   /// across the compiles that share a factory.
-  #[expect(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
   pub async fn compile_lazy_entry(
     &mut self,
     module_id: &str,
-    _client_id: &str,
+    client_id: &str,
     shipped: &FxHashMap<ArcStr, u32>,
     rerun: &FxHashSet<ArcStr>,
     evaluated: &FxHashMap<ArcStr, u32>,
@@ -1504,7 +1503,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // 2. Trigger a partial scan to fetch the module and its dependencies when compiling a lazy
     // proxy (`?rolldown-lazy=1`) or non-native request; in native module HMR (`client_id == "native"`),
     // `compute_hmr_update_for_file_changes` has already scanned and merged all changed files.
-    if _client_id != "native" || module_id.contains("rolldown-lazy") {
+    if client_id != "native" || module_id.contains("rolldown-lazy") {
       let fetch_mode = ScanMode::Partial(vec![resolved_id]);
 
       let mut module_loader = ModuleLoader::new(
@@ -1523,7 +1522,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       // Native module HMR compiles a proxy on every patch that ships its target, and the proxy
       // loads the same source until a page activates it. Merging an unchanged proxy would mark
       // it rescanned, so that the next relink would link the whole graph.
-      if _client_id != "native"
+      if client_id != "native"
         || !refetched_unchanged(self.module_table(), entry_module_idx, &module_loader_output)
       {
         let plugin_driver = Arc::clone(&self.plugin_driver);
@@ -1585,8 +1584,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     modules_to_be_updated
       .sort_by_cached_key(|module_idx| self.module_table().modules[*module_idx].id());
 
-    let mut key_gens: Vec<(ModuleIdx, u64)> =
-      Vec::with_capacity(modules_to_be_updated.len() * 2);
+    let mut key_gens: Vec<(ModuleIdx, u64)> = Vec::with_capacity(modules_to_be_updated.len() * 2);
     for &idx in &modules_to_be_updated {
       key_gens.push((idx, self.cache.module_scan_generation(idx)));
       if let Some(normal) = self.module_table().modules[idx].as_normal() {
@@ -1596,7 +1594,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
             // down decide (`LinkedSideEffects`).
             let generation = self.cache.module_scan_generation(dep_idx);
             let dropped = u64::from(dropped.contains(&(idx, rec_idx)));
-            key_gens.push((dep_idx, generation << 1 | dropped));
+            key_gens.push((dep_idx, (generation << 1) | dropped));
           }
         }
       }
@@ -1699,10 +1697,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       source_joiner.append_source_dyn(source);
     }
 
-    // In native module HMR (`_client_id == "native"`), lazy chunks are registrations only —
+    // In native module HMR (`client_id == "native"`), lazy chunks are registrations only —
     // `requestLazy` runs the module on demand. For standard Rolldown lazy compilation, the
     // proxy chunk executes `initModule` at the end.
-    if _client_id != "native" {
+    if client_id != "native" {
       let entry_stable_id = self.module_table().modules[entry_module_idx].stable_id().as_str();
       source_joiner.append_source(format!(
         "__rolldown_runtime__.initModule({})",
@@ -1757,13 +1755,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       );
     }
     self.cache.commonjs_reads.extend(commonjs_reads);
-    Ok(HmrLazyChunkOutput {
-      code,
-      filename,
-      sourcemap_filename,
-      sourcemap,
-      carried,
-    })
+    Ok(HmrLazyChunkOutput { code, filename, sourcemap_filename, sourcemap, carried })
   }
 
   async fn render_hmr_patch(
@@ -1787,11 +1779,13 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
     // The patch runtime executes synchronous factories. Do not emit an `await`
     // inside one, or report an asynchronous factory as applied before completion.
-    if carried_modules.iter().any(|idx| {
-      self.module_table().modules[*idx].as_normal().is_some_and(|module| {
-        module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+    if crate::utils::native_records::runtime_module_semantics_enabled(&self.options)
+      && carried_modules.iter().any(|idx| {
+        self.module_table().modules[*idx].as_normal().is_some_and(|module| {
+          module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+        })
       })
-    }) {
+    {
       return Ok(HmrUpdate::FullReload {
         reason:
           "top-level await requires a full reload; asynchronous patch factories are unsupported"
@@ -1817,8 +1811,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         };
 
         debug_assert_eq!(affected_module_idx, affected_module.idx);
-        let stamp = stamp_table
-          .render_time_stamp(affected_module.stable_id.as_str());
+        let stamp = stamp_table.render_time_stamp(affected_module.stable_id.as_str());
         if index == 0
           && stamp == 0
           && sourcemap_disabled
@@ -1972,7 +1965,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
   /// (#640), and the scan's for any other module, or for a lazy export, whose form the link
   /// stage writes.
   fn rendered_exports_kind(&self, module: &rolldown_common::NormalModule) -> ExportsKind {
-    if module.exports_kind == ExportsKind::None && !module.meta.has_lazy_export() {
+    if crate::utils::native_records::runtime_module_semantics_enabled(&self.options)
+      && module.exports_kind == ExportsKind::None
+      && !module.meta.has_lazy_export()
+    {
       self.linked_exports_kind(module).unwrap_or(ExportsKind::None)
     } else {
       module.exports_kind
@@ -1982,6 +1978,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
   /// The modules that `module` imports that its scan found no ES or CommonJS syntax in and that
   /// the link makes CommonJS (#640), which the page's records bind through their interop.
   fn linked_commonjs(&self, module: &rolldown_common::NormalModule) -> FxHashSet<ModuleIdx> {
+    if !crate::utils::native_records::runtime_module_semantics_enabled(&self.options) {
+      return FxHashSet::default();
+    }
     let modules = &self.module_table().modules;
     module
       .import_records
@@ -2119,11 +2118,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           .unwrap_or_default()
       });
       (!now.contains(&(importee, converted))).then(|| {
-        modules
-          .get(importee)
-          .map_or_else(|| ArcStr::from("an unknown module"), |module| {
-            module.stable_id().as_arc_str().clone()
-          })
+        modules.get(importee).map_or_else(
+          || ArcStr::from("an unknown module"),
+          |module| module.stable_id().as_arc_str().clone(),
+        )
       })
     })
   }
@@ -2176,8 +2174,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         };
         // JSON's and text's loader-owned classification markers are no executable dependency
         // (`collect_sync_dependencies_for_client`).
-        if matches!(record.module_request.as_str(), "\0rolldown/json-module" | "\0rolldown/text-module")
-          && modules[target].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
+        if matches!(
+          record.module_request.as_str(),
+          "\0rolldown/json-module" | "\0rolldown/text-module"
+        ) && modules[target].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
         {
           continue;
         }
@@ -2297,9 +2297,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       });
 
     ast.program.with_mut(|fields| {
-      if module.module_type == rolldown_common::ModuleType::Json
-        && module.meta.has_lazy_export()
-      {
+      if module.module_type == rolldown_common::ModuleType::Json && module.meta.has_lazy_export() {
         use oxc::allocator::ReplaceWith;
         use rolldown_ecmascript_utils::StatementFactoryExt as _;
 
@@ -2335,6 +2333,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         exports: oxc::allocator::Vec::new_in(&fields.allocator),
         use_pife_for_module_wrappers,
         context: self.options.context.as_str(),
+        runtime_module_semantics: crate::utils::native_records::runtime_module_semantics_enabled(
+          &self.options,
+        ),
         dependencies: FxIndexSet::default(),
         generated_load_exports_stmts: FxHashMap::default(),
         generated_static_import_infos: FxHashMap::default(),
@@ -2504,11 +2505,7 @@ enum LinkedKinds<'a> {
 
 impl LinkedKinds<'_> {
   /// The kind that the link gives `module`, by its importers that `reach` accepts.
-  fn of(
-    self,
-    module: &rolldown_common::NormalModule,
-    reach: Reach<'_>,
-  ) -> ExportsKind {
+  fn of(self, module: &rolldown_common::NormalModule, reach: Reach<'_>) -> ExportsKind {
     if module.exports_kind != ExportsKind::None {
       return module.exports_kind;
     }
@@ -2831,8 +2828,10 @@ impl<Fs: FileSystem + Clone + 'static> HmrStage<'_, Fs> {
 
         for dep_idx in dependencies {
           // JSON's loader-owned classification marker is not an executable dependency.
-          if matches!(rec.module_request.as_str(), "\0rolldown/json-module" | "\0rolldown/text-module")
-            && modules[dep_idx].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
+          if matches!(
+            rec.module_request.as_str(),
+            "\0rolldown/json-module" | "\0rolldown/text-module"
+          ) && modules[dep_idx].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
           {
             continue;
           }

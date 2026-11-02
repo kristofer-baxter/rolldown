@@ -60,7 +60,7 @@ fn wrap_module_recursively(ctx: &mut Context, target: ModuleIdx) {
 /// the order of the modules, which a module HMR session's table keeps from earlier scans while a
 /// fresh scan numbers the modules as their loads finish (#731). The HMR stage asks this with the
 /// kinds that the link gives the scan's modules, and so gets the link's answer (#697).
-pub(crate) fn dynamic_exports(
+pub fn dynamic_exports(
   modules: &IndexModules,
   is_commonjs: impl Fn(&NormalModule) -> bool,
   starts: impl Fn(ModuleIdx) -> bool,
@@ -207,12 +207,12 @@ impl LinkStage<'_> {
 }
 
 /// The name of a CommonJS module's `require_*` wrapper.
-pub(crate) fn cjs_wrapper_name(module: &NormalModule) -> String {
+pub fn cjs_wrapper_name(module: &NormalModule) -> String {
   format!("require_{}", module.repr_name)
 }
 
 /// The statement that declares a CommonJS module's `require_*` wrapper, `wrapper_ref`.
-pub(crate) fn cjs_wrapper_stmt_info(
+pub fn cjs_wrapper_stmt_info(
   wrapper_ref: SymbolRef,
   runtime: &RuntimeModuleBrief,
   options: &NormalizedBundlerOptions,

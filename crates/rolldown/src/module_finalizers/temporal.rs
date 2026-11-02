@@ -15,10 +15,16 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
     &self,
     binding: SymbolRef,
   ) -> Option<ast::SimpleAssignmentTarget<'ast>> {
+    if !crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+      return None;
+    }
     self.ctx.module.named_imports.get(&binding)?;
     let read = ast::ExpressionStatement::new(
-      SPAN, self.finalized_expr_for_symbol_ref(binding, false, false).0, self,
-    ).to_source_string();
+      SPAN,
+      self.finalized_expr_for_symbol_ref(binding, false, false).0,
+      self,
+    )
+    .to_source_string();
     let read = read.trim().trim_end_matches(';');
     // A setter preserves RHS evaluation, compound reads, updates and destructuring order.
     // A local constant gives the intrinsic TypeError even if the source shadows TypeError.
@@ -44,10 +50,7 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
     }
     impl<'ast> VisitJsMut<'ast> for ClassReferences<'_, 'ast> {
       fn visit_identifier_reference(&mut self, reference: &mut ast::IdentifierReference<'ast>) {
-        if reference
-          .reference_id
-          .get()
-          .and_then(|id| self.scope.symbol_id_for(id))
+        if reference.reference_id.get().and_then(|id| self.scope.symbol_id_for(id))
           == Some(self.symbol)
         {
           reference.name = self.name.into();
@@ -176,9 +179,7 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
     };
     let expression = parse_injected_expression(self.allocator(), &expression)
       .expect("generated lexical assignment target");
-    Some(ast::SimpleAssignmentTarget::from(
-      expression.into_member_expression(),
-    ))
+    Some(ast::SimpleAssignmentTarget::from(expression.into_member_expression()))
   }
 
   pub(super) fn mark_destructured_initialization(&self, target: &mut ast::AssignmentTarget<'ast>) {

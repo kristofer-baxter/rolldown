@@ -19,26 +19,6 @@ pub fn preserve_temporal_reads<'ast>(
   scoping: &Scoping,
   allocator: &'ast Allocator,
 ) -> bool {
-  let mut symbols: FxHashSet<_> = scoping
-    .symbol_ids()
-    .filter(|&symbol| {
-      scoping.symbol_scope_id(symbol) == scoping.root_scope_id()
-        && scoping
-          .symbol_flags(symbol)
-          .intersects(SymbolFlags::BlockScopedVariable | SymbolFlags::Class | SymbolFlags::Import)
-    })
-    .collect();
-  for statement in &program.body {
-    if let Statement::ImportDeclaration(import) = statement
-      && let Some(specifiers) = &import.specifiers
-    {
-      for specifier in specifiers {
-        if let ast::ImportDeclarationSpecifier::ImportNamespaceSpecifier(namespace) = specifier {
-          symbols.remove(&namespace.local.symbol_id());
-        }
-      }
-    }
-  }
   struct Preserve<'a, 'ast> {
     scoping: &'a Scoping,
     symbols: FxHashSet<oxc::semantic::SymbolId>,
@@ -73,12 +53,28 @@ pub fn preserve_temporal_reads<'ast>(
       self.changed = true;
     }
   }
-  let mut preserve = Preserve {
-    scoping,
-    symbols,
-    builder: AstBuilder::new(allocator),
-    changed: false,
-  };
+  let mut symbols: FxHashSet<_> = scoping
+    .symbol_ids()
+    .filter(|&symbol| {
+      scoping.symbol_scope_id(symbol) == scoping.root_scope_id()
+        && scoping
+          .symbol_flags(symbol)
+          .intersects(SymbolFlags::BlockScopedVariable | SymbolFlags::Class | SymbolFlags::Import)
+    })
+    .collect();
+  for statement in &program.body {
+    if let Statement::ImportDeclaration(import) = statement
+      && let Some(specifiers) = &import.specifiers
+    {
+      for specifier in specifiers {
+        if let ast::ImportDeclarationSpecifier::ImportNamespaceSpecifier(namespace) = specifier {
+          symbols.remove(&namespace.local.symbol_id());
+        }
+      }
+    }
+  }
+  let mut preserve =
+    Preserve { scoping, symbols, builder: AstBuilder::new(allocator), changed: false };
   preserve.visit_program(program);
   preserve.changed
 }
@@ -87,10 +83,6 @@ pub fn unwrap_temporal_read(expression: &mut Expression<'_>) {
   if let Expression::CallExpression(call) = expression
     && matches!(&call.callee, Expression::Identifier(identifier) if identifier.name == TEMPORAL_READ)
   {
-    *expression = call
-      .arguments
-      .pop()
-      .expect("temporal read argument")
-      .into_expression();
+    *expression = call.arguments.pop().expect("temporal read argument").into_expression();
   }
 }
