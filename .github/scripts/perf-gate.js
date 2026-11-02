@@ -304,7 +304,12 @@ function runUnitAndSourcemapTests(opts, failures, summaryLines) {
   }
 }
 
-const EXPECTED_BENCH_WORKLOADS = ["bundle_eager_120", "bundle_strict_lazy_barrel_120"];
+const EXPECTED_BENCH_WORKLOADS = [
+  "bundle_eager_120",
+  "bundle_strict_lazy_barrel_120",
+  "bundle_chunked_incremental_edit_120",
+  "bundle_preserve_incremental_edit_120",
+];
 
 function runBenchmarks(opts, failures, summaryLines) {
   if (!opts.runBench) {
