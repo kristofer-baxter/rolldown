@@ -26,16 +26,22 @@ fn generate_fixture_dir(tag: &str, with_dynamic_imports: bool) -> TempFixture {
   let mut barrel = String::new();
   let mut entry = String::from("import { m0, m1, m2, m3, m4 } from './barrel.js';\n");
   for i in 0..120 {
+    let mut helpers = String::new();
+    for h in 0..24 {
+      helpers.push_str(&format!(
+        "function helper_{i}_{h}(x) {{ const a = x + {h}; const b = a * 2; return b - {i}; }}\n"
+      ));
+    }
     if i == 0 {
       fs::write(
         root.join("mod_0.js"),
-        "export const m0 = () => 1;\nexport const unused_0 = () => 0;\n",
+        format!("{helpers}export function m0() {{ return helper_0_0(1) + helper_0_23(2); }}\nexport function unused_0() {{ return 0; }}\n"),
       )
       .expect("write mod_0");
     } else {
       let prev = i - 1;
       let full = format!(
-        "import {{ m{prev} }} from './mod_{prev}.js';\nexport const m{i} = () => {i} + m{prev}();\nexport const unused_{i} = () => {i} * 10;\n"
+        "import {{ m{prev} }} from './mod_{prev}.js';\n{helpers}export function m{i}() {{ return helper_{i}_0({i}) + helper_{i}_23(1) + m{prev}(); }}\nexport function unused_{i}() {{ return {i} * 10; }}\n"
       );
       fs::write(root.join(format!("mod_{i}.js")), full).expect("write chained mod");
     }
@@ -197,8 +203,14 @@ async fn bench_incremental_chunked(name: &str, rounds: usize) -> (u128, usize) {
   let mut best_ns = u128::MAX;
 
   for round in 0..rounds {
+    let mut helpers = String::new();
+    for h in 0..24 {
+      helpers.push_str(&format!(
+        "function helper_3_{h}(x) {{ const a = x + {h}; const b = a * 2; return b - 3; }}\n"
+      ));
+    }
     let updated = format!(
-      "import {{ m2 }} from './mod_2.js';\nexport const m3 = () => {} + m2();\nexport const unused_3 = () => 30;\n",
+      "import {{ m2 }} from './mod_2.js';\n{helpers}export function m3() {{ return helper_3_0({}) + helper_3_23(1) + m2(); }}\nexport function unused_3() {{ return 30; }}\n",
       3 + round + 1
     );
     fs::write(&target_path, updated).expect("write updated mod_3");
