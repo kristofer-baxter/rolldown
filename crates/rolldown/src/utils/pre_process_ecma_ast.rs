@@ -72,28 +72,26 @@ impl PreProcessEcmaAst {
         .build(&dep.program)
     });
 
-    let (errors, warnings): (Vec<_>, Vec<_>) = semantic_ret
-      .diagnostics
-      .into_iter()
-      .partition(|w| w.severity == OxcSeverity::Error);
-
-    let mut warnings = if errors.is_empty() {
-      BuildDiagnostic::from_oxc_diagnostics(
-        warnings,
-        &source,
-        resolved_id,
-        Severity::Warning,
-        EventKind::ParseError,
-      )
-    } else {
-      return Err(BuildDiagnostic::from_oxc_diagnostics(
-        errors,
-        &source,
-        resolved_id,
-        Severity::Error,
-        EventKind::ParseError,
-      ))?;
-    };
+    let diagnostics = semantic_ret.diagnostics;
+    if diagnostics.has_errors() {
+      return Err(
+        BuildDiagnostic::from_oxc_diagnostics(
+          diagnostics.into_iter().filter(|d| d.severity == OxcSeverity::Error),
+          &source,
+          resolved_id,
+          Severity::Error,
+          EventKind::ParseError,
+        )
+        .into(),
+      );
+    }
+    let mut warnings = BuildDiagnostic::from_oxc_diagnostics(
+      diagnostics,
+      &source,
+      resolved_id,
+      Severity::Warning,
+      EventKind::ParseError,
+    );
     // Surface invalid annotations flagged by oxc (issue #8898).
     // oxc marks misplaced `PURE` and `NO_SIDE_EFFECTS` comments with their
     // respective `NotApplied` variants when the parser cannot apply them.
@@ -231,23 +229,18 @@ impl PreProcessEcmaAst {
           let ret = Transformer::new(allocator, Path::new(stable_id), &transform_options)
             .build_with_scoping(scoping, program);
 
-          let (errors, transformer_warnings): (Vec<_>, Vec<_>) = ret
-            .diagnostics
-            .into_iter()
-            .partition(|error| error.severity == OxcSeverity::Error);
-          if !errors.is_empty() {
-            return Err(BatchedBuildDiagnostic::from(
-              BuildDiagnostic::from_oxc_diagnostics(
-                errors,
-                &source,
-                resolved_id,
-                Severity::Error,
-                EventKind::TransformError,
-              ),
-            ));
+          let diagnostics = ret.diagnostics;
+          if diagnostics.has_errors() {
+            return Err(BatchedBuildDiagnostic::from(BuildDiagnostic::from_oxc_diagnostics(
+              diagnostics.into_iter().filter(|d| d.severity == OxcSeverity::Error),
+              &source,
+              resolved_id,
+              Severity::Error,
+              EventKind::TransformError,
+            )));
           }
           warnings.extend(BuildDiagnostic::from_oxc_diagnostics(
-            transformer_warnings,
+            diagnostics,
             &source,
             resolved_id,
             Severity::Warning,

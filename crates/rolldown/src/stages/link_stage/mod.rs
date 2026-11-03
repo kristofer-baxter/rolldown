@@ -434,21 +434,6 @@ impl<'a> LinkStage<'a> {
     }
   }
 
-  /// An `import()` resolves its promise with the module's namespace, which reads the namespace's
-  /// `then` and calls it with the namespace as `this`. A module that exports `then` therefore keeps
-  /// its whole namespace for its dynamic importers, whatever names they read (#664), unless its
-  /// `then` is a module namespace (`exports_namespace_as_then`).
-  fn keep_thenable_namespaces(&mut self) {
-    for (idx, usage) in &mut self.dynamic_import_exports_usage_map {
-      if !matches!(usage, DynamicImportExportsUsage::Complete)
-        && self.metas[*idx].sorted_and_non_ambiguous_resolved_exports.contains_key("then")
-        && !self.module_table[*idx].as_normal().is_some_and(exports_namespace_as_then)
-      {
-        *usage = DynamicImportExportsUsage::Complete;
-      }
-    }
-  }
-
   #[tracing::instrument(level = "debug", skip_all)]
   pub fn link(mut self) -> (LinkStageOutput, IndexEcmaAst, UsedSymbolRefsBuilder) {
     self.exclude_unreachable_modules();
@@ -461,7 +446,6 @@ impl<'a> LinkStage<'a> {
     self.generate_lazy_export();
     self.determine_side_effects();
     self.bind_imports_and_exports();
-    self.keep_thenable_namespaces();
     self.create_exports_for_ecma_modules();
     self.preserve_temporal_bindings();
     self.reference_async_evaluation_helpers();
