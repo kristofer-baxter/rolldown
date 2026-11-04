@@ -771,4 +771,59 @@ mod tests {
       "expected 'foo' in ns to fold to true in ordinary mode:\n{inc_leaf}"
     );
   }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn computed_import_survives_throwing_global_url_getter() {
+    let dir = TempTestDir::new("computed-import-throwing-url-getter");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(
+      dir.path().join("main.js"),
+      r#"import assert from 'node:assert';
+const computedImport = (s, o, c, b) => require("\0rolldown/computed-import")(s, o, c, b);
+const origDesc = Object.getOwnPropertyDescriptor(globalThis, 'URL');
+Object.defineProperty(globalThis, 'URL', {
+  configurable: true,
+  get() {
+    throw new Error('unexpected globalThis.URL getter access');
+  },
+});
+try {
+  const candidates = [
+    ['./exact.js', async () => ({ matched: 'exact' }), false],
+    ['./rel.js', async () => ({ matched: 'rel' }), false],
+  ];
+  const base = () => 'file:///app/index.js';
+  const exact = await computedImport('./exact.js', undefined, candidates, base);
+  assert.strictEqual(exact.matched, 'exact');
+  const rel = await computedImport('./sub/../rel.js', undefined, candidates, base);
+  assert.strictEqual(rel.matched, 'rel');
+  let rejected = false;
+  await computedImport('./missing.js', undefined, candidates, base).catch((err) => {
+    rejected = err instanceof TypeError;
+  });
+  assert.strictEqual(rejected, true);
+} finally {
+  if (origDesc) Object.defineProperty(globalThis, 'URL', origDesc);
+}
+"#,
+    )
+    .expect("write main.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(status.success(), "expected __computedImport to survive throwing globalThis.URL getter");
+  }
 }

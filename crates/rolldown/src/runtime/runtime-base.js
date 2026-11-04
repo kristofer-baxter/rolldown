@@ -143,8 +143,7 @@ export var __importNamespace = async (initialize, namespace) => {
   await initialize();
   return namespace;
 };
-export var __computedImport = (specifier, options, candidates, base) => {
-  var __moduleURL = globalThis.URL;
+export var __computedImport = /* @__PURE__ */ ((__moduleURL = globalThis.URL) => (specifier, options, candidates, base) => {
   try {
     // ToString follows both authored arguments, but precedes attribute processing.
     specifier = `${specifier}`;
@@ -168,7 +167,7 @@ export var __computedImport = (specifier, options, candidates, base) => {
   } catch (error) {
     return (async () => { throw error; })();
   }
-};
+})();
 var __readImportAttributes = options => {
     var entries = [];
     if (options !== void 0) {
