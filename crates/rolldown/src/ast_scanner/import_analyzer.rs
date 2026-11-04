@@ -100,7 +100,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   }
 
   pub fn get_span_if_namespace_specifier_updated(&self) -> Option<(Span, JSStr<'ast>)> {
-    let ancestor_cursor = self.visit_path.len() - 1;
+    let ancestor_cursor = self.visit_path.len().checked_sub(1)?;
     let parent_node = self.visit_path.get(ancestor_cursor)?;
     if let Some(member_expr_kind) = parent_node.as_member_expression_kind() {
       if self.member_expr_write_kind(ancestor_cursor).is_some() {
