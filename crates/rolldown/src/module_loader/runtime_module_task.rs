@@ -148,10 +148,12 @@ const RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS: &str = "export var __exportA
   if (!fixed) __starNamespaces.set(namespace, [all, target]);
   return namespace;
 };
-export var __copyProps = (to, from, except, desc) => {
+export var __copyProps = (to, from, except, desc, own) => {
   if ((from && typeof from === 'object') || typeof from === 'function') {
     let star = __starNamespaces.get(to);
-    for (var keys = __getOwnPropNames(from), i = 0, n = keys.length, key; i < n; i++) {
+    var keys = __getOwnPropNames(from), i = 0, n = keys.length, key;
+    if (own) for (; i < n; i++) own.add(keys[i]);
+    for (i = 0; i < n; i++) {
       key = keys[i];
       if (key === except) continue;
       if (star) {
@@ -176,10 +178,11 @@ export var __toESM = (mod, isNodeMode, key, target) => {
   let modes = key && __dynamicNamespaces.get(key);
   let mode = isNodeMode ? 1 : 0;
   if (modes && modes.has(mode)) return modes.get(mode);
+  let ownWhenCreated;
   if (mod != null && (typeof mod == 'object' || typeof mod == 'function')) {
     let proto = __getProtoOf(mod);
     let hide = !__hasOwnProp.call(mod, 'then') && !(proto != null && 'then' in proto);
-    let ownWhenCreated = new Set(__getOwnPropNames(mod));
+    ownWhenCreated = new Set();
     target = __create(
       new Proxy(__create(proto), {
         get: (_, name) =>
@@ -213,6 +216,9 @@ export var __toESM = (mod, isNodeMode, key, target) => {
       ? __defProp(target, 'default', { value: mod, enumerable: true })
       : target,
     mod,
+    void 0,
+    void 0,
+    ownWhenCreated,
   );
   if (key) {
     if (!modes) __dynamicNamespaces.set(key, modes = new Map());

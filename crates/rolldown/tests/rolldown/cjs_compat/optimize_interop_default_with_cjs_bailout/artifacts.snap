@@ -14,16 +14,49 @@ var json_default;
 var init_json = __esmMin((() => {
 	json_default = JSON.parse("[1, 2, 3]");
 }));
-// main.js
-var import_commonjs = /* @__PURE__ */ __toESM((/* @__PURE__ */ __commonJSMin(((exports, module, this$1) => {
+// commonjs.js
+var require_commonjs = /* @__PURE__ */ __commonJSMin(((exports, module, this$1) => {
 	var __importDefault = this$1 && this$1.__importDefault || function(mod) {
 		return mod && mod.__esModule ? mod : { default: mod };
 	};
 	Object.defineProperty(exports, "__esModule", { value: true });
 	exports.default = __importDefault((init_json(), __toCommonJS(json_exports))).default;
 	exports.foo = 1;
-})))());
+}));
+// dep.cjs
+var require_dep = /* @__PURE__ */ __commonJSMin(((exports) => {
+	exports.__esModule = true;
+	exports.default = { foo: 2 };
+	exports.foo = 1;
+}));
+// proxy-dep.cjs
+var require_proxy_dep = /* @__PURE__ */ __commonJSMin(((exports, module) => {
+	let ownKeysCalls = 0;
+	const target = {
+		a: 10,
+		mutate() {
+			target.later = 20;
+		}
+	};
+	module.exports = new Proxy(target, { ownKeys(t) {
+		ownKeysCalls++;
+		if (ownKeysCalls > 1) throw new Error("ownKeys called more than once");
+		return Reflect.ownKeys(t);
+	} });
+}));
+// main.js
+var import_commonjs = /* @__PURE__ */ __toESM(require_commonjs());
+var import_dep = /* @__PURE__ */ __toESM(require_dep());
+var import_proxy_dep = /* @__PURE__ */ __toESM(require_proxy_dep());
 assert.deepEqual(import_commonjs.default.slice(1), [2, 3], "should import JSON file as expected");
-assert.equal(import_commonjs.foo, 1);
+assert.equal(import_commonjs.default.foo, void 0);
+assert.equal(import_dep.default.foo, 2);
+assert.equal(import_dep.default.foo, 2);
+assert.equal(1, 1);
+assert.equal(import_proxy_dep.a, 10);
+assert.equal(import_proxy_dep.later, void 0);
+import_proxy_dep.mutate();
+assert.equal(import_proxy_dep.later, void 0);
+assert.equal(import_proxy_dep.default.later, 20);
 
 ```

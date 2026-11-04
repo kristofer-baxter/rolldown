@@ -441,6 +441,15 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       self.result.ast_usage.insert(EcmaModuleAstUsage::ModuleRef);
     }
 
+    if self.cjs_named_exports_usage.get("__esModule").is_some_and(|u| u.write > 0) {
+      self.result.ast_usage.insert(EcmaModuleAstUsage::EsModuleFlag);
+    }
+    if self.cjs_named_exports_usage.get("default").is_some_and(|u| u.write > 0)
+      && !self.result.commonjs_exports.contains_key("default")
+    {
+      self.result.ast_usage.remove(EcmaModuleAstUsage::AllStaticExportPropertyAccess);
+    }
+
     // Reassigning `exports` or `module.exports` breaks their aliasing, so values
     // assigned to `exports.xxx` cannot be assumed to be exported constants.
     // So does an exports object that escapes, or that a direct `eval` or `with` can reach, and a

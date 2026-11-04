@@ -35,8 +35,8 @@ use super::scan_stage::NormalizedScanStageOutput;
 
 mod bind_imports_and_exports;
 pub use bind_imports_and_exports::{
-  appended_module_exports, bind_appended_module_imports, commonjs_exports_public,
-  inlined_commonjs_constants, split_json_defaults,
+  appended_module_exports, bind_appended_module_imports, cjs_default_is_module_exports,
+  commonjs_exports_public, inlined_commonjs_constants, split_json_defaults,
 };
 mod compute_tla;
 mod create_exports_for_ecma_modules;

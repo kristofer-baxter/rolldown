@@ -137,9 +137,6 @@ pub fn is_empty_import_options(expr: &ast::Expression<'_>) -> bool {
   let Expression::ObjectExpression(obj) = expr.without_parentheses() else {
     return false;
   };
-  if obj.properties.is_empty() {
-    return true;
-  }
   if obj.properties.len() != 1 {
     return false;
   }
@@ -248,7 +245,7 @@ mod tests {
 
   #[test]
   fn statically_satisfied_import_options_rejects_getters_and_mismatched_types() {
-    assert!(check("({})", false, false));
+    assert!(!check("({})", false, false));
     assert!(check("({ with: {} })", false, false));
     assert!(check("({ with: { type: 'json' } })", true, false));
     assert!(!check("({ with: { type: 'json' } })", false, false));

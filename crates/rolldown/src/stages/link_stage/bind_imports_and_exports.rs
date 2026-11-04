@@ -1141,8 +1141,6 @@ impl LinkStage<'_> {
                     };
                   // corresponding to cases in:
                   // https://github.com/rolldown/rolldown/blob/30a5a2fc8fa6785821153922e21dc0273cc00c7a/crates/rolldown/tests/rolldown/tree_shaking/commonjs/main.js?plain=1#L3-L10
-                  let runtime_semantics =
-                    crate::utils::native_records::runtime_module_semantics_enabled(self.options);
                   let owner_meta = &self.metas[maybe_namespace.owner];
                   let import_namespace =
                     owner_meta.import_record_ns_to_cjs_module.get(&maybe_namespace).copied();
@@ -1157,10 +1155,9 @@ impl LinkStage<'_> {
                         .or(import_namespace)
                         .or_else(|| {
                           (owner_meta.has_dynamic_exports
-                            && (!runtime_semantics
-                              || self.module_table[maybe_namespace.owner].as_normal().is_some_and(
-                                |owner| owner.namespace_object_ref == maybe_namespace,
-                              )))
+                            && self.module_table[maybe_namespace.owner]
+                              .as_normal()
+                              .is_some_and(|owner| owner.namespace_object_ref == maybe_namespace))
                           .then_some(maybe_namespace.owner)
                         })
                     })
@@ -1178,18 +1175,25 @@ impl LinkStage<'_> {
                       .is_some_and(NormalModule::should_consider_node_esm_spec_for_static_import)
                   };
                   let is_default = member_expr_ref.prop_and_span_list[cursor].name == "default";
-                  let resolvable = if runtime_semantics {
-                    match &maybe_namespace_symbol.namespace_alias {
-                      Some(alias) => !is_default && node_mode(alias.namespace_ref),
-                      None => {
-                        !is_default || (import_namespace.is_some() && node_mode(maybe_namespace))
-                      }
-                    }
-                  } else {
-                    true
+                  let default_is_exports = |namespace: SymbolRef, cjs_idx: ModuleIdx| {
+                    node_mode(namespace)
+                      || cjs_default_is_module_exports(
+                        &self.module_table.modules,
+                        &self.metas,
+                        cjs_idx,
+                      )
                   };
                   if let Some(cjs_idx) = cjs_module_idx
-                    && resolvable
+                    && match &maybe_namespace_symbol.namespace_alias {
+                      Some(alias) => {
+                        !is_default && default_is_exports(alias.namespace_ref, cjs_idx)
+                      }
+                      None => {
+                        !is_default
+                          || (import_namespace.is_some()
+                            && default_is_exports(maybe_namespace, cjs_idx))
+                      }
+                    }
                     && let Some(m) = self.metas[cjs_idx]
                       .resolved_exports
                       .get(&member_expr_ref.prop_and_span_list[cursor].name)
@@ -1197,20 +1201,9 @@ impl LinkStage<'_> {
                         resolved_export.came_from_commonjs.then_some(resolved_export)
                       })
                   {
-                    let default_is_module_exports = if runtime_semantics {
-                      // Only a namespace's `default` that is the exports object gets here, whose
-                      // next property linking resolves as an export of the exports object.
-                      is_default
-                    } else {
-                      is_default && {
-                        let is_node_esm = module.should_consider_node_esm_spec_for_static_import();
-                        let importee_has_es_module_flag =
-                          self.module_table[cjs_idx].as_normal().is_some_and(|importee| {
-                            importee.ecma_view.ast_usage.contains(EcmaModuleAstUsage::EsModuleFlag)
-                          });
-                        is_node_esm || !importee_has_es_module_flag
-                      }
-                    };
+                    // Only a namespace's `default` that is the exports object gets here, whose
+                    // next property linking resolves as an export of the exports object.
+                    let default_is_module_exports = is_default;
                     // If the current property is `default` and it represents the whole `module.exports`,
                     // try to resolve the next property as a CJS export.
                     if default_is_module_exports
@@ -1342,8 +1335,7 @@ impl LinkStage<'_> {
         continue;
       }
       // Code that linking never sees may change the exports object of a public module.
-      if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-        && commonjs_exports_public(self.options, &self.user_defined_entry_modules, idx)
+      if commonjs_exports_public(self.options, &self.user_defined_entry_modules, idx)
         && self.module_table[idx]
           .as_normal()
           .is_some_and(|module| module.exports_kind.is_commonjs())
@@ -1539,6 +1531,53 @@ impl LinkStage<'_> {
       });
     is_json_default.then_some(canonical_ref)
   }
+}
+
+pub fn cjs_default_is_module_exports(
+  modules: &IndexModules,
+  metas: &LinkingMetadataVec,
+  cjs_idx: ModuleIdx,
+) -> bool {
+  let mut visited = FxHashSet::default();
+  let mut stack = vec![cjs_idx];
+  while let Some(idx) = stack.pop() {
+    if !visited.insert(idx) {
+      continue;
+    }
+    let Some(importee) = modules[idx].as_normal() else {
+      return false;
+    };
+    if importee.ecma_view.meta.has_eval()
+      || importee.ecma_view.cjs_this_ref.is_some()
+      || ((importee.ecma_view.ast_usage.contains(EcmaModuleAstUsage::EsModuleFlag)
+        || metas[idx].resolved_exports.contains_key("__esModule"))
+        && metas[idx].resolved_exports.contains_key("default"))
+    {
+      return false;
+    }
+    if importee.ecma_view.ast_usage.contains(EcmaModuleAstUsage::IsCjsReexport) {
+      if importee.ecma_view.cjs_reexport_import_record_ids.is_empty()
+        || !importee.ecma_view.named_exports.is_empty()
+        || importee
+          .ecma_view
+          .ast_usage
+          .intersects(EcmaModuleAstUsage::ExportsRef | EcmaModuleAstUsage::UnknownExportsRead)
+      {
+        return false;
+      }
+      for &rec_idx in &importee.ecma_view.cjs_reexport_import_record_ids {
+        let Some(target_idx) = importee.import_records[rec_idx].resolved_module else {
+          return false;
+        };
+        stack.push(target_idx);
+      }
+      continue;
+    }
+    if !importee.ecma_view.meta.contains(rolldown_common::EcmaViewMeta::SafelyTreeshakeCommonjs) {
+      return false;
+    }
+  }
+  true
 }
 
 struct BindImportsAndExportsContext<'a> {

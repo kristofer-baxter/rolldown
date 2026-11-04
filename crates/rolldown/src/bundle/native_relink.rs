@@ -3146,12 +3146,22 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
                 )
             };
             let is_default = member_expr_ref.prop_and_span_list[cursor].name == "default";
-            let resolvable = match maybe_ns_alias {
-              Some(alias) => !is_default && node_mode(alias.namespace_ref),
-              None => !is_default || (import_namespace.is_some() && node_mode(maybe_namespace)),
+            let default_is_exports = |namespace: SymbolRef, cjs_idx: ModuleIdx| {
+              node_mode(namespace)
+                || crate::stages::link_stage::cjs_default_is_module_exports(
+                  &cached.link_output.module_table.modules,
+                  &cached.link_output.metas,
+                  cjs_idx,
+                )
             };
             if let Some(cjs_idx) = cjs_module_idx
-              && resolvable
+              && match maybe_ns_alias {
+                Some(alias) => !is_default && default_is_exports(alias.namespace_ref, cjs_idx),
+                None => {
+                  !is_default
+                    || (import_namespace.is_some() && default_is_exports(maybe_namespace, cjs_idx))
+                }
+              }
               && let Some(m) = cached.link_output.metas[cjs_idx]
                 .resolved_exports
                 .get(&member_expr_ref.prop_and_span_list[cursor].name)
