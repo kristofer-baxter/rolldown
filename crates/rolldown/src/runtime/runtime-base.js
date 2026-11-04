@@ -228,8 +228,8 @@ export var __startAsync = (pending, result) => {
     pending.push(result);
   }
 };
-export var __finishAsync = (pending, execute) =>
-  pending.length ? Promise.all(pending).then(execute) : execute();
+export var __finishAsync = /* @__PURE__ */ ((__Promise = Promise) => (pending, execute) =>
+  pending.length ? __Promise.all(pending).then(execute) : execute())();
 var __asyncModules = [];
 export var __esmAsync = (fn, state = {}) => () => {
   let root = state;

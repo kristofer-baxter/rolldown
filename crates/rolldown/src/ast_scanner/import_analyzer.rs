@@ -103,7 +103,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     let ancestor_cursor = self.visit_path.len().checked_sub(1)?;
     let parent_node = self.visit_path.get(ancestor_cursor)?;
     if let Some(member_expr_kind) = parent_node.as_member_expression_kind() {
-      if self.member_expr_write_kind(ancestor_cursor).is_some() {
+      if matches!(self.member_expr_write_kind(ancestor_cursor), Some(MemberExprWriteKind::Assign)) {
         return match member_expr_kind {
           MemberExpressionKind::Computed(expr) => match &expr.expression {
             Expression::StringLiteral(lit) => Some((lit.span, lit.value)),

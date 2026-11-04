@@ -362,10 +362,7 @@ mod tests {
       .arg(out_dir.join("main.js"))
       .status()
       .expect("execute node");
-    assert!(
-      status.success(),
-      "expected node execution of preserved cyclic default export to pass"
-    );
+    assert!(status.success(), "expected node execution of preserved cyclic default export to pass");
   }
 
   #[tokio::test(flavor = "multi_thread")]
@@ -424,7 +421,10 @@ mod tests {
       .arg(out_dir.join("main.js"))
       .status()
       .expect("execute node");
-    assert!(status.success(), "expected delete api.x to delete the CommonJS export in ordinary mode");
+    assert!(
+      status.success(),
+      "expected delete api.x to delete the CommonJS export in ordinary mode"
+    );
   }
 
   #[tokio::test(flavor = "multi_thread")]
@@ -458,6 +458,111 @@ mod tests {
     assert!(
       status.success(),
       "expected mutation through default re-export to prevent stale constant inlining in ordinary mode"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn allows_deleting_missing_namespace_property_in_ordinary_mode() {
+    let dir = TempTestDir::new("namespace-delete-missing");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("dep.js"), "export const present = 1;\n").expect("write dep.js");
+    std::fs::write(
+      dir.path().join("main.js"),
+      "import assert from 'node:assert';\nimport * as ns from './dep.js';\nassert.strictEqual(delete ns.missing, true);\nassert.strictEqual(ns.present, 1);\n",
+    )
+    .expect("write main.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(
+      status.success(),
+      "expected deleting missing namespace property to succeed and return true at runtime"
+    );
+
+    let err_dir = TempTestDir::new("namespace-delete-present");
+    std::fs::write(err_dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(err_dir.path().join("dep.js"), "export const present = 1;\n")
+      .expect("write dep.js");
+    std::fs::write(
+      err_dir.path().join("main.js"),
+      "import * as ns from './dep.js';\ndelete ns.present;\n",
+    )
+    .expect("write main.js");
+
+    let mut err_bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(err_dir.path().to_path_buf()),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    let Err(err) = err_bundler.generate().await else {
+      panic!("deleting an exported namespace property should fail with ASSIGN_TO_IMPORT");
+    };
+    assert!(
+      err
+        .iter()
+        .any(|diagnostic| diagnostic.to_string().contains("Cannot assign to import 'present'")),
+      "expected ASSIGN_TO_IMPORT for delete ns.present, got: {err:?}"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn finish_async_survives_global_promise_replacement() {
+    let dir = TempTestDir::new("finish-async-captured-promise");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(
+      dir.path().join("clobber.js"),
+      "globalThis.Promise = undefined;\nexport const clobbered = true;\n",
+    )
+    .expect("write clobber.js");
+    std::fs::write(dir.path().join("async-dep.js"), "await 0;\nexport const ready = 42;\n")
+      .expect("write async-dep.js");
+    std::fs::write(
+      dir.path().join("parent.js"),
+      "import { clobbered } from './clobber.js';\nimport { ready } from './async-dep.js';\nexport const value = clobbered ? ready : 0;\n",
+    )
+    .expect("write parent.js");
+    std::fs::write(
+      dir.path().join("main.js"),
+      "import assert from 'node:assert';\nconst SavedPromise = globalThis.Promise;\nconst mod = await import('./parent.js');\nglobalThis.Promise = SavedPromise;\nassert.strictEqual(mod.value, 42);\n",
+    )
+    .expect("write main.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
+      preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::Strict),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(
+      status.success(),
+      "expected __finishAsync to complete evaluation even when globalThis.Promise is replaced"
     );
   }
 }
