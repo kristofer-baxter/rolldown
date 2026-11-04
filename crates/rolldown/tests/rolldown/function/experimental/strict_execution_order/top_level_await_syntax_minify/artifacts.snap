@@ -16,5 +16,5 @@ async function e(){console.log(`foo`)}await e();
 ### main.js
 
 ```js
-var e=(e,t,n)=>()=>{if(n)throw n[0];try{return e&&(t=e(e=0)),t}catch(e){throw n=[e],e}};async function t(){console.log(`foo`)}function n(){return(n=e((async()=>{await t()})))()}await n();
+var e=Object.getOwnPropertyNames,t=/* @__PURE__ */ ((e=Promise)=>(t,n)=>t.length?e.all(t).then(n):n())(),n=[],r=(t,r={})=>()=>{let i=r;for(;i.parent;)i=i.parent;if(i.active)for(let e=n.indexOf(i)+1;e<n.length;e++)n[e].parent=i;if(r.started){if(i.error)throw i.error[0];return i.active?r.result:i.result}r.started=r.active=!0,n.push(r);try{let n=typeof t==`function`?t:t[e(t)[0]];return t=0,r.result=n()}catch(e){throw r.error=[e],e}finally{r.active=!1,n.pop()}};async function i(){console.log(`foo`)}function a(){return(a=r((()=>t([],async()=>{await i()}))))()}await a();
 ```

@@ -184,14 +184,13 @@ fn literal_const_prefix(
 
 impl LinkStage<'_> {
   pub(super) fn reference_async_evaluation_helpers(&mut self) {
-    if !crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
-      return;
-    }
     let start = self.runtime.resolve_symbol("__startAsync");
     let finish = self.runtime.resolve_symbol("__finishAsync");
     let initialize = self.runtime.resolve_symbol("__esmAsync");
     for (idx, infos) in self.stmt_infos.iter_mut_enumerated() {
-      if self.metas[idx].is_tla_or_contains_tla_dependency {
+      if self.metas[idx].is_tla_or_contains_tla_dependency
+        && matches!(self.metas[idx].wrap_kind(), rolldown_common::WrapKind::Esm)
+      {
         for info in &mut infos.infos {
           info.referenced_symbols.extend([start.into(), finish.into(), initialize.into()]);
         }

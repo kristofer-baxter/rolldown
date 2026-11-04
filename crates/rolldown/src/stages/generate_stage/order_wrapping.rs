@@ -784,16 +784,11 @@ impl GenerateStage<'_> {
 
     let mut output =
       OrderLoweringOutput { symbols: &mut self.link_output.symbol_db, state: order_state };
-    let async_helpers =
-      if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
-        Some([
-          self.link_output.runtime.resolve_symbol("__startAsync"),
-          self.link_output.runtime.resolve_symbol("__finishAsync"),
-          self.link_output.runtime.resolve_symbol("__esmAsync"),
-        ])
-      } else {
-        None
-      };
+    let async_helpers = Some([
+      self.link_output.runtime.resolve_symbol("__startAsync"),
+      self.link_output.runtime.resolve_symbol("__finishAsync"),
+      self.link_output.runtime.resolve_symbol("__esmAsync"),
+    ]);
     lower_order_state(
       &input,
       &mut output,

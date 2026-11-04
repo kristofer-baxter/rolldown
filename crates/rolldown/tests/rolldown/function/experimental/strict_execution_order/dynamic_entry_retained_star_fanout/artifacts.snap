@@ -89,14 +89,16 @@ export { __exportAll as n, __esmMin as t };
 ### main.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { i as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 // main.js
 var pageA;
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await import("./page-b.js").then((n) => (n.t(), n.n));
-		pageA = await import("./page-a.js");
-		console.log(pageA.commonA, pageA.commonB);
+	return (init_main = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			await import("./page-b.js").then((n) => (n.t(), n.n));
+			pageA = await import("./page-a.js");
+			console.log(pageA.commonA, pageA.commonB);
+		});
 	})))();
 }
 await init_main();
@@ -106,7 +108,7 @@ await init_main();
 ### page-a.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 import "./page-b.js";
 import assert from "node:assert";
 // common-a.js
@@ -146,7 +148,7 @@ export { commonA, commonB };
 ### page-b.js
 
 ```js
-import { n as __exportAll, t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
 import assert from "node:assert";
 // bridge.js
 function x() {
@@ -171,6 +173,6 @@ export { x as i, page_b_exports as n, init_bridge as r, init_page_b as t };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __exportAll as n, __esmMin as t };
+export { __startAsync as a, __finishAsync as i, __esmMin as n, __exportAll as r, __esmAsync as t };
 
 ```

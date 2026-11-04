@@ -556,13 +556,70 @@ mod tests {
     .expect("create bundler");
 
     bundler.write().await.expect("write bundle");
+    let bundle_path = out_dir.join("main.js");
+    let bundle = std::fs::read_to_string(&bundle_path).expect("read bundle");
+    assert!(
+      bundle.contains("__finishAsync"),
+      "expected bundle to schedule async dependencies with __finishAsync:\n{bundle}"
+    );
+    let status =
+      std::process::Command::new("node").arg(&bundle_path).status().expect("execute node");
+    assert!(
+      status.success(),
+      "expected __finishAsync to complete evaluation even when globalThis.Promise is replaced"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn sibling_async_dependencies_start_concurrently_without_url_flag() {
+    let dir = TempTestDir::new("sibling-async-deps");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(
+      dir.path().join("shared.js"),
+      "export let resolve;\nexport const promise = new Promise((r) => { resolve = r; });\n",
+    )
+    .expect("write shared.js");
+    std::fs::write(
+      dir.path().join("first.js"),
+      "import { promise } from './shared.js';\nexport const value = await promise;\n",
+    )
+    .expect("write first.js");
+    std::fs::write(
+      dir.path().join("second.js"),
+      "import { resolve } from './shared.js';\nresolve(42);\n",
+    )
+    .expect("write second.js");
+    std::fs::write(
+      dir.path().join("parent.js"),
+      "import { value } from './first.js';\nimport './second.js';\nexport { value };\n",
+    )
+    .expect("write parent.js");
+    std::fs::write(
+      dir.path().join("main.js"),
+      "import assert from 'node:assert';\nconst mod = await Promise.race([\n  import('./parent.js'),\n  new Promise((_, reject) => setTimeout(() => reject(new Error('sibling async dependency deadlocked')), 2000)),\n]);\nassert.strictEqual(mod.value, 42);\n",
+    )
+    .expect("write main.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      code_splitting: Some(rolldown_common::CodeSplittingMode::Bool(false)),
+      preserve_entry_signatures: Some(rolldown_common::PreserveEntrySignatures::Strict),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
     let status = std::process::Command::new("node")
       .arg(out_dir.join("main.js"))
       .status()
       .expect("execute node");
     assert!(
       status.success(),
-      "expected __finishAsync to complete evaluation even when globalThis.Promise is replaced"
+      "expected sibling async dependencies to start concurrently without deadlocking"
     );
   }
 }

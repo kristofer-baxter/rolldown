@@ -352,8 +352,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     // init namespace_alias_symbol_id
 
     self.collect_native_let_symbols(program);
-    let last_import_stmt_idx = self.remove_unused_top_level_stmt(program);
-    let mut imports_end = last_import_stmt_idx;
+    let (last_import_stmt_idx, mut imports_end) = self.remove_unused_top_level_stmt(program);
 
     // Runs after `remove_unused_top_level_stmt` so statement-position init calls already sit in
     // the dedup set, and splices at the same after-imports index the HMR header uses (an HMR
@@ -378,13 +377,11 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     }
 
     let wrapper_mode = self.ctx.wrapper_mode();
-    let schedule_async =
-      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
-        && self.ctx.linking_info.is_tla_or_contains_tla_dependency
-        && matches!(
-          wrapper_mode,
-          ModuleWrapperMode::InteropEsm(_) | ModuleWrapperMode::ExecutionOrder(_)
-        );
+    let schedule_async = self.ctx.linking_info.is_tla_or_contains_tla_dependency
+      && matches!(
+        wrapper_mode,
+        ModuleWrapperMode::InteropEsm(_) | ModuleWrapperMode::ExecutionOrder(_)
+      );
     if schedule_async {
       program.body.insert(imports_end, self.async_body_marker());
     }

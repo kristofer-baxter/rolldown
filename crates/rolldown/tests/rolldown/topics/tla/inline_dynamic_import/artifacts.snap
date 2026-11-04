@@ -23,18 +23,24 @@ async function getEnv() {
 	return _default.aaa.bbb[0];
 }
 var ccc;
-var init_b = __esmMin((async () => {
+var init_b = __esmAsync((() => {
+	var __asyncDependencies0 = [];
 	init_c();
-	ccc = await Promise.resolve().then(() => (init_c(), c_exports));
+	return __finishAsync(__asyncDependencies0, async () => {
+		ccc = await Promise.resolve().then(() => (init_c(), c_exports));
+	});
 }));
 // a.js
 var a_exports = /* @__PURE__ */ __exportAll({ buildDevConfig: () => buildDevConfig });
 var buildDevConfig;
-var init_a = __esmMin((async () => {
-	await init_b();
-	buildDevConfig = async () => {
-		return await getEnv();
-	};
+var init_a = __esmAsync((() => {
+	var __asyncDependencies0 = [];
+	__startAsync(__asyncDependencies0, init_b());
+	return __finishAsync(__asyncDependencies0, () => {
+		buildDevConfig = async () => {
+			return await getEnv();
+		};
+	});
 }));
 // main.js
 var main_default = async () => {

@@ -24,25 +24,34 @@ export { value };
 // HIDDEN [\0rolldown/runtime.js]
 // ring-b.js
 function init_ring_b() {
-	return (init_ring_b = __esmMin((async () => {
-		await init_ring_a();
-		globalThis.__ringB = "b";
+	return (init_ring_b = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_ring_a());
+		return __finishAsync(__asyncDependencies0, () => {
+			globalThis.__ringB = "b";
+		});
 	})))();
 }
 // ring-a.js
 var a;
 function init_ring_a() {
-	return (init_ring_a = __esmMin((async () => {
-		await init_ring_b();
-		a = await Promise.resolve("a");
+	return (init_ring_a = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_ring_b());
+		return __finishAsync(__asyncDependencies0, async () => {
+			a = await Promise.resolve("a");
+		});
 	})))();
 }
 // main.js
 var value;
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await init_ring_a();
-		value = a;
+	return (init_main = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_ring_a());
+		return __finishAsync(__asyncDependencies0, () => {
+			value = a;
+		});
 	})))();
 }
 await init_main();

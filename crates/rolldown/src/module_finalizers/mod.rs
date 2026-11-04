@@ -625,6 +625,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         continue;
       }
       let init_expr = self.wrapped_esm_init_call_expr(init.owner, SPAN, true, true);
+      self.record_static_esm_init_expr(&init_expr);
       stmts.push(ast::Statement::new_expression_statement(SPAN, init_expr, self));
     }
     stmts
@@ -2496,15 +2497,48 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     None
   }
 
+  pub fn is_static_esm_init_stmt(&self, stmt: &Statement<'ast>) -> bool {
+    let Statement::ExpressionStatement(expr_stmt) = stmt else {
+      return false;
+    };
+    match &expr_stmt.expression {
+      ast::Expression::CallExpression(call) => {
+        call.arguments.is_empty()
+          && !call.optional
+          && matches!(
+            &call.callee,
+            ast::Expression::Identifier(id)
+              if self.static_esm_init_callees.contains(id.name.as_str())
+          )
+      }
+      ast::Expression::SequenceExpression(seq) => seq.expressions.iter().all(|expr| {
+        matches!(
+          expr,
+          ast::Expression::CallExpression(call)
+            if call.arguments.is_empty()
+              && !call.optional
+              && matches!(
+                &call.callee,
+                ast::Expression::Identifier(id)
+                  if self.static_esm_init_callees.contains(id.name.as_str())
+              )
+        )
+      }),
+      _ => false,
+    }
+  }
+
   #[expect(clippy::too_many_lines)]
-  fn remove_unused_top_level_stmt(&mut self, program: &mut ast::Program<'ast>) -> usize {
+  fn remove_unused_top_level_stmt(&mut self, program: &mut ast::Program<'ast>) -> (usize, usize) {
     let mut last_import_stmt_idx = None;
+    let mut module_decls_end = None;
 
     let old_body = program.body.take_in(self);
     // the first statement info is the namespace variable declaration
     // skip first statement info to make sure `program.body` has same index as `stmt_infos`
     old_body.into_iter().enumerate().zip(self.ctx.stmt_infos.iter_enumerated().skip(1)).for_each(
       |((_top_stmt_idx, mut top_stmt), (stmt_info_idx, stmt_info))| {
+        let has_module_source = top_stmt.is_module_declaration_with_source();
         let mut is_module_decl = false;
         (|| {
           let is_order_runtime_stmt = self.ctx.order_wrap_state.forces_runtime_stmt(
@@ -2518,7 +2552,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             || crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options))
             && (crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
               || !matches!(top_stmt, ast::Statement::ExportAllDeclaration(ref d) if d.exported.is_none()))
-            && top_stmt.is_module_declaration_with_source();
+            && has_module_source;
 
           // Retained re-export paths can belong to included statements too. Emit the same
           // sealed targets used by registration before ordinary lowering; module-wide dedup
@@ -3021,9 +3055,13 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         if is_module_decl {
           last_import_stmt_idx = Some(program.body.len());
         }
+        if has_module_source {
+          module_decls_end = Some(program.body.len());
+        }
       },
     );
-    last_import_stmt_idx.unwrap_or(0)
+    let last_import_stmt_idx = last_import_stmt_idx.unwrap_or(0);
+    (last_import_stmt_idx, module_decls_end.unwrap_or(0).max(last_import_stmt_idx))
   }
 
   fn process_fn(

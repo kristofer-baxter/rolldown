@@ -51,17 +51,19 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
   pub(super) fn schedule_async_body(
     &self,
     mut imports: allocator::Vec<'ast, Statement<'ast>>,
-    body: allocator::Vec<'ast, Statement<'ast>>,
+    mut body: allocator::Vec<'ast, Statement<'ast>>,
     pending: &str,
   ) -> allocator::Vec<'ast, Statement<'ast>> {
     struct Start<'a, 'me, 'ast> {
       finalizer: &'a ScopeHoistingFinalizer<'me, 'ast>,
       pending: ast::Str<'ast>,
+      statement_had_await: bool,
     }
     impl<'ast> VisitJsMut<'ast> for Start<'_, '_, 'ast> {
       fn visit_expression(&mut self, expression: &mut Expression<'ast>) {
         walk_js_mut::walk_expression(self, expression);
         if let Expression::AwaitExpression(awaited) = expression {
+          self.statement_had_await = true;
           let result = awaited.argument.take_in(self.finalizer);
           *expression = Expression::new_call_expression(
             SPAN,
@@ -78,9 +80,21 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
       }
     }
     let pending = ast::Str::from_str_in(pending, self);
-    let mut start = Start { finalizer: self, pending };
-    for statement in &mut imports {
+    let mut start = Start { finalizer: self, pending, statement_had_await: false };
+    let mut has_await = false;
+    let mut last_esm_init_end = 0;
+    for (index, statement) in imports.iter_mut().enumerate() {
+      start.statement_had_await = false;
       start.visit_statement(statement);
+      if start.statement_had_await {
+        has_await = true;
+        last_esm_init_end = index + 1;
+      } else if self.is_static_esm_init_stmt(statement) {
+        last_esm_init_end = index + 1;
+      }
+    }
+    if has_await && last_esm_init_end < imports.len() {
+      body.splice(0..0, imports.drain(last_esm_init_end..));
     }
     imports.insert(
       0,
