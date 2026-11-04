@@ -1408,7 +1408,11 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     // complete at runtime is a namespace object even without names of its own.
     let fixed = !self.star_exports_complete_namespace();
     let module_namespace_rhs =
-      if fixed && arg_obj_expr.properties.is_empty() && !self.ctx.options.generated_code.symbols {
+      if (!runtime_semantics || self.ctx.linking_info.is_canonical_exports_empty())
+        && fixed
+        && arg_obj_expr.properties.is_empty()
+        && !self.ctx.options.generated_code.symbols
+      {
         Expression::ObjectExpression(oxc::allocator::Box::new_in(arg_obj_expr, self))
       } else {
         let obj_expr = ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.allocator()));

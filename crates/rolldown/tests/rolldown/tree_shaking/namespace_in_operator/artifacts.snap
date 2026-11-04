@@ -22,7 +22,20 @@ source: crates/rolldown_testing/src/integration_test.rs
 
 ```js
 import assert from "node:assert";
+// HIDDEN [\0rolldown/runtime.js]
 // foo.js
+var foo_exports = /* @__PURE__ */ __exportAll({
+	a: () => a,
+	b: () => b,
+	c: () => c,
+	e: () => "e"
+});
+function a() {
+	return "a";
+}
+function b() {
+	return "b";
+}
 function c() {
 	return "c";
 }
@@ -30,10 +43,11 @@ function c() {
 function hasKey(foo) {
 	return "a" in foo;
 }
+if ("d" in foo_exports) (void 0)();
 assert.strictEqual(c(), "c");
 assert.strictEqual(true, true);
 assert.strictEqual(true, true);
-assert.strictEqual(false, false);
+assert.strictEqual("default" in foo_exports, false);
 assert.strictEqual(hasKey({}), false);
 
 ```

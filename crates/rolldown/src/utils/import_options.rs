@@ -826,4 +826,87 @@ try {
       .expect("execute node");
     assert!(status.success(), "expected __computedImport to survive throwing globalThis.URL getter");
   }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn ordinary_namespace_in_check_matches_reflect_has_for_prototype_keys() {
+    let dir = TempTestDir::new("ordinary-namespace-in-check-proto");
+    let ordinary_dir = dir.path().join("ordinary");
+    let semantics_dir = dir.path().join("semantics");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("dep.js"), "export const x = 1;\n").expect("write dep.js");
+    std::fs::write(
+      dir.path().join("main.js"),
+      r"import assert from 'node:assert';
+import * as ns from './dep.js';
+const results = ['toString' in ns, Reflect.has(ns, 'toString'), 'x' in ns, Reflect.has(ns, 'x')];
+console.log(...results);
+assert.strictEqual(results[0], results[1]);
+assert.strictEqual(results[2], true);
+assert.strictEqual(results[3], true);
+",
+    )
+    .expect("write main.js");
+
+    let mut ordinary_bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(ordinary_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    })
+    .expect("create ordinary bundler");
+    ordinary_bundler.write().await.expect("write ordinary bundle");
+    let ordinary_code =
+      std::fs::read_to_string(ordinary_dir.join("main.js")).expect("read ordinary bundle");
+    assert!(
+      ordinary_code.contains("\"toString\" in dep_exports"),
+      "expected 'toString' in ns to remain unfolded on Object.prototype namespace:\n{ordinary_code}"
+    );
+    let ordinary_output = std::process::Command::new("node")
+      .arg(ordinary_dir.join("main.js"))
+      .output()
+      .expect("execute ordinary bundle");
+    assert!(
+      ordinary_output.status.success(),
+      "ordinary bundle failed: {}",
+      String::from_utf8_lossy(&ordinary_output.stderr)
+    );
+    assert_eq!(
+      String::from_utf8_lossy(&ordinary_output.stdout).trim(),
+      "true true true true"
+    );
+
+    let mut semantics_bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(semantics_dir.to_string_lossy().into_owned()),
+      strict_execution_order: Some(true),
+      experimental: Some(ExperimentalOptions {
+        resolve_new_url_to_asset: Some(true),
+        ..Default::default()
+      }),
+      ..Default::default()
+    })
+    .expect("create semantics bundler");
+    semantics_bundler.write().await.expect("write semantics bundle");
+    let semantics_code =
+      std::fs::read_to_string(semantics_dir.join("main.js")).expect("read semantics bundle");
+    assert!(
+      !semantics_code.contains("\"toString\" in dep_exports"),
+      "expected 'toString' in ns to fold to false on null-prototype fixed namespace:\n{semantics_code}"
+    );
+    let semantics_output = std::process::Command::new("node")
+      .arg(semantics_dir.join("main.js"))
+      .output()
+      .expect("execute semantics bundle");
+    assert!(
+      semantics_output.status.success(),
+      "semantics bundle failed: {}",
+      String::from_utf8_lossy(&semantics_output.stderr)
+    );
+    assert_eq!(
+      String::from_utf8_lossy(&semantics_output.stdout).trim(),
+      "false false true true"
+    );
+  }
 }

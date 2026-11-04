@@ -1561,7 +1561,13 @@ pub fn fold_namespace_in_check(
   }
   match owner_meta.sorted_and_non_ambiguous_resolved_exports.get(key) {
     Some(&came_from_commonjs) => (!came_from_commonjs).then_some(true),
-    None => Some(false),
+    None => {
+      let has_fixed_null_proto_namespace =
+        crate::utils::native_records::runtime_module_semantics_enabled(options)
+          && owner_meta.star_exports_from_external_modules.is_empty()
+          && (!owner_meta.is_canonical_exports_empty() || options.generated_code.symbols);
+      has_fixed_null_proto_namespace.then_some(false)
+    }
   }
 }
 
