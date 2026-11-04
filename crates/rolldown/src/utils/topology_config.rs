@@ -90,8 +90,9 @@ pub struct TopologyConfig {
 
 pub const TOPOLOGY_KEY_HEADER: &str = "\0__native_topology_config_json:";
 
-pub fn attach(options: &mut rolldown_common::BundlerOptions, config: &TopologyConfig) {
-  let encoded = serde_json::to_string(config).expect("TopologyConfig is always serializable");
+#[expect(clippy::needless_pass_by_value, reason = "downstream callers pass owned TopologyConfig")]
+pub fn attach(options: &mut rolldown_common::BundlerOptions, config: TopologyConfig) {
+  let encoded = serde_json::to_string(&config).expect("TopologyConfig is always serializable");
   let tag = format!("{TOPOLOGY_KEY_HEADER}{encoded}");
   let labels = options.drop_labels.get_or_insert_default();
   labels.retain(|label| !label.starts_with(TOPOLOGY_KEY_HEADER));

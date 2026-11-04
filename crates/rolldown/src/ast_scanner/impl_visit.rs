@@ -268,15 +268,15 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
             && let Some(options) = &expr.options
           {
             meta.set(
-              ImportRecordMeta::HasNonEmptyImportOptions,
+              crate::utils::import_options::HAS_NON_EMPTY_IMPORT_OPTIONS,
               !crate::utils::import_options::is_empty_import_options(options),
             );
             meta.set(
-              ImportRecordMeta::HasJsonTypeImportOptions,
+              crate::utils::import_options::HAS_JSON_TYPE_IMPORT_OPTIONS,
               crate::utils::import_options::is_json_type_import_options(options),
             );
             meta.set(
-              ImportRecordMeta::HasTextTypeImportOptions,
+              crate::utils::import_options::HAS_TEXT_TYPE_IMPORT_OPTIONS,
               crate::utils::import_options::is_text_type_import_options(options),
             );
           }

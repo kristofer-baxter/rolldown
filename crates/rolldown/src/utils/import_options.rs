@@ -3,7 +3,28 @@ use oxc::{
   ast::builder::GetAstBuilder,
   span::SPAN,
 };
-use rolldown_common::{ImportKind, IndexModules, ModuleIdx, NormalModule};
+use rolldown_common::{
+  ImportAttribute, ImportKind, ImportRecordMeta, IndexModules, ModuleIdx, NormalModule,
+};
+
+pub const HAS_NON_EMPTY_IMPORT_OPTIONS: ImportRecordMeta =
+  ImportRecordMeta::from_bits_retain(1 << 11);
+pub const HAS_JSON_TYPE_IMPORT_OPTIONS: ImportRecordMeta =
+  ImportRecordMeta::from_bits_retain(1 << 12);
+pub const HAS_TEXT_TYPE_IMPORT_OPTIONS: ImportRecordMeta =
+  ImportRecordMeta::from_bits_retain(1 << 13);
+
+pub fn is_json_import_attribute(attr: &ImportAttribute) -> bool {
+  let rendered = attr.to_string();
+  let Some(inner) = rendered
+    .strip_prefix("with { ")
+    .or_else(|| rendered.strip_prefix("assert { "))
+    .and_then(|s| s.strip_suffix(" }"))
+  else {
+    return false;
+  };
+  inner.split(", ").any(|entry| entry == r#"type: "json""# || entry == r#""type": "json""#)
+}
 
 pub fn is_json_module(module: &NormalModule) -> bool {
   module.module_type == rolldown_common::ModuleType::Json
@@ -694,8 +715,7 @@ mod tests {
     let leaf_path = dir.path().join("leaf.mjs");
     std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
       .expect("write package.json");
-    std::fs::write(dir.path().join("data.json"), r#"{ "foo": 1 }"#)
-      .expect("write data.json");
+    std::fs::write(dir.path().join("data.json"), r#"{ "foo": 1 }"#).expect("write data.json");
     std::fs::write(
       &leaf_path,
       "import * as ns from './data.json';\nexport const run = () => console.log('foo' in ns, 1);\n",
@@ -824,7 +844,10 @@ try {
       .arg(out_dir.join("main.js"))
       .status()
       .expect("execute node");
-    assert!(status.success(), "expected __computedImport to survive throwing globalThis.URL getter");
+    assert!(
+      status.success(),
+      "expected __computedImport to survive throwing globalThis.URL getter"
+    );
   }
 
   #[tokio::test(flavor = "multi_thread")]
@@ -869,10 +892,7 @@ assert.strictEqual(results[2], 'none');
       "ordinary bundle failed: {}",
       String::from_utf8_lossy(&ordinary_output.stderr)
     );
-    assert_eq!(
-      String::from_utf8_lossy(&ordinary_output.stdout).trim(),
-      "false true none"
-    );
+    assert_eq!(String::from_utf8_lossy(&ordinary_output.stdout).trim(), "false true none");
 
     let mut semantics_bundler = Bundler::new(BundlerOptions {
       input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
@@ -896,10 +916,7 @@ assert.strictEqual(results[2], 'none');
       "semantics bundle failed: {}",
       String::from_utf8_lossy(&semantics_output.stderr)
     );
-    assert_eq!(
-      String::from_utf8_lossy(&semantics_output.stdout).trim(),
-      "false true none"
-    );
+    assert_eq!(String::from_utf8_lossy(&semantics_output.stdout).trim(), "false true none");
   }
 
   #[tokio::test(flavor = "multi_thread")]
@@ -934,7 +951,7 @@ assert.strictEqual(results[2], 'none');
     };
     crate::utils::topology_config::attach(
       &mut options,
-      &crate::utils::topology_config::TopologyConfig {
+      crate::utils::topology_config::TopologyConfig {
         max_initial_requests: Some(2),
         common_chunk_coalescing: Some(crate::utils::topology_config::CommonChunkCoalescing::Off),
         ..Default::default()

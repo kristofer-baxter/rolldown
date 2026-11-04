@@ -59,15 +59,6 @@ impl ImportAttribute {
       .collect();
     Self { kind, entries }
   }
-
-  pub fn is_json(&self) -> bool {
-    self.entries.iter().any(|(key, value)| {
-      let key_str = match key {
-        ImportAttributeKey::Identifier(s) | ImportAttributeKey::String(s) => s.as_str(),
-      };
-      key_str == "type" && value == "json"
-    })
-  }
 }
 
 impl Display for ImportAttribute {

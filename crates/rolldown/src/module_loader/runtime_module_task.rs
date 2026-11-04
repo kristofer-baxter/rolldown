@@ -229,9 +229,10 @@ export var __toESM = (mod, isNodeMode, key, target) => {
 
 fn get_runtime_base_js(runtime_semantics: bool) -> String {
   if runtime_semantics {
-    RUNTIME_BASE_JS
+    let base = RUNTIME_BASE_JS
       .replace(UPSTREAM_ESM_HELPERS, RUNTIME_SEMANTICS_ESM_HELPERS)
-      .replace(UPSTREAM_EXPORT_AND_INTEROP_HELPERS, RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS)
+      .replace(UPSTREAM_EXPORT_AND_INTEROP_HELPERS, RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS);
+    format!("var Promise = globalThis.Promise;\nvar __moduleURL = globalThis.URL;\n{base}")
   } else {
     RUNTIME_BASE_JS.to_string()
   }

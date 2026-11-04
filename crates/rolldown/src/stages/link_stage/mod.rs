@@ -274,6 +274,8 @@ pub struct LinkStage<'a> {
   pub global_constant_symbol_map: FxHashMap<SymbolRef, ConstExportMeta>,
   /// See [`LinkStageOutput::non_splittable_json_defaults`].
   pub non_splittable_json_defaults: FxHashSet<ModuleIdx>,
+  /// Imports whose binding lazy barrel left uncertain by skipping a record they depend on.
+  pub lazy_barrel_uncertain_bindings: Vec<SymbolRef>,
   pub flat_options: FlatOptions,
   pub user_defined_entry_modules: FxHashSet<ModuleIdx>,
   /// Found before the passes that read the module table, which pass over these modules.
@@ -401,6 +403,7 @@ impl<'a> LinkStage<'a> {
       normal_symbol_exports_chain_map: FxHashMap::default(),
       star_reexport_records_by_imported_symbol: FxHashMap::default(),
       member_read_star_reexport_paths: Vec::new(),
+      lazy_barrel_uncertain_bindings: Vec::new(),
       external_import_namespace_merger: FxHashMap::default(),
       overrode_preserve_entry_signature_map: scan_stage_output
         .overrode_preserve_entry_signature_map,
@@ -416,21 +419,6 @@ impl<'a> LinkStage<'a> {
     }
   }
 
-  /// An `import()` resolves its promise with the module's namespace, which reads the namespace's
-  /// `then` and calls it with the namespace as `this`. A module that exports `then` therefore keeps
-  /// its whole namespace for its dynamic importers, whatever names they read (#664), unless its
-  /// `then` is a module namespace (`exports_namespace_as_then`).
-  fn keep_thenable_namespaces(&mut self) {
-    for (idx, usage) in &mut self.dynamic_import_exports_usage_map {
-      if !matches!(usage, DynamicImportExportsUsage::Complete)
-        && self.metas[*idx].sorted_and_non_ambiguous_resolved_exports.contains_key("then")
-        && !self.module_table[*idx].as_normal().is_some_and(exports_namespace_as_then)
-      {
-        *usage = DynamicImportExportsUsage::Complete;
-      }
-    }
-  }
-
   #[tracing::instrument(level = "debug", skip_all)]
   pub fn link(mut self) -> (LinkStageOutput, IndexEcmaAst, UsedSymbolRefsBuilder) {
     self.exclude_unreachable_modules();
@@ -443,7 +431,6 @@ impl<'a> LinkStage<'a> {
     self.generate_lazy_export();
     self.determine_side_effects();
     self.bind_imports_and_exports();
-    self.keep_thenable_namespaces();
     self.create_exports_for_ecma_modules();
     self.preserve_temporal_bindings();
     self.reference_async_evaluation_helpers();
@@ -454,6 +441,7 @@ impl<'a> LinkStage<'a> {
     self.recompute_analyzed_side_effects();
     self.reference_needed_symbols();
     self.include_statements(&unreachable_import_expression_node_ids);
+    self.check_lazy_barrel_uncertain_bindings();
     self.patch_module_dependencies();
 
     tracing::trace!(
