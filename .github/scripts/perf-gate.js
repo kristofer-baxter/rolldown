@@ -297,7 +297,7 @@ function runUnitAndSourcemapTests(opts, failures, summaryLines) {
       stdio: "inherit",
     });
     summaryLines.push(
-      "- **Unit & Parity Tests**: `rolldown_plugin` (8 tests), `rolldown` (139 tests), and `oxc_sourcemap` (79 tests) passed.",
+      "- **Unit & Parity Tests**: `rolldown_plugin` (8 tests), `rolldown` (148 tests), and `oxc_sourcemap` (79 tests) passed.",
     );
   } catch {
     failures.push("Unit test suite failed in `rolldown_plugin`, `rolldown`, or `oxc_sourcemap`.");

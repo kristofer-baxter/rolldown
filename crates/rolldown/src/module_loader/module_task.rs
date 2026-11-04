@@ -25,9 +25,9 @@ use crate::{
 use super::{resolve_utils::resolve_dependencies, task_context::TaskContext};
 
 pub struct ModuleTaskOwner {
-  source: ArcStr,
-  importer_id: ArcStr,
-  importee_span: Span,
+  pub(crate) source: ArcStr,
+  pub(crate) importer_id: ArcStr,
+  pub(crate) importee_span: Span,
 }
 
 impl ModuleTaskOwner {

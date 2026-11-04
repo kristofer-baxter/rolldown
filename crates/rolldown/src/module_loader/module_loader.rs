@@ -142,6 +142,14 @@ pub struct ModuleLoader<'a, Fs: FileSystem + Clone + 'static> {
   /// of the first TLA keyword. Stored here instead of on every `EcmaView`
   /// because top-level await is rarely used in real-world apps.
   tla_keyword_span_map: FxHashMap<ModuleIdx, Span>,
+  /// This set contains the modules that this scan spawned as external. The set
+  /// gives the kind of a module before its task finishes. See
+  /// `is_external_module`.
+  external_module_idxs: FxHashSet<ModuleIdx>,
+  /// This list contains the errors of this scan. The message loop and helpers
+  /// such as `try_spawn_new_task` add errors to it. `fetch_modules` returns the
+  /// list after the scan.
+  errors: Vec<BuildDiagnostic>,
 }
 
 pub struct ModuleLoaderOutput {
@@ -263,6 +271,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       magic_string_tx,
       tla_module_count: 0,
       tla_keyword_span_map: FxHashMap::default(),
+      external_module_idxs: FxHashSet::default(),
+      errors: Vec::new(),
     })
   }
 
@@ -388,6 +398,83 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     }
   }
 
+  /// This function returns `true` if this scan spawned the module at `idx`. A full
+  /// scan spawns every module. A partial scan allocates a slot for each module that
+  /// it spawns (changed and new modules).
+  fn is_spawned_by_this_scan(&self, idx: ModuleIdx) -> bool {
+    self.is_full_scan || self.intermediate_normal_modules.modules.try_get(idx).is_some()
+  }
+
+  /// This function returns `true` if the module at `idx` is external. The
+  /// loader knows the kind when it spawns the task. Thus this function can
+  /// return the kind before the task finishes.
+  fn is_external_module(&self, idx: ModuleIdx) -> bool {
+    // For a module that this scan spawned, the kind from this scan replaces the
+    // kind in the snapshot. Thus a changed file that was external can now be a
+    // normal module.
+    if self.is_spawned_by_this_scan(idx) {
+      self.external_module_idxs.contains(&idx)
+    } else {
+      // This scan did not spawn the module. The module is from a previous build,
+      // and the snapshot has its kind.
+      self.cache.get_snapshot().module_table.get(idx).is_some_and(Module::is_external)
+    }
+  }
+
+  /// This function records an error if the two kinds are different:
+  ///
+  /// - `resolved_id` is external, and the module at `idx` is not external.
+  /// - `resolved_id` is not external, and the module at `idx` is external.
+  fn check_external_conflict(
+    &mut self,
+    idx: ModuleIdx,
+    resolved_id: &ResolvedId,
+    owner: Option<&ModuleTaskOwner>,
+  ) {
+    let is_external = resolved_id.external.is_external();
+    let is_existing_module_external = self.is_external_module(idx);
+    if is_external == is_existing_module_external {
+      return;
+    }
+    let module_id = resolved_id.id.as_arc_str().clone();
+    let is_kind_from_previous_build = !self.is_spawned_by_this_scan(idx);
+    let reason = match (is_existing_module_external, owner) {
+      (false, Some(importer)) => format!(
+        "\"{module_id}\" is imported as an external by \"{}\", but is already an existing non-external module id.",
+        importer.importer_id
+      ),
+      (false, None) => format!(
+        "\"{module_id}\" is resolved as an external, but is already an existing non-external module id."
+      ),
+      (true, _) => format!(
+        "\"{module_id}\" is resolved as a module now, but it was an external module before."
+      ),
+    };
+    let mut help =
+      "Make all imports of this module resolve the same way: all as external, or all as non-external."
+        .to_string();
+    if is_kind_from_previous_build {
+      help.push_str(
+        " The last successful build decided whether this module is external. If all imports already resolve the same way, a full rebuild fixes this error.",
+      );
+    }
+    self.errors.push(if let Some(importer) = owner {
+      BuildDiagnostic::resolve_error(
+        importer.source.clone(),
+        importer.importer_id.clone(),
+        rolldown_error::DiagnosableArcstr::Span {
+          span: importer.importee_span,
+          text: module_id,
+        },
+        reason,
+        rolldown_error::EventKind::ResolveError,
+        Some(help),
+      )
+    } else {
+      BuildDiagnostic::bundler_initialize_error(reason, Some(help))
+    });
+  }
+
   /// Lazy barrel must not skip any of an entry's re-exports — an entry has to
   /// preserve all of its exports. Request `All` from it: if it has already been
   /// loaded as a barrel, load its remaining (deferred) records now; otherwise
@@ -422,6 +509,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
   ) -> ModuleIdx {
     let idx = match self.cache.module_id_to_idx.get(&resolved_id.id).copied() {
       Some(VisitState::Seen(idx)) => {
+        self.check_external_conflict(idx, &resolved_id, owner.as_ref());
         if self.flat_options.is_lazy_barrel_enabled() && is_user_defined_entry {
           self.request_all_exports_for_entry(idx, user_defined_entries);
         }
@@ -457,6 +545,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     let ctx = Arc::clone(&self.shared_context);
     let module_id = resolved_id.id.clone();
     let spawned = if resolved_id.external.is_external() {
+      self.external_module_idxs.insert(idx);
       let task = ExternalModuleTask::new(ctx, idx, resolved_id, Arc::clone(user_defined_entries));
       self.tasks.spawn(task.run().instrument(tracing::info_span!("external_module_task")))
     } else {
@@ -526,7 +615,6 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     &mut self,
     fetch_mode: ScanMode<ResolvedId>,
   ) -> BuildResult<ModuleLoaderOutput> {
-    let mut errors = vec![];
     let mut all_warnings = vec![];
     // How many of `errors` module tasks reported, for `unreached`.
     let mut module_task_errors = 0;
@@ -663,8 +751,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
             }
             // A task that panicked never sends its result, so waiting for it would never end.
             Err(error) => {
-              errors.push(self.task_failure(error));
-              errors.extend(self.stop_tasks().await);
+              let failure = self.task_failure(error);
+              self.errors.push(failure);
+              let stopped = self.stop_tasks().await;
+              self.errors.extend(stopped);
               break;
             }
           }
@@ -963,11 +1053,15 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           self.symbol_ref_db.store_local_db(runtime.id(), local_symbol_ref_db);
           self.remaining -= 1;
 
-          errors.extend(runtime.validate_symbols(&rolldown_common::RUNTIME_HELPER_NAMES));
+          self.errors.extend(runtime.validate_symbols(&rolldown_common::RUNTIME_HELPER_NAMES));
           runtime_brief = Some(runtime);
         }
         ModuleLoaderMsg::FetchModule(resolve_id) => {
-          self.try_spawn_new_task(*resolve_id, None, false, None, &user_defined_entries);
+          let module_id = resolve_id.id.clone();
+          let idx = self.try_spawn_new_task(*resolve_id, None, false, None, &user_defined_entries);
+          if self.is_external_module(idx) {
+            self.shared_context.plugin_driver.ensure_context_load_module_completion(module_id);
+          }
         }
         ModuleLoaderMsg::AddEntryModule(msg) => {
           let data = msg.chunk;
@@ -984,7 +1078,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
               self.try_spawn_new_task(resolved_id, None, true, None, &user_defined_entries)
             }
             Err(e) => {
-              errors.push(e);
+              self.errors.push(e);
               continue;
             }
           };
@@ -1012,12 +1106,13 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         }
         ModuleLoaderMsg::BuildErrors(e) => {
           module_task_errors += e.len();
-          errors.extend(e);
+          self.errors.extend(e);
           self.remaining -= 1;
         }
       }
     }
 
+    let mut errors = std::mem::take(&mut self.errors);
     self.cache.last_scan_failures_unreached = !errors.is_empty()
       && errors.len() == module_task_errors
       && self.unreached(self.failed_tasks(), &user_defined_entry_ids);
@@ -1127,8 +1222,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     // see https://github.com/rolldown/rolldown/issues/5030 as an example
     idx_of_module_info_need_update.extend(extra_entry_points.iter().map(|item| item.idx));
     idx_of_module_info_need_update.into_par_iter().for_each(|idx| {
-      let module = module_table.get(idx);
-      let Some(module) = module.as_normal() else {
+      let module = match module_table.try_get(idx) {
+        Some(module) => Some(module),
+        None => self.cache.snapshot().and_then(|snapshot| snapshot.module_table.modules.get(idx)),
+      };
+      let Some(module) = module.and_then(Module::as_normal) else {
         return;
       };
       self.shared_context.plugin_driver.set_module_info(
