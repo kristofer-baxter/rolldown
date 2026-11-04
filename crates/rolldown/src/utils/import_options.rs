@@ -133,6 +133,25 @@ pub fn rewrite_hmr_import_attribute_target<'a>(
   });
 }
 
+pub fn is_side_effect_free_import_options(expr: &ast::Expression<'_>) -> bool {
+  match expr.without_parentheses() {
+    Expression::ObjectExpression(obj) => obj.properties.iter().all(|prop| match prop {
+      ast::ObjectPropertyKind::ObjectProperty(prop) => {
+        !prop.computed
+          && !prop.method
+          && matches!(prop.kind, ast::PropertyKind::Init)
+          && is_side_effect_free_import_options(&prop.value)
+      }
+      ast::ObjectPropertyKind::SpreadProperty(_) => false,
+    }),
+    Expression::StringLiteral(_)
+    | Expression::BooleanLiteral(_)
+    | Expression::NumericLiteral(_)
+    | Expression::NullLiteral(_) => true,
+    _ => false,
+  }
+}
+
 pub fn thunk<'a>(expression: Expression<'a>, builder: &impl GetAstBuilder<'a>) -> Expression<'a> {
   Expression::new_arrow_function_expression(
     SPAN,
@@ -149,4 +168,27 @@ pub fn thunk<'a>(expression: Expression<'a>, builder: &impl GetAstBuilder<'a>) -
     ast::ArrowFunctionBody::from(expression),
     builder,
   )
+}
+
+#[cfg(test)]
+mod tests {
+  use super::is_side_effect_free_import_options;
+  use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
+
+  fn check(expr_src: &str) -> bool {
+    let allocator = Allocator::default();
+    let expr =
+      Parser::new(&allocator, expr_src, SourceType::mjs()).parse_expression().expect("valid expr");
+    is_side_effect_free_import_options(&expr)
+  }
+
+  #[test]
+  fn side_effect_free_import_options_recognizes_static_literals_and_rejects_side_effects() {
+    assert!(check("({})"));
+    assert!(check("({ with: { type: 'json' } })"));
+    assert!(!check("(globalThis.count++, {})"));
+    assert!(!check("({ with: getAttrs() })"));
+    assert!(!check("({ get with() { return {}; } })"));
+    assert!(!check("({ ...opts })"));
+  }
 }

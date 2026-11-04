@@ -447,11 +447,9 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     // top-level `return`, after which a definition may not run, while an export defined more than
     // once keeps only its own constant out (#693).
     if self.has_cjs_exports_reassignment
-      || (crate::utils::native_records::runtime_module_semantics_enabled(
-        self.immutable_ctx.options,
-      ) && (self.commonjs_exports_escape
-        || self.result.ecma_view_meta.contains(EcmaViewMeta::Eval)
-        || self.result.ast_usage.contains(EcmaModuleAstUsage::TopLevelReturn)))
+      || self.commonjs_exports_escape
+      || self.result.ecma_view_meta.contains(EcmaViewMeta::Eval)
+      || self.result.ast_usage.contains(EcmaModuleAstUsage::TopLevelReturn)
     {
       for exports in self.result.commonjs_exports.values() {
         for local_export in exports {
@@ -459,14 +457,12 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         }
       }
     }
-    if crate::utils::native_records::runtime_module_semantics_enabled(self.immutable_ctx.options) {
-      for (name, definitions) in &self.commonjs_export_definitions {
-        if *definitions > 1
-          && let Some(exports) = self.result.commonjs_exports.get(name)
-        {
-          for local_export in exports {
-            bailout_inlined_cjs_exports_symbol_ids.insert(local_export.referenced.symbol);
-          }
+    for (name, definitions) in &self.commonjs_export_definitions {
+      if *definitions > 1
+        && let Some(exports) = self.result.commonjs_exports.get(name)
+      {
+        for local_export in exports {
+          bailout_inlined_cjs_exports_symbol_ids.insert(local_export.referenced.symbol);
         }
       }
     }
@@ -1255,43 +1251,72 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         // The mark's result is the object, so only a statement that discards it is a mark.
         AstKind::CallExpression(call)
           if call.arguments.first().is_some_and(|argument| argument.span() == node)
-            && matches!(
-              is_object_define_property_es_module(&self.result.symbol_ref_db.ast_scopes, call),
-              Some(CommonJsAstType::EsModuleFlag)
-            )
             && index.checked_sub(1).is_some_and(|parent| {
               matches!(self.visit_path[parent], AstKind::ExpressionStatement(_))
             }) =>
         {
-          return;
+          match is_object_define_property_es_module(&self.result.symbol_ref_db.ast_scopes, call) {
+            Some(CommonJsAstType::EsModuleFlag) => return,
+            Some(CommonJsAstType::ExportsPropWrite(prop))
+              if call.arguments.len() == 3
+                && !matches!(prop.as_str(), "__proto__" | "constructor")
+                && (prop != "*"
+                  || call.arguments.get(1).is_some_and(|arg| {
+                    matches!(arg.as_expression(), Some(Expression::StringLiteral(_)))
+                  }))
+                && call.arguments.get(2).is_some_and(|arg| {
+                  matches!(arg.as_expression(), Some(Expression::ObjectExpression(_)))
+                }) =>
+            {
+              if prop != "*" {
+                *self.commonjs_export_definitions.entry(prop).or_default() += 2;
+              }
+              return;
+            }
+            _ => break,
+          }
         }
         kind => {
-          let Some(name) =
-            member_name(&kind, node).filter(|name| !matches!(*name, "__proto__" | "constructor"))
-          else {
-            break;
+          let is_lone_surrogate_static_member = matches!(
+            kind,
+            AstKind::ComputedMemberExpression(member)
+              if member.object.span() == node
+                && member.static_property_name().is_some_and(|s| s.as_str().is_none())
+          );
+          let name = if is_lone_surrogate_static_member {
+            None
+          } else {
+            let Some(name) =
+              member_name(&kind, node).filter(|name| !matches!(*name, "__proto__" | "constructor"))
+            else {
+              break;
+            };
+            Some(name)
           };
           let member = kind.span();
           let parent = index.checked_sub(1).map(|parent| self.visit_path[parent]);
           if let Some(AstKind::AssignmentExpression(expr)) = parent
             && expr.left.span() == member
           {
-            // The program's statements are the visit path's roots (`visit_program`).
-            if expr.operator == ast::AssignmentOperator::Assign
-              && matches!(
-                self.visit_path.get(..index),
-                Some([AstKind::ExpressionStatement(_), rest @ ..])
-                  if rest.iter().all(|kind| match kind {
-                    AstKind::AssignmentExpression(assignment) => !assignment.operator.is_logical(),
-                    AstKind::SequenceExpression(_) | AstKind::ParenthesizedExpression(_) => true,
-                    _ => false,
-                  })
-              )
-            {
-              *self.commonjs_export_definitions.entry(name.into()).or_default() += 1;
-              return;
+            if let Some(name) = name {
+              // The program's statements are the visit path's roots (`visit_program`).
+              let delta = if expr.operator == ast::AssignmentOperator::Assign
+                && matches!(
+                  self.visit_path.get(..index),
+                  Some([AstKind::ExpressionStatement(_), rest @ ..])
+                    if rest.iter().all(|kind| match kind {
+                      AstKind::AssignmentExpression(assignment) => !assignment.operator.is_logical(),
+                      AstKind::SequenceExpression(_) | AstKind::ParenthesizedExpression(_) => true,
+                      _ => false,
+                    })
+                ) {
+                1
+              } else {
+                2
+              };
+              *self.commonjs_export_definitions.entry(name.into()).or_default() += delta;
             }
-            break;
+            return;
           }
           if self.is_member_read(member, index) {
             return;

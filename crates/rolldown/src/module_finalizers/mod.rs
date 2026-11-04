@@ -3258,16 +3258,29 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         let (finalized_namespace, _) =
           self.finalized_expr_for_symbol_ref(importee.namespace_object_ref, false, false);
         if target.tla_tainted {
-          // `__importNamespace(init_xxx, namespace_exports)` settles after the async init.
-          let (wrapper, _) = self.finalized_expr_for_symbol_ref(target.wrapper_ref, false, false);
-          return Some(Expression::new_call_expression(
-            SPAN,
-            self.finalized_expr_for_runtime_symbol("__importNamespace"),
-            None,
-            [ast::Argument::from(wrapper), ast::Argument::from(finalized_namespace)],
-            false,
-            self,
-          ));
+          if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+            // `__importNamespace(init_xxx, namespace_exports)` settles after the async init.
+            let (wrapper, _) = self.finalized_expr_for_symbol_ref(target.wrapper_ref, false, false);
+            return Some(Expression::new_call_expression(
+              SPAN,
+              self.finalized_expr_for_runtime_symbol("__importNamespace"),
+              None,
+              [ast::Argument::from(wrapper), ast::Argument::from(finalized_namespace)],
+              false,
+              self,
+            ));
+          }
+          let wrapper_call_expr = self.wrapped_esm_init_call_expr(importee_idx, SPAN, true, false);
+          let seq_expr =
+            Expression::new_seq_in_parens(wrapper_call_expr, finalized_namespace, self);
+          let mut then_call = Expression::new_promise_resolve_then(seq_expr, self);
+          if let Expression::CallExpression(call_expr) = &mut then_call
+            && let Some(ast::Argument::ArrowFunctionExpression(arrow)) =
+              call_expr.arguments.first_mut()
+          {
+            arrow.r#async = true;
+          }
+          return Some(then_call);
         }
         let wrapper_call_expr = self.wrapped_esm_init_call_expr(importee_idx, SPAN, true, false);
 
@@ -3426,15 +3439,25 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                     self,
                   )
                 };
-                let import_namespace = Expression::new_call_expression(
-                  SPAN,
-                  self.finalized_expr_for_runtime_symbol("__importNamespace"),
-                  None,
-                  [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
-                  false,
-                  self,
-                );
-                arrow.body = ast::ArrowFunctionBody::from(import_namespace);
+                if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+                {
+                  let import_namespace = Expression::new_call_expression(
+                    SPAN,
+                    self.finalized_expr_for_runtime_symbol("__importNamespace"),
+                    None,
+                    [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
+                    false,
+                    self,
+                  );
+                  arrow.body = ast::ArrowFunctionBody::from(import_namespace);
+                } else {
+                  arrow.r#async = true;
+                  let init_call =
+                    Expression::new_call_expression(SPAN, member(name), None, [], false, self);
+                  let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
+                  let seq_expr = Expression::new_seq_in_parens(await_init, member(ns_name), self);
+                  arrow.body = ast::ArrowFunctionBody::from(seq_expr);
+                }
               }
               Some(Expression::CallExpression(call_expr))
             } else if let Some(ns_name) = namespace_export_name {
