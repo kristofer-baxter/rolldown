@@ -1,68 +1,8 @@
-<p align="center">
-  <br>
-  <br>
-  <a href="https://rolldown.rs" target="_blank" rel="noopener noreferrer">
-    <picture>
-      <source media="(prefers-color-scheme: dark)" srcset="https://rolldown.rs/rolldown-light.svg">
-      <source media="(prefers-color-scheme: light)" srcset="https://rolldown.rs/rolldown-dark.svg">
-      <img alt="rolldown logo" src="https://rolldown.rs/rolldown-dark.svg" height="60">
-    </picture>
-  </a>
-  <br>
-  <br>
-  <br>
-</p>
+# Rolldown fork
 
-<div align="center">
+**This is a downstream fork, not the official Rolldown repository.** It maintains changes for `developer-bundler`.
 
-[![MIT licensed][badge-license]][url-license]
-[![NPM version][badge-npm-version]][url-npm]
-[![CodSpeed Badge](https://img.shields.io/endpoint?url=https://codspeed.io/badge.json)](https://codspeed.io/rolldown/rolldown)
-[![Discord chat][badge-discord]][discord-url]
-[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/rolldown/rolldown)
-
-</div>
-
-<div align="center">
-
-[![NPM Unpacked Size (with version)](https://img.shields.io/npm/unpacked-size/rolldown/latest?label=npm)][url-npm]
-[![NPM Unpacked Size darwin-arm64](https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-darwin-arm64/latest?label=darwin-arm64)](https://npmx.dev/package/@rolldown/binding-darwin-arm64)
-[![NPM Unpacked Size darwin-x64](https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-darwin-x64/latest?label=darwin-x64)](https://npmx.dev/package/@rolldown/binding-darwin-x64)
-[![NPM Unpacked Size linux-x64-gnu](https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-linux-x64-gnu/latest?label=linux-x64-gnu)](https://npmx.dev/package/@rolldown/binding-linux-x64-gnu)
-[![NPM Unpacked Size win32-x64](https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-win32-x64-msvc/latest?label=win32-x64)](https://npmx.dev/package/@rolldown/binding-win32-x64-msvc)
-[![NPM Unpacked Size wasm32-wasi](https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-wasm32-wasi/latest?label=wasm32-wasi)](https://npmx.dev/package/@rolldown/binding-wasm32-wasi)
-
-</div>
-
-<div align="center">
-
-[![pkg.pr.new](https://pkg.pr.new/badge/pkg.pr.new/pkg.pr.new?style=flat&color=000&logoSize=auto)](https://pkg.pr.new/~/rolldown/rolldown)
-
-</div>
-
-<div align="center">
-
-[![rolldown-starter-stackblitz](https://developer.stackblitz.com/img/open_in_stackblitz.svg)](https://stackblitz.com/fork/github/rolldown/rolldown-starter-stackblitz)
-
-</div>
-
-# Rolldown
-
-Rolldown is a JavaScript/TypeScript bundler written in Rust intended to serve as the future bundler used in [Vite](https://vitejs.dev/). It provides Rollup-compatible APIs and plugin interface, but will be more similar to esbuild in scope.
-
-For more information, please check out the documentation at [rolldown.rs](https://rolldown.rs/guide/getting-started).
-
-## VoidZero Inc.
-
-Rolldown is a project of [VoidZero](https://voidzero.dev/), see our announcement [Announcing VoidZero - Next Generation Toolchain for JavaScript](https://voidzero.dev/posts/announcing-voidzero-inc).
-
-If you have requirements for JavaScript tools at scale, please [get in touch](https://forms.gle/WQgjyzYJpwurpxWKA)!
-
-## Contributing
-
-We would love to have more contributors involved!
-
-To get started, please read our [Contributing Guide](https://rolldown.rs/contribution-guide/).
+**For Rolldown, go to the official repository: [rolldown/rolldown](https://github.com/rolldown/rolldown).** Use upstream for releases, general bug reports, and contributions. Official documentation is at [rolldown.rs](https://rolldown.rs/).
 
 ## Credits
 
@@ -87,15 +27,6 @@ This project also partially contains code derived or copied from the following p
 
 Licenses of these projects are listed in [THIRD-PARTY-LICENSE](/THIRD-PARTY-LICENSE)
 
-[badge-discord]: https://img.shields.io/discord/1079625926024900739?logo=discord&label=Discord
-[discord-url]: https://chat.rolldown.rs
-[badge-license]: https://img.shields.io/badge/license-MIT-blue.svg
-[url-license]: https://github.com/rolldown/rolldown/blob/main/LICENSE
-[badge-npm-version]: https://img.shields.io/npm/v/rolldown/latest?color=brightgreen
-[url-npm]: https://npmx.dev/package/rolldown/v/latest
-[badge-binary-size-windows]: [https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-win32-x64-msvc/latest]
-[badge-binary-size-macos]: [https://img.shields.io/npm/unpacked-size/%40rolldown%2Fbinding-darwin-arm64/latest]
+## Upstream sponsors
 
-## Sponsors
-
-Thanks to [namespace.so](https://namespace.so) for powering our CI/CD pipelines with fast, free macOS and Linux runners.
+The upstream project thanks [namespace.so](https://namespace.so) for powering its CI/CD pipelines with fast, free macOS and Linux runners.
