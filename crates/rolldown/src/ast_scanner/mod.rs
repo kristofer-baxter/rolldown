@@ -1000,7 +1000,8 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
             || symbol_id_span.start > id.span.start)
             || scoping.symbol_flags(symbol_id).is_import()
             || !scoping.symbol_redeclarations(symbol_id).is_empty()
-            || scoping.get_resolved_references(symbol_id).any(Reference::is_write);
+            || scoping.get_resolved_references(symbol_id).any(Reference::is_write)
+            || eval_can_assign(scoping, symbol_id);
           if !cannot_reuse_symbol {
             self.result.default_export_ref.symbol = symbol_id;
           }
