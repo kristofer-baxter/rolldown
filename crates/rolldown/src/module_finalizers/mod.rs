@@ -1924,9 +1924,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         target_commonjs_exported_symbol: Some((target, _)),
         depended_refs,
         ..
-      }) if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
-        && self.callee_member == Some(member_expr.node_id()) =>
-      {
+      }) if self.callee_member == Some(member_expr.node_id()) && props.len() == 1 => {
         Some(self.commonjs_member_callee(*object_ref, *target, depended_refs, props, span))
       }
       Some(MemberExprRefResolution {

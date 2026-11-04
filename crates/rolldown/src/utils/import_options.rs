@@ -363,4 +363,34 @@ mod tests {
       .expect("execute node");
     assert!(status.success(), "expected node execution of preserved cyclic default export to pass");
   }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn preserves_cjs_default_import_method_call_receiver_in_ordinary_mode() {
+    let dir = TempTestDir::new("cjs-default-method-receiver");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("dep.cjs"), "exports.check = function () { return this; };\n")
+      .expect("write dep.cjs");
+    std::fs::write(
+      dir.path().join("main.mjs"),
+      "import assert from 'node:assert';\nimport api from './dep.cjs';\nassert.strictEqual(api.check(), api);\n",
+    )
+    .expect("write main.mjs");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.mjs".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(status.success(), "expected api.check() === api in ordinary mode");
+  }
 }
