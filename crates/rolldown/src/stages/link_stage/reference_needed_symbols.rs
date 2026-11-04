@@ -260,11 +260,16 @@ impl LinkStage<'_> {
                     let json = crate::utils::import_options::is_json_module(importee);
                     let text = crate::utils::import_options::is_text_module(importee);
                     let options_statically_satisfied =
-                      !rec.meta.contains(ImportRecordMeta::HasNonEmptyImportOptions)
-                        || (text && rec.meta.contains(ImportRecordMeta::HasTextTypeImportOptions))
+                      !rec.meta.contains(crate::utils::import_options::HAS_NON_EMPTY_IMPORT_OPTIONS)
+                        || (text
+                          && rec.meta.contains(
+                            crate::utils::import_options::HAS_TEXT_TYPE_IMPORT_OPTIONS,
+                          ))
                         || (!text
                           && json
-                          && rec.meta.contains(ImportRecordMeta::HasJsonTypeImportOptions));
+                          && rec.meta.contains(
+                            crate::utils::import_options::HAS_JSON_TYPE_IMPORT_OPTIONS,
+                          ));
                     if runtime_semantics || !options_statically_satisfied {
                       stmt_info
                         .referenced_symbols

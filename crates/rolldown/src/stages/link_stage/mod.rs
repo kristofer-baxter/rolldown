@@ -274,6 +274,8 @@ pub struct LinkStage<'a> {
   pub global_constant_symbol_map: FxHashMap<SymbolRef, ConstExportMeta>,
   /// See [`LinkStageOutput::non_splittable_json_defaults`].
   pub non_splittable_json_defaults: FxHashSet<ModuleIdx>,
+  /// Imports whose binding lazy barrel left uncertain by skipping a record they depend on.
+  pub lazy_barrel_uncertain_bindings: Vec<SymbolRef>,
   pub flat_options: FlatOptions,
   pub user_defined_entry_modules: FxHashSet<ModuleIdx>,
   /// Found before the passes that read the module table, which pass over these modules.
@@ -401,6 +403,7 @@ impl<'a> LinkStage<'a> {
       normal_symbol_exports_chain_map: FxHashMap::default(),
       star_reexport_records_by_imported_symbol: FxHashMap::default(),
       member_read_star_reexport_paths: Vec::new(),
+      lazy_barrel_uncertain_bindings: Vec::new(),
       external_import_namespace_merger: FxHashMap::default(),
       overrode_preserve_entry_signature_map: scan_stage_output
         .overrode_preserve_entry_signature_map,
@@ -438,6 +441,7 @@ impl<'a> LinkStage<'a> {
     self.recompute_analyzed_side_effects();
     self.reference_needed_symbols();
     self.include_statements(&unreachable_import_expression_node_ids);
+    self.check_lazy_barrel_uncertain_bindings();
     self.patch_module_dependencies();
 
     tracing::trace!(

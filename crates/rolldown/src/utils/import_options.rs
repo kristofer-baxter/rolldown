@@ -3,7 +3,30 @@ use oxc::{
   ast::builder::GetAstBuilder,
   span::SPAN,
 };
-use rolldown_common::{ImportKind, IndexModules, ModuleIdx, NormalModule};
+use rolldown_common::{
+  ImportAttribute, ImportKind, ImportRecordMeta, IndexModules, ModuleIdx, NormalModule,
+};
+
+pub const HAS_NON_EMPTY_IMPORT_OPTIONS: ImportRecordMeta =
+  ImportRecordMeta::from_bits_retain(1 << 11);
+pub const HAS_JSON_TYPE_IMPORT_OPTIONS: ImportRecordMeta =
+  ImportRecordMeta::from_bits_retain(1 << 12);
+pub const HAS_TEXT_TYPE_IMPORT_OPTIONS: ImportRecordMeta =
+  ImportRecordMeta::from_bits_retain(1 << 13);
+
+pub fn is_json_import_attribute(attr: &ImportAttribute) -> bool {
+  let rendered = attr.to_string();
+  let Some(inner) = rendered
+    .strip_prefix("with { ")
+    .or_else(|| rendered.strip_prefix("assert { "))
+    .and_then(|s| s.strip_suffix(" }"))
+  else {
+    return false;
+  };
+  inner
+    .split(", ")
+    .any(|entry| entry == r#"type: "json""# || entry == r#""type": "json""#)
+}
 
 pub fn is_json_module(module: &NormalModule) -> bool {
   module.module_type == rolldown_common::ModuleType::Json
