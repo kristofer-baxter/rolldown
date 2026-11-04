@@ -328,17 +328,17 @@ mod tests {
       .expect("write package.json");
     std::fs::write(
       dir.path().join("main.js"),
-      "import assert from 'node:assert';\nimport defaultValue, { observed } from './a.js';\nassert.strictEqual(observed, 'tdz');\nassert.strictEqual(defaultValue, 1);\n",
+      "import assert from 'node:assert';\nimport defaultValue, { observed, lexicalValue } from './a.js';\nassert.strictEqual(observed, 'tdz:tdz');\nassert.strictEqual(defaultValue, 1);\nassert.strictEqual(lexicalValue, 2);\n",
     )
     .expect("write main.js");
     std::fs::write(
       dir.path().join("a.js"),
-      "import { probe } from './b.js';\nconst value = 1;\nexport const observed = probe();\nexport default value;\n",
+      "import { probe } from './b.js';\nexport function readLexical() {\n  try {\n    lexicalValue;\n    return 'init';\n  } catch (err) {\n    return err instanceof ReferenceError ? 'tdz' : 'other';\n  }\n}\nconst value = 1;\nexport const observed = probe();\nexport const lexicalValue = 2;\nexport default value;\n",
     )
     .expect("write a.js");
     std::fs::write(
       dir.path().join("b.js"),
-      "import value from './a.js';\nexport function probe() {\n  try {\n    return value;\n  } catch (err) {\n    return err instanceof ReferenceError ? 'tdz' : 'other';\n  }\n}\n",
+      "import value, { readLexical } from './a.js';\nexport function probe() {\n  const lexicalState = readLexical();\n  try {\n    return `${value}:${lexicalState}`;\n  } catch (err) {\n    return `${err instanceof ReferenceError ? 'tdz' : 'other'}:${lexicalState}`;\n  }\n}\n",
     )
     .expect("write b.js");
 
@@ -347,6 +347,7 @@ mod tests {
       cwd: Some(dir.path().to_path_buf()),
       dir: Some(out_dir.to_string_lossy().into_owned()),
       preserve_modules: Some(true),
+      minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
       experimental: Some(ExperimentalOptions {
         incremental_build: Some(true),
         resolve_new_url_to_asset: Some(false),
@@ -361,7 +362,10 @@ mod tests {
       .arg(out_dir.join("main.js"))
       .status()
       .expect("execute node");
-    assert!(status.success(), "expected node execution of preserved cyclic default export to pass");
+    assert!(
+      status.success(),
+      "expected node execution of preserved cyclic default export to pass"
+    );
   }
 
   #[tokio::test(flavor = "multi_thread")]
@@ -392,5 +396,68 @@ mod tests {
       .status()
       .expect("execute node");
     assert!(status.success(), "expected api.check() === api in ordinary mode");
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn preserves_cjs_default_import_delete_target_in_ordinary_mode() {
+    let dir = TempTestDir::new("cjs-default-delete-target");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("dep.cjs"), "exports.x = 1;\n").expect("write dep.cjs");
+    std::fs::write(
+      dir.path().join("main.mjs"),
+      "import assert from 'node:assert';\nimport api from './dep.cjs';\ndelete api.x;\nassert.strictEqual(Object.hasOwn(api, 'x'), false);\nassert.strictEqual(api.x, undefined);\n",
+    )
+    .expect("write main.mjs");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.mjs".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(status.success(), "expected delete api.x to delete the CommonJS export in ordinary mode");
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn preserves_cjs_mutation_across_default_reexport_in_ordinary_mode() {
+    let dir = TempTestDir::new("cjs-default-reexport-mutation");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("dep.cjs"), "exports.value = 1;\n").expect("write dep.cjs");
+    std::fs::write(dir.path().join("barrel.js"), "export { default } from './dep.cjs';\n")
+      .expect("write barrel.js");
+    std::fs::write(
+      dir.path().join("main.js"),
+      "import assert from 'node:assert';\nimport api from './barrel.js';\nimport direct from './dep.cjs';\napi.value = 2;\nassert.strictEqual(direct.value, 2);\n",
+    )
+    .expect("write main.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(
+      status.success(),
+      "expected mutation through default re-export to prevent stale constant inlining in ordinary mode"
+    );
   }
 }

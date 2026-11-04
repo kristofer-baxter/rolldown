@@ -766,9 +766,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       self.result.symbol_ref_db.create_facade_root_symbol_ref(ident.as_ref());
     // Re-exporting a default passes on a CommonJS module's exports object, which the importers of
     // the re-export may change (#693).
-    if imported == "default"
-      && crate::utils::native_records::runtime_module_semantics_enabled(self.immutable_ctx.options)
-    {
+    if imported == "default" {
       *generated_imported_as_ref.flags_mut(&mut self.result.symbol_ref_db) |=
         SymbolRefFlags::HasComputedMemberWrite;
     }
@@ -805,10 +803,8 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       .symbol_ref_db
       .create_facade_root_symbol_ref(legitimize_identifier_name(export_name).as_ref());
     // So does re-exporting a namespace, through its `default` (#693).
-    if crate::utils::native_records::runtime_module_semantics_enabled(self.immutable_ctx.options) {
-      *generated_imported_as_ref.flags_mut(&mut self.result.symbol_ref_db) |=
-        SymbolRefFlags::HasComputedMemberWrite;
-    }
+    *generated_imported_as_ref.flags_mut(&mut self.result.symbol_ref_db) |=
+      SymbolRefFlags::HasComputedMemberWrite;
     self
       .current_stmt_info
       .declared_symbols

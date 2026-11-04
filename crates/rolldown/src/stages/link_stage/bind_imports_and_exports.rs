@@ -1184,6 +1184,7 @@ impl LinkStage<'_> {
                       )
                   };
                   if let Some(cjs_idx) = cjs_module_idx
+                    && !matches!(member_expr_ref.write_target, Some(MemberExprWriteKind::Delete))
                     && match &maybe_namespace_symbol.namespace_alias {
                       Some(alias) => {
                         !is_default && default_is_exports(alias.namespace_ref, cjs_idx)
@@ -1348,9 +1349,19 @@ impl LinkStage<'_> {
       for (import_symbol, cjs_module_idx) in
         meta.named_import_to_cjs_module.iter().chain(meta.import_record_ns_to_cjs_module.iter())
       {
-        if import_symbol
-          .flags(&self.symbols)
-          .is_some_and(|f| f.contains(SymbolRefFlags::HasComputedMemberWrite))
+        let cjs_exports_reachable =
+          crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+            || self.module_table[*cjs_module_idx]
+              .as_normal()
+              .is_some_and(|m| m.exports_kind.is_commonjs())
+            || self.metas[*cjs_module_idx]
+              .resolved_exports
+              .get("default")
+              .is_some_and(|e| e.came_from_commonjs);
+        if cjs_exports_reachable
+          && import_symbol
+            .flags(&self.symbols)
+            .is_some_and(|f| f.contains(SymbolRefFlags::HasComputedMemberWrite))
         {
           written_cjs_export_symbols.extend(
             self.metas[*cjs_module_idx]

@@ -1207,6 +1207,19 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     if !should_hoist {
       return None;
     }
+    if crate::utils::native_records::enabled(self.ctx.options)
+      && !matches!(
+        self.ctx.wrapper_mode(),
+        ModuleWrapperMode::InteropEsm(_) | ModuleWrapperMode::ExecutionOrder(_)
+      )
+      && !decl
+        .declarations
+        .iter()
+        .flat_map(|var_decl| var_decl.id.get_binding_identifiers())
+        .any(|binding| self.temporal_declarations.contains_key(binding.name.as_str()))
+    {
+      return None;
+    }
     let mut ret = vec![];
     let exprs = decl.declarations.take_in(self).into_iter().filter_map(|var_decl| {
       ret.extend(var_decl.id.get_binding_identifiers().iter().map(|item| item.name));

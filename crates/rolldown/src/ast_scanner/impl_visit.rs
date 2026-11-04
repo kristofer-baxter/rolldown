@@ -709,7 +709,13 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         let runtime_semantics = crate::utils::native_records::runtime_module_semantics_enabled(
           self.immutable_ctx.options,
         );
-        let deleting_member = runtime_semantics
+        let deleting_member = (runtime_semantics
+          || self.result.named_imports.get(&root_symbol_id).is_some_and(|import| {
+            matches!(
+              &import.imported,
+              rolldown_common::Specifier::Literal(name) if name.as_str() == "default"
+            )
+          }))
           && self.visit_path.iter().any(|kind| {
             matches!(kind, AstKind::UnaryExpression(expr) if expr.operator == ast::UnaryOperator::Delete)
           });

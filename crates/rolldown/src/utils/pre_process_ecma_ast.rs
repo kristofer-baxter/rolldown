@@ -272,7 +272,7 @@ impl PreProcessEcmaAst {
         Self::restore_resource_bindings(&mut scoping, &resource_bindings);
         // Oxc DCE assumes TDZ errors cannot occur. Keep lexical reads opaque until
         // the finalizer replaces this internal intrinsic with real binding guards.
-        if runtime_semantics
+        if (runtime_semantics || crate::utils::native_records::enabled(bundle_options))
           && super::temporal_reads::preserve_temporal_reads(program, &scoping, allocator)
         {
           scoping = self.recreate_scoping(&mut None, program);
