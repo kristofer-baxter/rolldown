@@ -1,3 +1,6 @@
-// Never executed, like the stub. The `import()` is the edge the scan follows into the real
-// module, and it keeps a fetched route in later builds.
-import($MODULE_ID);
+const lazyExports = (async () => {
+  await import($MODULE_ID);
+  return __rolldown_runtime__.loadExports($STABLE_MODULE_ID);
+})();
+
+export { lazyExports as 'rolldown:exports' };

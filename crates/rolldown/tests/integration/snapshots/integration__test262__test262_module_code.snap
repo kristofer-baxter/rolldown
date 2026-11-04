@@ -2,7 +2,7 @@
 source: crates/rolldown/tests/integration/test262.rs
 expression: snapshot
 ---
-Summary: 550 passed, 49 failed, 599 total
+Summary: 546 passed, 53 failed, 599 total
 
 ---
 
@@ -550,9 +550,13 @@ Actual: Runtime execution succeeded
 ---
 
 # language/module-code/export-expname-binding-index.js
-Result: PASS
+Result: FAIL
+Reason: Rolldown makes exported bindings non-writable, but does not throw on assignment
 Expected: success
-Actual: Runtime execution succeeded
+Actual:
+Runtime error: Failed to import test module: Test262Error {
+  message: 'Expected a TypeError to be thrown but no exception was thrown at all'
+}
 ---
 
 # language/module-code/export-expname-binding-string.js
@@ -662,21 +666,21 @@ Actual:
 Result: PASS
 Expected: error (type: SyntaxError, phase: parse)
 Actual:
-Duplicate import attribute key `type`
+Identifier `type` has already been declared
 ---
 
 # language/module-code/import-attributes/early-dup-attribute-key-import-nobinding.js
 Result: PASS
 Expected: error (type: SyntaxError, phase: parse)
 Actual:
-Duplicate import attribute key `type`
+Identifier `type` has already been declared
 ---
 
 # language/module-code/import-attributes/early-dup-attribute-key-import-withbinding.js
 Result: PASS
 Expected: error (type: SyntaxError, phase: parse)
 Actual:
-Duplicate import attribute key `type`
+Identifier `type` has already been declared
 ---
 
 # language/module-code/import-attributes/import-attribute-empty.js
@@ -1348,11 +1352,11 @@ Actual: Runtime execution succeeded
 
 # language/module-code/namespace/internals/define-own-property.js
 Result: FAIL
-Reason: Rolldown uses a getter instead of a data property to support live bindings
+Reason: Rolldown allows defining properties on module namespace objects
 Expected: success
 Actual:
 Runtime error: Failed to import test module: Test262Error {
-  message: 'Reflect.defineProperty: indirect Expected SameValue(«false», «true») to be true'
+  message: 'Reflect.defineProperty: local2 Expected SameValue(«true», «false») to be true'
 }
 ---
 
@@ -1438,9 +1442,13 @@ Actual: Runtime execution succeeded
 ---
 
 # language/module-code/namespace/internals/get-prototype-of.js
-Result: PASS
+Result: FAIL
+Reason: Rolldown does not use null as the prototype of module namespace objects
 Expected: success
-Actual: Runtime execution succeeded
+Actual:
+Runtime error: Failed to import test module: Test262Error {
+  message: 'Expected SameValue(«true», «false») to be true'
+}
 ---
 
 # language/module-code/namespace/internals/get-str-found-init.js
@@ -1502,9 +1510,13 @@ Actual: Runtime execution succeeded
 ---
 
 # language/module-code/namespace/internals/has-property-str-not-found.js
-Result: PASS
+Result: FAIL
+Reason: Rolldown does not use null as the prototype of module namespace objects
 Expected: success
-Actual: Runtime execution succeeded
+Actual:
+Runtime error: Failed to import test module: Test262Error {
+  message: 'Reflect.has: __proto__ Expected SameValue(«true», «false») to be true'
+}
 ---
 
 # language/module-code/namespace/internals/has-property-sym-found.js
@@ -1520,9 +1532,13 @@ Actual: Runtime execution succeeded
 ---
 
 # language/module-code/namespace/internals/is-extensible.js
-Result: PASS
+Result: FAIL
+Reason: Rolldown does not freeze module namespace objects
 Expected: success
-Actual: Runtime execution succeeded
+Actual:
+Runtime error: Failed to import test module: Test262Error {
+  message: 'Expected SameValue(«true», «false») to be true'
+}
 ---
 
 # language/module-code/namespace/internals/object-hasOwnProperty-binding-uninit.js
@@ -1580,9 +1596,13 @@ Actual: Runtime execution succeeded
 ---
 
 # language/module-code/namespace/internals/set-prototype-of.js
-Result: PASS
+Result: FAIL
+Reason: Rolldown allows setting the prototype of module namespace objects
 Expected: success
-Actual: Runtime execution succeeded
+Actual:
+Runtime error: Failed to import test module: Test262Error {
+  message: 'Expected a TypeError to be thrown but no exception was thrown at all'
+}
 ---
 
 # language/module-code/namespace/internals/set.js

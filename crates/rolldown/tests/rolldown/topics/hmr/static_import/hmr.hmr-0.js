@@ -20,9 +20,7 @@ assert.deepStrictEqual(cjsNamespace, {
 });
 assert.deepEqual(
   esmNamespace,
-  Object.defineProperty({ __proto__: null, value: 'esm-namespace' }, Symbol.toStringTag, {
-    value: 'Module',
-  }),
+  Object.defineProperty({ value: 'esm-namespace' }, Symbol.toStringTag, { value: 'Module' }),
 );
 
 import.meta.hot.accept((mod) => {

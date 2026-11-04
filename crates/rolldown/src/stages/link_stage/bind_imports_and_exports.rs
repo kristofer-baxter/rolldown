@@ -2129,7 +2129,6 @@ impl BindImportsAndExportsContext<'_> {
     (result, promotion)
   }
 
-  #[expect(clippy::too_many_lines)]
   fn match_import_with_export(
     &mut self,
     index_modules: &IndexModules,

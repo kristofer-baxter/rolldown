@@ -254,8 +254,8 @@ impl IntegrationTest {
             }))
           },
           watch: Some(DevWatchOptions {
-            enabled: Some(false),
-            skip_write: !self.test_meta.write_to_disk,
+            disable_watcher: Some(true),
+            skip_write: Some(!self.test_meta.write_to_disk),
             ..Default::default()
           }),
           ..Default::default()

@@ -14,7 +14,12 @@ pub struct BindingWatchOption {
   pub include: Option<Vec<BindingStringOrRegex>>,
   pub exclude: Option<Vec<BindingStringOrRegex>>,
   pub build_delay: Option<u32>,
-  pub watcher: Option<BindingWatcherFileWatcherOptions>,
+  pub use_polling: Option<bool>,
+  pub poll_interval: Option<u32>,
+  pub compare_contents_for_polling: Option<bool>,
+  pub use_debounce: Option<bool>,
+  pub debounce_delay: Option<u32>,
+  pub debounce_tick_rate: Option<u32>,
   #[napi(ts_type = "((id: string) => void) | undefined")]
   #[debug(skip)]
   pub on_invalidate: Option<JsCallback<FnArgs<(String,)>>>,
@@ -27,37 +32,18 @@ impl From<BindingWatchOption> for rolldown_common::WatchOption {
       include: value.include.map(bindingify_string_or_regex_array),
       exclude: value.exclude.map(bindingify_string_or_regex_array),
       build_delay: value.build_delay,
-      watcher: value.watcher.map(Into::into),
+      use_polling: value.use_polling.unwrap_or_default(),
+      poll_interval: value.poll_interval.map(u64::from),
+      compare_contents_for_polling: value.compare_contents_for_polling.unwrap_or_default(),
+      use_debounce: value.use_debounce.unwrap_or_default(),
+      debounce_delay: value.debounce_delay.map(u64::from),
+      debounce_tick_rate: value.debounce_tick_rate.map(u64::from),
       on_invalidate: value.on_invalidate.map(|js_callback| {
         OnInvalidate::new(Arc::new(move |path| {
           let f = Arc::clone(&js_callback);
           f.call(FnArgs { data: (path.to_string(),) }, ThreadsafeFunctionCallMode::Blocking);
         }))
       }),
-    }
-  }
-}
-
-#[napi_derive::napi(object, object_to_js = false)]
-#[derive(Debug, Default)]
-pub struct BindingWatcherFileWatcherOptions {
-  pub use_polling: Option<bool>,
-  pub poll_interval: Option<u32>,
-  pub compare_contents_for_polling: Option<bool>,
-  pub use_debounce: Option<bool>,
-  pub debounce_delay: Option<u32>,
-  pub debounce_tick_rate: Option<u32>,
-}
-
-impl From<BindingWatcherFileWatcherOptions> for rolldown_common::WatcherFileWatcherOptions {
-  fn from(value: BindingWatcherFileWatcherOptions) -> Self {
-    Self {
-      use_polling: value.use_polling,
-      poll_interval: value.poll_interval.map(u64::from),
-      compare_contents_for_polling: value.compare_contents_for_polling,
-      use_debounce: value.use_debounce,
-      debounce_delay: value.debounce_delay.map(u64::from),
-      debounce_tick_rate: value.debounce_tick_rate.map(u64::from),
     }
   }
 }

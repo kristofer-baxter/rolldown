@@ -2628,21 +2628,6 @@ dependencies = [
 ]
 
 [[package]]
-name = "rolldown-notify-napi"
-version = "0.0.2"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "c87c7d2972498f030f0d8191669b12dac8d044a2ab8e61095eda0b6797bfd979"
-dependencies = [
- "dunce",
- "globset",
- "napi",
- "napi-build",
- "napi-derive",
- "rolldown-notify",
- "rolldown-notify-debouncer-full",
-]
-
-[[package]]
 name = "rolldown-notify-types"
 version = "2.0.4"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -2675,7 +2660,6 @@ dependencies = [
  "oxc_transform_napi",
  "regex",
  "rolldown",
- "rolldown-notify-napi",
  "rolldown_common",
  "rolldown_dev",
  "rolldown_devtools",
@@ -3015,7 +2999,9 @@ dependencies = [
 name = "rolldown_plugin_lazy_compilation"
 version = "1.2.16"
 dependencies = [
+ "anyhow",
  "arcstr",
+ "oxc",
  "rolldown_common",
  "rolldown_plugin",
  "rolldown_utils",

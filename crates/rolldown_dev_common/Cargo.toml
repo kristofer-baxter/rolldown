@@ -20,11 +20,7 @@ test = false
 workspace = true
 
 [features]
-deserialize_dev_options = [
-  "dep:schemars",
-  "dep:serde",
-  "rolldown_common/deserialize_bundler_options",
-]
+deserialize_dev_options = ["dep:schemars", "dep:serde"]
 
 [dependencies]
 derive_more = { workspace = true }

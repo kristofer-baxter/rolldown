@@ -65,7 +65,8 @@ pub fn runtime_module_semantics_enabled(options: &NormalizedBundlerOptions) -> b
   options.experimental.is_resolve_new_url_to_asset_enabled()
     && (options.is_strict_execution_order_enabled()
       || options.preserve_modules
-      || options.is_dev_mode_enabled())
+      || options.is_dev_mode_enabled()
+      || options.experimental.is_incremental_build_enabled())
 }
 
 pub fn has_native_namespace(

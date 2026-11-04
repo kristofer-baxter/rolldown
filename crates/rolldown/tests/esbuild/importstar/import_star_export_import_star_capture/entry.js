@@ -5,7 +5,6 @@ assert.deepEqual(
   ns,
   Object.defineProperty(
     {
-      __proto__: null,
       foo: 123,
     },
     Symbol.toStringTag,

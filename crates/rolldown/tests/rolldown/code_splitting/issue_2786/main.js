@@ -11,7 +11,6 @@ import('./share').then((mod) => {
     mod,
     Object.defineProperty(
       {
-        __proto__: null,
         default: 'shared',
       },
       Symbol.toStringTag,
@@ -25,7 +24,6 @@ import('./share.json').then((mod) => {
     mod,
     Object.defineProperty(
       {
-        __proto__: null,
         default: {},
       },
       Symbol.toStringTag,

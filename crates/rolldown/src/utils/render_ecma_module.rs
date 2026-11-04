@@ -6,7 +6,7 @@ use rolldown_common::{
 };
 use rolldown_error::BuildDiagnostic;
 use rolldown_sourcemap::{
-  Source, SourceMap, SourceMapBuilder, SourceMapSource, collapse_sourcemaps, empty_sourcemap,
+  Source, SourceMap, SourceMapSource, collapse_sourcemaps, empty_sourcemap,
 };
 use rolldown_utils::concat_string;
 
@@ -74,10 +74,6 @@ pub fn render_ecma_module(
 /// (`codegen_map`, always the last element of the chain) into the final module
 /// sourcemap. Returns `None` when there is no sourcemap to emit.
 ///
-/// Like Rollup, the result keeps only the sources and names that a traced token
-/// references. So a transform that returns `{ mappings: '' }` or omits its map
-/// removes the module's earlier code, and the names that came with it.
-///
 /// A `SOURCEMAP_BROKEN` warning is pushed onto `warnings` for every plugin that
 /// omitted its sourcemap, since that breaks the mapping chain for `module_id`.
 pub fn collapse_module_sourcemap(
@@ -130,96 +126,8 @@ pub fn collapse_module_sourcemap(
     if let Some(sourcemap) = codegen_map.as_ref() {
       owned_chain.push(sourcemap);
     }
-    let collapsed = if let [map] = owned_chain.as_slice() {
-      (*map).clone().into_owned()
-    } else {
-      collapse_sourcemaps(&owned_chain)
-    };
-    Some(prune_unreferenced_sourcemap_entries(collapsed))
+    Some(collapse_sourcemaps(&owned_chain))
   }
-}
-
-fn prune_unreferenced_sourcemap_entries(sourcemap: SourceMap) -> SourceMap {
-  let mut parts = sourcemap.into_parts();
-  let mut source_used = vec![false; parts.sources.len()];
-  let mut name_used = vec![false; parts.names.len()];
-  let mut source_out_of_range = false;
-  let mut name_out_of_range = false;
-  for token in &parts.tokens {
-    if let Some(source_id) = token.get_source_id() {
-      if let Some(used) = source_used.get_mut(source_id as usize) {
-        *used = true;
-      } else {
-        source_out_of_range = true;
-      }
-    }
-    if let Some(name_id) = token.get_name_id() {
-      if let Some(used) = name_used.get_mut(name_id as usize) {
-        *used = true;
-      } else {
-        name_out_of_range = true;
-      }
-    }
-  }
-  let all_sources_used = !source_out_of_range && source_used.iter().all(|&u| u);
-  let all_names_used = !name_out_of_range && name_used.iter().all(|&u| u);
-  if all_sources_used && all_names_used {
-    return SourceMap::from_parts(parts);
-  }
-  let mut new_source_ids = Vec::with_capacity(parts.sources.len());
-  let mut kept_sources = Vec::new();
-  let mut kept_contents = Vec::new();
-  let mut has_any_content = false;
-  let mut source_contents = parts.source_contents.into_iter();
-  for (idx, source) in parts.sources.into_iter().enumerate() {
-    let content = source_contents.next().flatten();
-    if source_used[idx] {
-      new_source_ids.push(Some(u32::try_from(kept_sources.len()).expect("source count fits u32")));
-      kept_sources.push(source);
-      has_any_content |= content.is_some();
-      kept_contents.push(content);
-    } else {
-      new_source_ids.push(None);
-    }
-  }
-  parts.sources = kept_sources;
-  parts.source_contents = if has_any_content { kept_contents } else { Vec::new() };
-
-  let mut new_name_ids = Vec::with_capacity(parts.names.len());
-  let mut kept_names = Vec::new();
-  for (idx, name) in parts.names.into_iter().enumerate() {
-    if name_used[idx] {
-      new_name_ids.push(Some(u32::try_from(kept_names.len()).expect("name count fits u32")));
-      kept_names.push(name);
-    } else {
-      new_name_ids.push(None);
-    }
-  }
-  parts.names = kept_names;
-
-  if !parts.tokens.is_empty() {
-    let mut token_builder = SourceMapBuilder::default();
-    for token in &parts.tokens {
-      let source_id =
-        token.get_source_id().and_then(|id| new_source_ids.get(id as usize).copied().flatten());
-      let name_id = if source_id.is_some() {
-        token.get_name_id().and_then(|id| new_name_ids.get(id as usize).copied().flatten())
-      } else {
-        None
-      };
-      token_builder.add_token(
-        token.get_dst_line(),
-        token.get_dst_col(),
-        if source_id.is_some() { token.get_src_line() } else { 0 },
-        if source_id.is_some() { token.get_src_col() } else { 0 },
-        source_id,
-        name_id,
-      );
-    }
-    parts.tokens = token_builder.into_sourcemap().into_parts().tokens;
-  }
-  parts.token_chunks = None;
-  SourceMap::from_parts(parts)
 }
 
 #[cfg(test)]
@@ -228,7 +136,7 @@ mod tests {
   use arcstr::ArcStr;
   use insta::assert_snapshot;
   use rolldown_common::{PluginIdx, SourcemapChainElement};
-  use rolldown_sourcemap::{SourceMap, SourceMapBuilder, empty_sourcemap};
+  use rolldown_sourcemap::{SourceMap, SourceMapBuilder};
 
   const MODULE_ID: &str = "/project/src/index.js";
 
@@ -327,28 +235,5 @@ mod tests {
         .unwrap();
     assert_snapshot!(result.to_json_string(), @r#"{"version":3,"names":[],"sources":["loaded.js"],"sourcesContent":["const a = 1;\n"],"mappings":"AAAA,MAAM"}"#);
     assert!(warnings.is_empty());
-  }
-
-  #[test]
-  fn map_without_mappings_drops_earlier_sources_and_names() {
-    // `{ mappings: '' }` or an omitted map after a real map leaves no token that reaches the
-    // original code, so its source, content and names must not survive (#11176).
-    let mut builder = SourceMapBuilder::default();
-    let source_id = builder.add_source_and_content(MODULE_ID, "const secret = 1;\n");
-    let name_id = builder.add_name("secret");
-    builder.add_token(0, 6, 0, 6, Some(source_id), Some(name_id));
-    let earlier =
-      SourcemapChainElement::Transform((plugin_idx(), builder.into_sourcemap().into_owned()));
-    for last in [SourcemapChainElement::Transform((plugin_idx(), empty_sourcemap())), omitted()] {
-      let mut warnings = vec![];
-      let result = collapse_module_sourcemap(
-        &[earlier.clone(), last],
-        Some(codegen_map("proxy();\n")),
-        MODULE_ID,
-        &mut warnings,
-      )
-      .unwrap();
-      assert_eq!(result.to_json_string(), r#"{"version":3,"names":[],"sources":[],"mappings":""}"#);
-    }
   }
 }
