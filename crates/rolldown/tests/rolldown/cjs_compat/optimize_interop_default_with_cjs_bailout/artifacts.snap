@@ -24,6 +24,6 @@ var import_commonjs = /* @__PURE__ */ __toESM((/* @__PURE__ */ __commonJSMin(((e
 	exports.foo = 1;
 })))());
 assert.deepEqual(import_commonjs.default.slice(1), [2, 3], "should import JSON file as expected");
-assert.equal(1, 1);
+assert.equal(import_commonjs.foo, 1);
 
 ```

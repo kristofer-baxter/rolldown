@@ -37,14 +37,15 @@ __reExport(named_import_export_star_from_cjs_exports, /* @__PURE__ */ __toESM(re
 var require_lib = /* @__PURE__ */ __commonJSMin(((exports) => {
 	exports.a = "react-like-a";
 }));
-(/* @__PURE__ */ __commonJSMin(((exports, module) => {
+// main.js
+var import_indirect_common_js = /* @__PURE__ */ __toESM((/* @__PURE__ */ __commonJSMin(((exports, module) => {
 	module.exports = require_lib();
-})))();
+})))());
 assert.equal("basic-a", "basic-a");
 assert.equal("basic-ref-with-named-default-a", "basic-ref-with-named-default-a");
 assert.equal("export-star-from-cjs-a", "export-star-from-cjs-a");
 assert.equal(named_import_export_star_from_cjs_exports.a, "named-import-export-star-from-cjs-a");
 assert.equal("nested-export-star-from-cjs-a", "nested-export-star-from-cjs-a");
-assert.equal("react-like-a", "react-like-a");
+assert.equal(import_indirect_common_js.a, "react-like-a");
 
 ```

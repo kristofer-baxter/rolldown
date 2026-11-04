@@ -81,30 +81,10 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
       );
       return;
     }
-    let mut preserved_options = if import_expr.phase.is_none()
-      && target.is_some_and(|idx| self.ctx.modules[idx].is_normal())
-      && import_expr.options.as_ref().is_some_and(|options| {
-        !crate::utils::import_options::is_side_effect_free_import_options(options)
-      }) {
-      import_expr.options.take()
-    } else {
-      None
-    };
-    let rewritten_inline =
-      if let Some(new_expr) = self.try_rewrite_inline_dynamic_import_expr(import_expr) {
-        *expr = new_expr;
-        true
-      } else {
-        false
-      };
-    let rewritten_import = self.try_rewrite_import_expression(expr);
-    if !rewritten_import {
-      if !rewritten_inline
-        && let ast::Expression::ImportExpression(import_expr) = expr
-        && let Some(options) = preserved_options.take()
-      {
-        import_expr.options = Some(options);
-      }
+    if let Some(new_expr) = self.try_rewrite_inline_dynamic_import_expr(import_expr) {
+      *expr = new_expr;
+    }
+    if !self.try_rewrite_import_expression(expr) {
       walk_js_mut::walk_expression(self, expr);
     }
     if link_failure {
@@ -123,11 +103,6 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
         false,
         self,
       );
-    }
-    if let Some(mut options) = preserved_options {
-      self.visit_expression(&mut options);
-      let load = std::mem::replace(expr, ast::Expression::new_void_0(SPAN, self));
-      *expr = ast::Expression::new_seq_in_parens(options, load, self);
     }
   }
 
@@ -864,33 +839,44 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
           self.ctx.module,
           self.ctx.modules,
         );
-        if import_expr.phase.is_none()
-          && target.is_some()
-          && crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
-          && (import_expr.options.is_some() || json && !self.ctx.options.is_dev_mode_enabled())
-        {
-          let mut options =
-            import_expr.options.take().unwrap_or_else(|| ast::Expression::new_void_0(SPAN, self));
-          self.visit_expression(&mut options);
-          let mut load = std::mem::replace(expr, ast::Expression::new_void_0(SPAN, self));
-          self.lower_dynamic_import(&mut load);
-          *expr = ast::Expression::new_call_expression(
-            SPAN,
-            self.finalized_expr_for_runtime_symbol("__withImportOptions"),
-            None,
-            [
-              ast::Argument::from(options),
-              ast::Argument::from(crate::utils::import_options::thunk(load, &*self)),
-              ast::Argument::from(if text {
-                ast::Expression::new_string_literal(SPAN, "text", None, self)
-              } else {
-                ast::Expression::new_boolean_literal(SPAN, json, self)
-              }),
-            ],
-            false,
-            self,
-          );
-          return;
+        if import_expr.phase.is_none() && target.is_some() {
+          let runtime_semantics =
+            crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options);
+          if !runtime_semantics
+            && import_expr.options.as_ref().is_some_and(|options| {
+              crate::utils::import_options::is_statically_satisfied_import_options(
+                options, json, text,
+              )
+            })
+          {
+            import_expr.options = None;
+          }
+          if import_expr.options.is_some()
+            || (runtime_semantics && json && !self.ctx.options.is_dev_mode_enabled())
+          {
+            let mut options =
+              import_expr.options.take().unwrap_or_else(|| ast::Expression::new_void_0(SPAN, self));
+            self.visit_expression(&mut options);
+            let mut load = std::mem::replace(expr, ast::Expression::new_void_0(SPAN, self));
+            self.lower_dynamic_import(&mut load);
+            *expr = ast::Expression::new_call_expression(
+              SPAN,
+              self.finalized_expr_for_runtime_symbol("__withImportOptions"),
+              None,
+              [
+                ast::Argument::from(options),
+                ast::Argument::from(crate::utils::import_options::thunk(load, &*self)),
+                ast::Argument::from(if text {
+                  ast::Expression::new_string_literal(SPAN, "text", None, self)
+                } else {
+                  ast::Expression::new_boolean_literal(SPAN, json, self)
+                }),
+              ],
+              false,
+              self,
+            );
+            return;
+          }
         }
         self.lower_dynamic_import(expr);
         return;

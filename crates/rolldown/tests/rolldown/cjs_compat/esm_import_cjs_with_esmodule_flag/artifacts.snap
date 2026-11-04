@@ -42,10 +42,10 @@ assert.deepStrictEqual(import_cjs.default, {
 });
 assert.deepStrictEqual(import_cjs.default.default, "default");
 assert.deepStrictEqual(import_cjs.default.default, "default");
-assert.deepStrictEqual("foo", "foo");
-assert.deepStrictEqual("foo", "foo");
-assert.deepStrictEqual("foo", "foo");
-assert.deepStrictEqual("foo", "foo");
+assert.deepStrictEqual(import_cjs.foo, "foo");
+assert.deepStrictEqual(import_cjs.foo, "foo");
+assert.deepStrictEqual(import_cjs.foo, "foo");
+assert.deepStrictEqual(import_cjs.foo, "foo");
 assert.deepStrictEqual(import_cjs2.default, "module.exports");
 assert.deepStrictEqual(import_cjs3.default, {
 	default: "default",

@@ -7,10 +7,15 @@ source: crates/rolldown_testing/src/integration_test.rs
 
 ```js
 import assert from "node:assert";
+// HIDDEN [\0rolldown/runtime.js]
 // main.js
 import("./target.js").then((target) => {
 	assert.strictEqual(target.value, 42);
 });
+const marker = /* @__PURE__ */ new Error("with-getter");
+__withImportOptions({ get with() {
+	throw marker;
+} }, () => import("./target.js"), false).then(() => assert.fail("expected getter rejection"), (err) => assert.strictEqual(err, marker));
 
 ```
 
@@ -37,6 +42,10 @@ node_assert = __toESM(node_assert);
 Promise.resolve().then(() => require("./target.js")).then((target) => {
 	node_assert.default.strictEqual(target.value, 42);
 });
+const marker = /* @__PURE__ */ new Error("with-getter");
+__withImportOptions({ get with() {
+	throw marker;
+} }, () => Promise.resolve().then(() => require("./target.js")), false).then(() => node_assert.default.fail("expected getter rejection"), (err) => node_assert.default.strictEqual(err, marker));
 
 ```
 

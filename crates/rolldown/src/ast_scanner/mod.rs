@@ -1171,8 +1171,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     let Some(mut index) = self.visit_path.len().checked_sub(depth + 1) else {
       return false;
     };
-    let runtime_semantics =
-      crate::utils::native_records::runtime_module_semantics_enabled(self.immutable_ctx.options);
     loop {
       let kind = self.visit_path[index];
       match kind {
@@ -1182,23 +1180,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
           if expr.expressions.last().is_some_and(|last| last.span() != node) =>
         {
           return true;
-        }
-        AstKind::CallExpression(call)
-          if !runtime_semantics
-            && call.callee.span() != node
-            && matches!(
-              &call.callee,
-              Expression::StaticMemberExpression(member)
-                if matches!(&member.object, Expression::Identifier(id) if matches!(id.name.as_str(), "assert" | "console"))
-            ) =>
-        {
-          return true;
-        }
-        AstKind::ComputedMemberExpression(member)
-          if member.object.span() == node
-            && member.static_property_name().is_some_and(|s| s.as_str().is_none()) =>
-        {
-          return self.is_member_read(kind.span(), index);
         }
         kind => match member_name(&kind, node) {
           Some("default") if default_hops > 0 => {
@@ -1220,8 +1201,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   /// target of an assignment, an update, a `delete` or a destructuring, and not called, which
   /// passes its object as `this`.
   fn is_member_read(&self, mut node: Span, index: usize) -> bool {
-    let runtime_semantics =
-      crate::utils::native_records::runtime_module_semantics_enabled(self.immutable_ctx.options);
     for kind in self.visit_path[..index].iter().rev() {
       match kind {
         AstKind::ParenthesizedExpression(expr) => node = expr.span,
@@ -1230,9 +1209,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         AstKind::ForInStatement(stmt) => return stmt.left.span() != node,
         AstKind::ForOfStatement(stmt) => return stmt.left.span() != node,
         AstKind::UnaryExpression(expr) => return expr.operator != ast::UnaryOperator::Delete,
-        AstKind::CallExpression(call) => {
-          return !runtime_semantics || call.callee.span() != node;
-        }
+        AstKind::CallExpression(call) => return call.callee.span() != node,
         AstKind::TaggedTemplateExpression(expr) => return expr.tag.span() != node,
         AstKind::UpdateExpression(_)
         | AstKind::ArrayAssignmentTarget(_)
@@ -1284,12 +1261,9 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
           match is_object_define_property_es_module(&self.result.symbol_ref_db.ast_scopes, call) {
             Some(CommonJsAstType::EsModuleFlag) => return,
             Some(CommonJsAstType::ExportsPropWrite(prop))
-              if call.arguments.len() == 3
-                && !matches!(prop.as_str(), "__proto__" | "constructor")
-                && (prop != "*"
-                  || call.arguments.get(1).is_some_and(|arg| {
-                    matches!(arg.as_expression(), Some(Expression::StringLiteral(_)))
-                  }))
+              if !runtime_semantics
+                && call.arguments.len() == 3
+                && !matches!(prop.as_str(), "*" | "__proto__" | "constructor")
                 && call.arguments.get(2).is_some_and(|arg| {
                   matches!(
                     arg.as_expression(),
@@ -1306,68 +1280,50 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
                                   Some("value" | "writable" | "enumerable" | "configurable")
                                 )
                               }))
-                              || (!runtime_semantics
-                                && prop.key.static_name().is_some_and(|name| {
-                                  matches!(name.as_str(), Some("get" | "set"))
-                                })
-                                && matches!(
-                                  &prop.value,
-                                  Expression::FunctionExpression(_)
-                                    | Expression::ArrowFunctionExpression(_)
-                                )))
+                              || (prop.key.static_name().is_some_and(|name| {
+                                matches!(name.as_str(), Some("get" | "set"))
+                              }) && matches!(
+                                &prop.value,
+                                Expression::FunctionExpression(_)
+                                  | Expression::ArrowFunctionExpression(_)
+                              )))
                       ))
                   )
                 }) =>
             {
-              if prop != "*" {
-                *self.commonjs_export_definitions.entry(prop).or_default() += 2;
-              }
+              *self.commonjs_export_definitions.entry(prop).or_default() += 2;
               return;
             }
             _ => break,
           }
         }
         kind => {
-          let is_lone_surrogate_static_member = matches!(
-            kind,
-            AstKind::ComputedMemberExpression(member)
-              if member.object.span() == node
-                && member.static_property_name().is_some_and(|s| s.as_str().is_none())
-          );
-          let name = if is_lone_surrogate_static_member {
-            None
-          } else {
-            let Some(name) =
-              member_name(&kind, node).filter(|name| !matches!(*name, "__proto__" | "constructor"))
-            else {
-              break;
-            };
-            Some(name)
+          let Some(name) =
+            member_name(&kind, node).filter(|name| !matches!(*name, "__proto__" | "constructor"))
+          else {
+            break;
           };
           let member = kind.span();
           let parent = index.checked_sub(1).map(|parent| self.visit_path[parent]);
           if let Some(AstKind::AssignmentExpression(expr)) = parent
             && expr.left.span() == member
           {
-            if let Some(name) = name {
-              // The program's statements are the visit path's roots (`visit_program`).
-              let delta = if expr.operator == ast::AssignmentOperator::Assign
-                && matches!(
-                  self.visit_path.get(..index),
-                  Some([AstKind::ExpressionStatement(_), rest @ ..])
-                    if rest.iter().all(|kind| match kind {
-                      AstKind::AssignmentExpression(assignment) => !assignment.operator.is_logical(),
-                      AstKind::SequenceExpression(_) | AstKind::ParenthesizedExpression(_) => true,
-                      _ => false,
-                    })
-                ) {
-                1
-              } else {
-                2
-              };
-              *self.commonjs_export_definitions.entry(name.into()).or_default() += delta;
+            // The program's statements are the visit path's roots (`visit_program`).
+            if expr.operator == ast::AssignmentOperator::Assign
+              && matches!(
+                self.visit_path.get(..index),
+                Some([AstKind::ExpressionStatement(_), rest @ ..])
+                  if rest.iter().all(|kind| match kind {
+                    AstKind::AssignmentExpression(assignment) => !assignment.operator.is_logical(),
+                    AstKind::SequenceExpression(_) | AstKind::ParenthesizedExpression(_) => true,
+                    _ => false,
+                  })
+              )
+            {
+              *self.commonjs_export_definitions.entry(name.into()).or_default() += 1;
+              return;
             }
-            return;
+            break;
           }
           if self.is_member_read(member, index) {
             return;

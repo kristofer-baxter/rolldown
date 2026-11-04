@@ -264,18 +264,31 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
           meta.set(ImportRecordMeta::IsTopLevel, self.is_root_scope());
           meta.set(ImportRecordMeta::IsUnspannedImport, expr.source.span().is_empty());
           meta.set(ImportRecordMeta::InTryCatchBlock, self.in_side_try_catch_block());
+          if expr.phase.is_none()
+            && let Some(options) = &expr.options
+          {
+            meta.set(
+              ImportRecordMeta::HasNonEmptyImportOptions,
+              !crate::utils::import_options::is_empty_import_options(options),
+            );
+            meta.set(
+              ImportRecordMeta::HasJsonTypeImportOptions,
+              crate::utils::import_options::is_json_type_import_options(options),
+            );
+            meta.set(
+              ImportRecordMeta::HasTextTypeImportOptions,
+              crate::utils::import_options::is_text_type_import_options(options),
+            );
+          }
           meta
         },
         Some(expr.node_id()),
       );
       // An `import()` hands the namespace to `then` callbacks and `await`s, which linking doesn't
       // follow, so a CommonJS module that it names inlines no constants (#693).
-      if crate::utils::native_records::runtime_module_semantics_enabled(self.immutable_ctx.options)
-      {
-        let namespace = self.result.import_records[import_rec_idx].namespace_ref;
-        *namespace.flags_mut(&mut self.result.symbol_ref_db) |=
-          SymbolRefFlags::HasComputedMemberWrite;
-      }
+      let namespace = self.result.import_records[import_rec_idx].namespace_ref;
+      *namespace.flags_mut(&mut self.result.symbol_ref_db) |=
+        SymbolRefFlags::HasComputedMemberWrite;
       self.init_dynamic_import_binding_usage_info(import_rec_idx);
       self.result.imports.insert(expr.node_id(), import_rec_idx);
     } else {
@@ -384,14 +397,12 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
   fn visit_this_expression(&mut self, it: &ast::ThisExpression) {
     if self.is_this_nested() {
       self.last_nested_this_stmt_idx = Some(self.current_stmt_idx);
-      if !self.is_nested_this_inside_class {
-        self.note_commonjs_exports_use(it.span, 0);
-      }
     } else {
       self.top_level_this_expr_set.insert(it.node_id());
-      // A CommonJS module's top-level `this` is its exports object (#693).
-      self.note_commonjs_exports_use(it.span, 0);
     }
+    // A CommonJS module's top-level `this` (or `this` inside an `Object.defineProperty(exports, ...)`
+    // accessor) is its exports object (#693).
+    self.note_commonjs_exports_use(it.span, 0);
     walk_js::walk_this_expression(self, it);
   }
 
@@ -660,9 +671,6 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
                 // constants linking inlines only while the result is read through static members
                 // (#693): `module.exports = require(...)` hands it out as the module's own.
                 if recorded
-                  && crate::utils::native_records::runtime_module_semantics_enabled(
-                    self.immutable_ctx.options,
-                  )
                   && !self.only_member_read(call_expr.span, 1, 0)
                   && let Some(&record) = self.result.imports.get(&call_expr.node_id())
                 {
