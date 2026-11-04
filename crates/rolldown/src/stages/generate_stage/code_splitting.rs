@@ -1149,15 +1149,13 @@ impl GenerateStage<'_> {
       RuntimeMergeCascade::Full,
       used_symbol_refs_builder,
     );
-    if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
-      self.enforce_entry_request_budgets(chunk_graph);
-      self.try_merge_runtime_chunk(
-        chunk_graph,
-        None,
-        RuntimeMergeCascade::Full,
-        used_symbol_refs_builder,
-      );
-    }
+    self.enforce_entry_request_budgets(chunk_graph);
+    self.try_merge_runtime_chunk(
+      chunk_graph,
+      None,
+      RuntimeMergeCascade::Full,
+      used_symbol_refs_builder,
+    );
 
     Ok(())
   }

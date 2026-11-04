@@ -831,11 +831,10 @@ impl GenerateStage<'_> {
           return None;
         }
       }
-      if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-        && info
-          .modules
-          .iter()
-          .all(|module_idx| !dynamic_entry_to_dynamic_importers.contains_key(module_idx))
+      if info
+        .modules
+        .iter()
+        .all(|module_idx| !dynamic_entry_to_dynamic_importers.contains_key(module_idx))
       {
         return Some(chunk_idx);
       }

@@ -901,4 +901,60 @@ assert.strictEqual(results[2], 'none');
       "false true none"
     );
   }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn enforces_max_initial_requests_in_ordinary_mode() {
+    let dir = TempTestDir::new("ordinary-max-initial-requests");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("ab.js"), "export const ab = 'ab-shared-value';\n")
+      .expect("write ab.js");
+    std::fs::write(dir.path().join("ac.js"), "export const ac = 'ac-shared-value';\n")
+      .expect("write ac.js");
+    std::fs::write(
+      dir.path().join("a.js"),
+      "import { ab } from './ab.js';\nimport { ac } from './ac.js';\nconsole.log(ab, ac);\n",
+    )
+    .expect("write a.js");
+    std::fs::write(dir.path().join("b.js"), "import { ab } from './ab.js';\nconsole.log(ab);\n")
+      .expect("write b.js");
+    std::fs::write(dir.path().join("c.js"), "import { ac } from './ac.js';\nconsole.log(ac);\n")
+      .expect("write c.js");
+
+    let mut options = BundlerOptions {
+      input: Some(vec![
+        InputItem { name: Some("a".into()), import: "./a.js".into() },
+        InputItem { name: Some("b".into()), import: "./b.js".into() },
+        InputItem { name: Some("c".into()), import: "./c.js".into() },
+      ]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      ..Default::default()
+    };
+    crate::utils::topology_config::attach(
+      &mut options,
+      &crate::utils::topology_config::TopologyConfig {
+        max_initial_requests: Some(2),
+        common_chunk_coalescing: Some(crate::utils::topology_config::CommonChunkCoalescing::Off),
+        ..Default::default()
+      },
+    );
+
+    let mut bundler = Bundler::new(options).expect("create bundler");
+    let output = bundler.write().await.expect("write bundle");
+    let entry_a = output
+      .assets
+      .iter()
+      .find_map(|asset| match asset {
+        rolldown_common::Output::Chunk(chunk) if chunk.name.as_str() == "a" => Some(chunk),
+        _ => None,
+      })
+      .expect("entry chunk a");
+    assert!(
+      entry_a.imports.len() < 2,
+      "expected entry a initial requests (1 + imports={:?}) to be <= 2",
+      entry_a.imports
+    );
+  }
 }
