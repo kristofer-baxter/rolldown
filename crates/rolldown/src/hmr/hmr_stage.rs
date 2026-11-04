@@ -1375,8 +1375,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         let Module::Normal(importer) = &self.module_table().modules[importer_idx] else {
           continue;
         };
-        if crate::utils::native_records::runtime_module_semantics_enabled(&self.options)
-          && !reach.reaches(importer_idx)
+        if !reach.reaches(importer_idx)
           && importer.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
         {
           continue;
@@ -1779,13 +1778,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
     // The patch runtime executes synchronous factories. Do not emit an `await`
     // inside one, or report an asynchronous factory as applied before completion.
-    if crate::utils::native_records::runtime_module_semantics_enabled(&self.options)
-      && carried_modules.iter().any(|idx| {
-        self.module_table().modules[*idx].as_normal().is_some_and(|module| {
-          module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
-        })
+    if carried_modules.iter().any(|idx| {
+      self.module_table().modules[*idx].as_normal().is_some_and(|module| {
+        module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
       })
-    {
+    }) {
       return Ok(HmrUpdate::FullReload {
         reason:
           "top-level await requires a full reload; asynchronous patch factories are unsupported"

@@ -127,9 +127,7 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         // console.log(import_foo.default, import_foo.bar);
         // ```
         let rec_id = self.module.imports[&import_decl.node_id()];
-        if self.runtime_module_semantics
-          && super::utils::unused_pure_import(self.module, rec_id, self.pure, scoping)
-        {
+        if super::utils::unused_pure_import(self.module, rec_id, self.pure, scoping) {
           return;
         }
         let rec = &self.module.import_records[rec_id];
