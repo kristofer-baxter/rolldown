@@ -990,7 +990,8 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
       ast::ExportDefaultDeclarationKind::Identifier(id) => {
         if !crate::utils::native_records::runtime_module_semantics_enabled(
           self.immutable_ctx.options,
-        ) && let Some(symbol_id) = self.resolve_symbol_from_reference(id)
+        ) && !crate::utils::native_records::enabled(self.immutable_ctx.options)
+          && let Some(symbol_id) = self.resolve_symbol_from_reference(id)
         {
           let scoping = self.result.symbol_ref_db.ast_scopes.scoping();
           let symbol_id_span = scoping.symbol_span(symbol_id);

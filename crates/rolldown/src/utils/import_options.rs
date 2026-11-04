@@ -234,7 +234,34 @@ pub fn thunk<'a>(expression: Expression<'a>, builder: &impl GetAstBuilder<'a>) -
 #[cfg(test)]
 mod tests {
   use super::is_statically_satisfied_import_options;
+  use crate::{Bundler, BundlerOptions, ExperimentalOptions, InputItem};
   use oxc::{allocator::Allocator, parser::Parser, span::SourceType};
+  use std::path::PathBuf;
+
+  struct TempTestDir(PathBuf);
+
+  impl TempTestDir {
+    fn new(prefix: &str) -> Self {
+      let nanos = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .expect("clock")
+        .as_nanos();
+      let path =
+        std::env::temp_dir().join(format!("rolldown-{prefix}-{}-{nanos}", std::process::id()));
+      std::fs::create_dir_all(&path).expect("create temp test dir");
+      Self(path)
+    }
+
+    fn path(&self) -> &std::path::Path {
+      &self.0
+    }
+  }
+
+  impl Drop for TempTestDir {
+    fn drop(&mut self) {
+      let _ = std::fs::remove_dir_all(&self.0);
+    }
+  }
 
   fn check(expr_src: &str, json: bool, text: bool) -> bool {
     let allocator = Allocator::default();
@@ -254,5 +281,86 @@ mod tests {
     assert!(!check("({ get with() { return {}; } })", false, false));
     assert!(!check("({ with: { get type() { return 'json'; } } })", true, false));
     assert!(!check("({ ...opts })", false, false));
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn rejects_attributed_json_named_import_when_also_required_as_cjs() {
+    let dir = TempTestDir::new("attributed-json-cjs");
+    std::fs::write(dir.path().join("data.json"), r#"{ "foo": 42 }"#).expect("write data.json");
+    std::fs::write(
+      dir.path().join("cjs-consumer.js"),
+      "export const cjsData = require('./data.json');\n",
+    )
+    .expect("write cjs-consumer.js");
+    std::fs::write(
+      dir.path().join("main.js"),
+      "import { foo } from './data.json' with { type: 'json' };\nimport { cjsData } from './cjs-consumer.js';\nconsole.log(foo, cjsData);\n",
+    )
+    .expect("write main.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      strict_execution_order: Some(true),
+      experimental: Some(ExperimentalOptions {
+        resolve_new_url_to_asset: Some(true),
+        ..Default::default()
+      }),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    let Err(err) = bundler.generate().await else {
+      panic!("attributed JSON named import should fail even with require('./data.json')");
+    };
+    assert!(
+      err.iter().any(|diagnostic| diagnostic.to_string().contains(r#""foo" is not exported"#)),
+      "expected MISSING_EXPORT diagnostic for foo, got: {err:?}"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn preserves_default_export_tdz_in_preserve_modules_incremental_cycle_without_url_feature()
+  {
+    let dir = TempTestDir::new("preserve-modules-default-tdz");
+    let out_dir = dir.path().join("dist");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(
+      dir.path().join("main.js"),
+      "import assert from 'node:assert';\nimport defaultValue, { observed } from './a.js';\nassert.strictEqual(observed, 'tdz');\nassert.strictEqual(defaultValue, 1);\n",
+    )
+    .expect("write main.js");
+    std::fs::write(
+      dir.path().join("a.js"),
+      "import { probe } from './b.js';\nconst value = 1;\nexport const observed = probe();\nexport default value;\n",
+    )
+    .expect("write a.js");
+    std::fs::write(
+      dir.path().join("b.js"),
+      "import value from './a.js';\nexport function probe() {\n  try {\n    return value;\n  } catch (err) {\n    return err instanceof ReferenceError ? 'tdz' : 'other';\n  }\n}\n",
+    )
+    .expect("write b.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./main.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      preserve_modules: Some(true),
+      experimental: Some(ExperimentalOptions {
+        incremental_build: Some(true),
+        resolve_new_url_to_asset: Some(false),
+        ..Default::default()
+      }),
+      ..Default::default()
+    })
+    .expect("create bundler");
+
+    bundler.write().await.expect("write bundle");
+    let status = std::process::Command::new("node")
+      .arg(out_dir.join("main.js"))
+      .status()
+      .expect("execute node");
+    assert!(status.success(), "expected node execution of preserved cyclic default export to pass");
   }
 }

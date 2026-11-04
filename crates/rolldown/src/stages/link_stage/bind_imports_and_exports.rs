@@ -1820,6 +1820,18 @@ impl BindImportsAndExportsContext<'_> {
     );
     // TODO: Deal with https://github.com/evanw/esbuild/blob/109449e5b80886f7bc7fc7e0cee745a0221eef8d/internal/linker/linker.go#L3062-L3072
 
+    if matches!(&named_import.imported, Specifier::Literal(literal_imported) if literal_imported.as_str() != "default")
+      && crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+      && importer
+        .ecma_view
+        .import_attribute_map
+        .get(&named_import.record_idx)
+        .is_some_and(rolldown_common::ImportAttribute::is_json)
+      && crate::utils::import_options::is_json_module(importee)
+    {
+      return ImportStatus::NoMatch;
+    }
+
     if matches!(importee.exports_kind, ExportsKind::CommonJs) {
       return ImportStatus::CommonJS;
     }
@@ -1831,17 +1843,6 @@ impl BindImportsAndExportsContext<'_> {
         potentially_ambiguous_export_star_refs: vec![],
       },
       Specifier::Literal(literal_imported) => {
-        if literal_imported.as_str() != "default"
-          && crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-          && importer
-            .ecma_view
-            .import_attribute_map
-            .get(&named_import.record_idx)
-            .is_some_and(rolldown_common::ImportAttribute::is_json)
-          && crate::utils::import_options::is_json_module(importee)
-        {
-          return ImportStatus::NoMatch;
-        }
         match self.metas[importee_id].resolved_exports.get(literal_imported) {
           Some(export) => {
             if export.came_from_commonjs {
