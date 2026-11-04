@@ -3270,7 +3270,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
               self,
             ));
           }
-          let wrapper_call_expr = self.wrapped_esm_init_call_expr(importee_idx, SPAN, true, false);
+          let wrapper_call_expr = self.wrapped_esm_init_call_expr(importee_idx, SPAN, true, true);
           let seq_expr =
             Expression::new_seq_in_parens(wrapper_call_expr, finalized_namespace, self);
           let mut then_call = Expression::new_promise_resolve_then(seq_expr, self);

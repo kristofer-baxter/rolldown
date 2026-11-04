@@ -384,6 +384,9 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
   fn visit_this_expression(&mut self, it: &ast::ThisExpression) {
     if self.is_this_nested() {
       self.last_nested_this_stmt_idx = Some(self.current_stmt_idx);
+      if !self.is_nested_this_inside_class {
+        self.note_commonjs_exports_use(it.span, 0);
+      }
     } else {
       self.top_level_this_expr_set.insert(it.node_id());
       // A CommonJS module's top-level `this` is its exports object (#693).
@@ -702,8 +705,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
           && self.visit_path.iter().any(|kind| {
             matches!(kind, AstKind::UnaryExpression(expr) if expr.operator == ast::UnaryOperator::Delete)
           });
-        let writing_namespace = runtime_semantics
-          && is_member_write
+        let writing_namespace = is_member_write
           && self
             .result
             .named_imports
@@ -717,22 +719,21 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         // CommonJS module's exports object, which is `ns.default` for a namespace. Linking inlines
         // the module's constants only while every such binding is read through static members:
         // any other use may change the object (#693).
-        let escapes = runtime_semantics
-          && self.result.named_imports.get(&root_symbol_id).is_some_and(|import| {
-            let default_hops = match &import.imported {
-              rolldown_common::Specifier::Star => 1,
-              rolldown_common::Specifier::Literal(name) if name.as_str() == "default" => 0,
-              rolldown_common::Specifier::Literal(_) => return false,
-            };
-            !self.only_member_read(ident_ref.span, 0, default_hops)
-          });
+        let escapes = self.result.named_imports.get(&root_symbol_id).is_some_and(|import| {
+          let default_hops = match &import.imported {
+            rolldown_common::Specifier::Star => 1,
+            rolldown_common::Specifier::Literal(name) if name.as_str() == "default" => 0,
+            rolldown_common::Specifier::Literal(_) => return false,
+          };
+          !self.only_member_read(ident_ref.span, 0, default_hops)
+        });
         if escapes {
           *root_symbol_id.flags_mut(&mut self.result.symbol_ref_db) |=
             SymbolRefFlags::HasComputedMemberWrite;
         }
         if let Some(named_import) = self.result.named_imports.get(&root_symbol_id)
           && !deleting_member
-          && !writing_namespace
+          && !(runtime_semantics && writing_namespace)
         {
           let ty = match named_import.imported {
             rolldown_common::Specifier::Star => MemberExprObjectReferencedType::Namespace,
