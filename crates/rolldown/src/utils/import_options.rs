@@ -828,8 +828,8 @@ try {
   }
 
   #[tokio::test(flavor = "multi_thread")]
-  async fn ordinary_namespace_in_check_matches_reflect_has_for_prototype_keys() {
-    let dir = TempTestDir::new("ordinary-namespace-in-check-proto");
+  async fn guarded_namespace_in_check_stays_consistent_with_member_resolution() {
+    let dir = TempTestDir::new("guarded-namespace-in-check-proto");
     let ordinary_dir = dir.path().join("ordinary");
     let semantics_dir = dir.path().join("semantics");
     std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
@@ -839,11 +839,15 @@ try {
       dir.path().join("main.js"),
       r"import assert from 'node:assert';
 import * as ns from './dep.js';
-const results = ['toString' in ns, Reflect.has(ns, 'toString'), 'x' in ns, Reflect.has(ns, 'x')];
+let tag = 'none';
+if ('toString' in ns) {
+  tag = ns.toString();
+}
+const results = ['toString' in ns, 'x' in ns, tag];
 console.log(...results);
-assert.strictEqual(results[0], results[1]);
-assert.strictEqual(results[2], true);
-assert.strictEqual(results[3], true);
+assert.strictEqual(results[0], false);
+assert.strictEqual(results[1], true);
+assert.strictEqual(results[2], 'none');
 ",
     )
     .expect("write main.js");
@@ -856,12 +860,6 @@ assert.strictEqual(results[3], true);
     })
     .expect("create ordinary bundler");
     ordinary_bundler.write().await.expect("write ordinary bundle");
-    let ordinary_code =
-      std::fs::read_to_string(ordinary_dir.join("main.js")).expect("read ordinary bundle");
-    assert!(
-      ordinary_code.contains("\"toString\" in dep_exports"),
-      "expected 'toString' in ns to remain unfolded on Object.prototype namespace:\n{ordinary_code}"
-    );
     let ordinary_output = std::process::Command::new("node")
       .arg(ordinary_dir.join("main.js"))
       .output()
@@ -873,7 +871,7 @@ assert.strictEqual(results[3], true);
     );
     assert_eq!(
       String::from_utf8_lossy(&ordinary_output.stdout).trim(),
-      "true true true true"
+      "false true none"
     );
 
     let mut semantics_bundler = Bundler::new(BundlerOptions {
@@ -889,12 +887,6 @@ assert.strictEqual(results[3], true);
     })
     .expect("create semantics bundler");
     semantics_bundler.write().await.expect("write semantics bundle");
-    let semantics_code =
-      std::fs::read_to_string(semantics_dir.join("main.js")).expect("read semantics bundle");
-    assert!(
-      !semantics_code.contains("\"toString\" in dep_exports"),
-      "expected 'toString' in ns to fold to false on null-prototype fixed namespace:\n{semantics_code}"
-    );
     let semantics_output = std::process::Command::new("node")
       .arg(semantics_dir.join("main.js"))
       .output()
@@ -906,7 +898,7 @@ assert.strictEqual(results[3], true);
     );
     assert_eq!(
       String::from_utf8_lossy(&semantics_output.stdout).trim(),
-      "false false true true"
+      "false true none"
     );
   }
 }

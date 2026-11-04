@@ -31,6 +31,8 @@ export var __commonJS = (cb, mod) =>
 export var __commonJSMin = (cb, mod) => () => (
   mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports
 );
+// Default runtime uses `{}` for compact output (`crates/rolldown/tests/test262_failures.json`);
+// null-prototype namespace semantics are provided by `runtime-extra-dev-common.js` when enabled.
 export var __exportAll = (all, no_symbols) => {
   let target = {};
   for (var name in all) {
