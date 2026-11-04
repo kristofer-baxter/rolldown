@@ -578,27 +578,32 @@ mod tests {
       .expect("write package.json");
     std::fs::write(
       dir.path().join("shared.js"),
-      "export let resolve;\nexport const promise = new Promise((r) => { resolve = r; });\n",
+      "export let resolve;\nexport const promise = new Promise((r) => { resolve = r; });\nexport const cjsPromise = new Promise((r) => { globalThis.__resolveCjs = r; });\n",
     )
     .expect("write shared.js");
     std::fs::write(
       dir.path().join("first.js"),
-      "import { promise } from './shared.js';\nexport const value = await promise;\n",
+      "import { promise, cjsPromise } from './shared.js';\nexport const value = (await promise) + (await cjsPromise);\n",
     )
     .expect("write first.js");
     std::fs::write(
       dir.path().join("second.js"),
-      "import { resolve } from './shared.js';\nresolve(42);\n",
+      "import { resolve } from './shared.js';\nresolve(40);\n",
     )
     .expect("write second.js");
     std::fs::write(
+      dir.path().join("third.cjs"),
+      "globalThis.__resolveCjs(2);\nmodule.exports = { bonus: 0 };\n",
+    )
+    .expect("write third.cjs");
+    std::fs::write(
       dir.path().join("parent.js"),
-      "import { value } from './first.js';\nimport './second.js';\nexport { value };\n",
+      "import { value } from './first.js';\nimport './second.js';\nimport third from './third.cjs';\nexport const result = value + third.bonus;\n",
     )
     .expect("write parent.js");
     std::fs::write(
       dir.path().join("main.js"),
-      "import assert from 'node:assert';\nconst mod = await Promise.race([\n  import('./parent.js'),\n  new Promise((_, reject) => setTimeout(() => reject(new Error('sibling async dependency deadlocked')), 2000)),\n]);\nassert.strictEqual(mod.value, 42);\n",
+      "import assert from 'node:assert';\nconst mod = await Promise.race([\n  import('./parent.js'),\n  new Promise((_, reject) => setTimeout(() => reject(new Error('sibling async dependency deadlocked')), 2000)),\n]);\nassert.strictEqual(mod.result, 42);\n",
     )
     .expect("write main.js");
 

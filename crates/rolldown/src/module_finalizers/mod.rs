@@ -2497,37 +2497,6 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     None
   }
 
-  pub fn is_static_esm_init_stmt(&self, stmt: &Statement<'ast>) -> bool {
-    let Statement::ExpressionStatement(expr_stmt) = stmt else {
-      return false;
-    };
-    match &expr_stmt.expression {
-      ast::Expression::CallExpression(call) => {
-        call.arguments.is_empty()
-          && !call.optional
-          && matches!(
-            &call.callee,
-            ast::Expression::Identifier(id)
-              if self.static_esm_init_callees.contains(id.name.as_str())
-          )
-      }
-      ast::Expression::SequenceExpression(seq) => seq.expressions.iter().all(|expr| {
-        matches!(
-          expr,
-          ast::Expression::CallExpression(call)
-            if call.arguments.is_empty()
-              && !call.optional
-              && matches!(
-                &call.callee,
-                ast::Expression::Identifier(id)
-                  if self.static_esm_init_callees.contains(id.name.as_str())
-              )
-        )
-      }),
-      _ => false,
-    }
-  }
-
   #[expect(clippy::too_many_lines)]
   fn remove_unused_top_level_stmt(&mut self, program: &mut ast::Program<'ast>) -> (usize, usize) {
     let mut last_import_stmt_idx = None;

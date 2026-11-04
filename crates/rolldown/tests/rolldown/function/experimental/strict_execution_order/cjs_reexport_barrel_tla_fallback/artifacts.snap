@@ -55,9 +55,8 @@ function init_pure_barrel() {
 	return (init_pure_barrel = __esmAsync((() => {
 		var __asyncDependencies0 = [];
 		__startAsync(__asyncDependencies0, init_cn());
-		return __finishAsync(__asyncDependencies0, () => {
-			import_clone_deep = /* @__PURE__ */ __toESM(require_clone_deep(), 1);
-		});
+		import_clone_deep = /* @__PURE__ */ __toESM(require_clone_deep(), 1);
+		return __finishAsync(__asyncDependencies0, () => {});
 	})))();
 }
 export { init_cn as i, init_pure_barrel as n, cn as r, import_clone_deep as t };
