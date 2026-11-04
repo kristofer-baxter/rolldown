@@ -1429,27 +1429,17 @@ impl LinkStage<'_> {
     let canonical_ref = self.symbols.canonical_ref_for(namespace_ref);
     let module = self.module_table[canonical_ref.owner].as_normal()?;
     let meta = &self.metas[module.idx];
-    if module.namespace_object_ref != canonical_ref
-      || matches!(module.exports_kind, ExportsKind::CommonJs)
-      || meta.has_dynamic_exports
-    {
-      return None;
-    }
-    if key != "default"
-      && crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-      && crate::utils::import_options::is_json_module(module)
-      && !crate::utils::import_options::json_namespace_has_properties(
-        module,
-        &self.module_table.modules,
-        |idx| self.unreachable_modules.reaches(idx),
-      )
-    {
-      return Some(false);
-    }
-    match meta.sorted_and_non_ambiguous_resolved_exports.get(key) {
-      Some(&came_from_commonjs) => (!came_from_commonjs).then_some(true),
-      None => Some(false),
-    }
+    fold_namespace_in_check(
+      self.options,
+      module,
+      module.exports_kind,
+      meta,
+      canonical_ref,
+      module.namespace_object_ref,
+      key,
+      &self.module_table.modules,
+      |idx| self.unreachable_modules.reaches(idx),
+    )
   }
 
   /// Collect the JSON-module default exports in `stmt_infos` that must NOT be split into their
@@ -1541,6 +1531,37 @@ impl LinkStage<'_> {
           )
       });
     is_json_default.then_some(canonical_ref)
+  }
+}
+
+#[expect(clippy::too_many_arguments)]
+pub fn fold_namespace_in_check(
+  options: &rolldown_common::NormalizedBundlerOptions,
+  owner: &NormalModule,
+  owner_exports_kind: ExportsKind,
+  owner_meta: &LinkingMetadata,
+  canonical_ref: SymbolRef,
+  owner_namespace_ref: SymbolRef,
+  key: &str,
+  modules: &IndexModules,
+  is_reachable: impl Fn(ModuleIdx) -> bool,
+) -> Option<bool> {
+  if owner_namespace_ref != canonical_ref
+    || matches!(owner_exports_kind, ExportsKind::CommonJs)
+    || owner_meta.has_dynamic_exports
+  {
+    return None;
+  }
+  if key != "default"
+    && crate::utils::native_records::runtime_module_semantics_enabled(options)
+    && crate::utils::import_options::is_json_module(owner)
+    && !crate::utils::import_options::json_namespace_has_properties(owner, modules, is_reachable)
+  {
+    return Some(false);
+  }
+  match owner_meta.sorted_and_non_ambiguous_resolved_exports.get(key) {
+    Some(&came_from_commonjs) => (!came_from_commonjs).then_some(true),
+    None => Some(false),
   }
 }
 

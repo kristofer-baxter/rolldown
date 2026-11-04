@@ -3008,41 +3008,31 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
                 canonical_ref_owner.exports_kind
               };
               let owner_meta = &cached.link_output.metas[canonical_ref_owner.idx];
-              if namespace_of(canonical_ref_owner) == canonical_ref
-                && !matches!(owner_exports_kind, ExportsKind::CommonJs)
-                && !owner_meta.has_dynamic_exports
-              {
-                let json_hides_key = key.as_str() != "default"
-                  && crate::utils::import_options::is_json_module(canonical_ref_owner)
-                  && !crate::utils::import_options::json_namespace_has_properties(
-                    canonical_ref_owner,
-                    &cached.link_output.module_table.modules,
-                    |m_idx| {
-                      cached.link_output.unreachable_modules.reaches(m_idx)
-                        && !ctx.retired.contains(&m_idx)
-                    },
-                  );
-                let value = if json_hides_key {
-                  Some(false)
-                } else {
-                  match owner_meta.sorted_and_non_ambiguous_resolved_exports.get(key) {
-                    Some(&came_from_commonjs) => (!came_from_commonjs).then_some(true),
-                    None => Some(false),
-                  }
-                };
-                if let Some(value) = value {
-                  new_folded_namespace_in_checks.insert(member_expr_ref.node_id, value);
-                  new_resolved_member_expr_refs.insert(
-                    member_expr_ref.node_id,
-                    rolldown_common::MemberExprRefResolution {
-                      resolved: None,
-                      prop_and_related_span_list: vec![],
-                      depended_refs: vec![],
-                      target_commonjs_exported_symbol: None,
-                      reference_id: member_expr_ref.reference_id,
-                    },
-                  );
-                }
+              if let Some(value) = crate::stages::link_stage::fold_namespace_in_check(
+                &self.options,
+                canonical_ref_owner,
+                owner_exports_kind,
+                owner_meta,
+                canonical_ref,
+                namespace_of(canonical_ref_owner),
+                key,
+                &cached.link_output.module_table.modules,
+                |m_idx| {
+                  cached.link_output.unreachable_modules.reaches(m_idx)
+                    && !ctx.retired.contains(&m_idx)
+                },
+              ) {
+                new_folded_namespace_in_checks.insert(member_expr_ref.node_id, value);
+                new_resolved_member_expr_refs.insert(
+                  member_expr_ref.node_id,
+                  rolldown_common::MemberExprRefResolution {
+                    resolved: None,
+                    prop_and_related_span_list: vec![],
+                    depended_refs: vec![],
+                    target_commonjs_exported_symbol: None,
+                    reference_id: member_expr_ref.reference_id,
+                  },
+                );
               }
             }
             continue;
@@ -3057,6 +3047,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
             // A module's own namespace resolves through its exports, which `renamed` maps.
             check_or_none!(canonical_ref_owner.idx != idx || !renumbered, "member_expr_self");
             let prop = &member_expr_ref.prop_and_span_list[cursor];
+            if cursor + 1 == member_expr_ref.prop_and_span_list.len()
+              && (member_expr_ref.is_write || member_expr_ref.write_target.is_some())
+            {
+              reject_with!("member_expr_namespace_write");
+            }
             let name = &prop.name;
             let meta = &cached.link_output.metas[canonical_ref_owner.idx];
             if meta.has_dynamic_exports || meta.star_export_record_by_name.contains_key(name) {

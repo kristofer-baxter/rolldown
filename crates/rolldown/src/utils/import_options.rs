@@ -249,6 +249,7 @@ mod tests {
       let path =
         std::env::temp_dir().join(format!("rolldown-{prefix}-{}-{nanos}", std::process::id()));
       std::fs::create_dir_all(&path).expect("create temp test dir");
+      let path = std::fs::canonicalize(&path).unwrap_or(path);
       Self(path)
     }
 
@@ -625,6 +626,149 @@ mod tests {
     assert!(
       status.success(),
       "expected sibling async dependencies to start concurrently without deadlocking"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn incremental_relink_rejects_namespace_delete_of_exported_binding() {
+    let dir = TempTestDir::new("incremental-ns-delete-present");
+    let out_dir = dir.path().join("dist");
+    let entry_path = dir.path().join("entry.js");
+    let leaf_path = dir.path().join("leaf.js");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("dep.js"), "export let present = globalThis.x;\n")
+      .expect("write dep.js");
+    std::fs::write(
+      &leaf_path,
+      "import * as ns from './dep.js';\nexport const run = () => console.log(ns.present);\n",
+    )
+    .expect("write leaf.js");
+    std::fs::write(&entry_path, "import { run } from './leaf.js';\nrun();\n")
+      .expect("write entry.js");
+
+    let mut bundler = Bundler::new(BundlerOptions {
+      input: Some(vec![InputItem { import: "./entry.js".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      preserve_modules: Some(true),
+      minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
+      experimental: Some(ExperimentalOptions {
+        incremental_build: Some(true),
+        resolve_new_url_to_asset: Some(false),
+        ..Default::default()
+      }),
+      ..Default::default()
+    })
+    .expect("create bundler");
+    bundler.set_omit_reused_chunk_bytes(true);
+    bundler
+      .incremental_generate(rolldown_common::ScanMode::Full)
+      .await
+      .expect("initial full generate");
+
+    std::fs::write(
+      &leaf_path,
+      "import * as ns from './dep.js';\nexport const run = () => console.log(delete ns.present);\n",
+    )
+    .expect("update leaf.js");
+    let leaf_id = leaf_path.to_string_lossy().into_owned();
+    let Err(err) = bundler
+      .incremental_generate(rolldown_common::ScanMode::Partial(vec![leaf_id.as_str().into()]))
+      .await
+    else {
+      panic!("expected delete ns.present to fail on incremental relink");
+    };
+    assert_eq!(bundler.last_native_relink_fallback(), Some("member_expr_namespace_write"));
+    assert!(
+      err.iter().any(|d| d.kind().to_string() == "ASSIGN_TO_IMPORT"),
+      "expected ASSIGN_TO_IMPORT diagnostic, got: {err:#?}"
+    );
+  }
+
+  #[tokio::test(flavor = "multi_thread")]
+  async fn incremental_relink_preserves_json_namespace_in_check_without_url_flag() {
+    let dir = TempTestDir::new("incremental-json-ns-in-check");
+    let out_dir = dir.path().join("dist");
+    let entry_path = dir.path().join("entry.mjs");
+    let leaf_path = dir.path().join("leaf.mjs");
+    std::fs::write(dir.path().join("package.json"), r#"{ "type": "module" }"#)
+      .expect("write package.json");
+    std::fs::write(dir.path().join("data.json"), r#"{ "foo": 1 }"#)
+      .expect("write data.json");
+    std::fs::write(
+      &leaf_path,
+      "import * as ns from './data.json';\nexport const run = () => console.log('foo' in ns, 1);\n",
+    )
+    .expect("write leaf.mjs");
+    std::fs::write(&entry_path, "import { run } from './leaf.mjs';\nrun();\n")
+      .expect("write entry.mjs");
+
+    let make_options = || BundlerOptions {
+      input: Some(vec![InputItem { import: "./entry.mjs".into(), ..Default::default() }]),
+      cwd: Some(dir.path().to_path_buf()),
+      dir: Some(out_dir.to_string_lossy().into_owned()),
+      preserve_modules: Some(true),
+      minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
+      experimental: Some(ExperimentalOptions {
+        incremental_build: Some(true),
+        resolve_new_url_to_asset: Some(false),
+        ..Default::default()
+      }),
+      ..Default::default()
+    };
+
+    let mut bundler = Bundler::new(make_options()).expect("create bundler");
+    bundler.set_omit_reused_chunk_bytes(true);
+    bundler
+      .incremental_generate(rolldown_common::ScanMode::Full)
+      .await
+      .expect("initial full generate");
+
+    std::fs::write(
+      &leaf_path,
+      "import * as ns from './data.json';\nexport const run = () => console.log('foo' in ns, 2);\n",
+    )
+    .expect("update leaf.mjs");
+    let leaf_id = leaf_path.to_string_lossy().into_owned();
+    let inc_out = bundler
+      .incremental_generate(rolldown_common::ScanMode::Partial(vec![leaf_id.as_str().into()]))
+      .await
+      .expect("incremental partial generate");
+    assert!(
+      bundler.last_fast_native_relink(),
+      "expected fast native relink, fallback={:?}",
+      bundler.last_native_relink_fallback()
+    );
+
+    let mut fresh_bundler = Bundler::new(make_options()).expect("create fresh bundler");
+    let fresh_out = fresh_bundler
+      .incremental_generate(rolldown_common::ScanMode::Full)
+      .await
+      .expect("fresh full generate");
+
+    let inc_leaf = std::str::from_utf8(
+      inc_out
+        .assets
+        .iter()
+        .find(|a| a.filename().ends_with("leaf.js"))
+        .expect("inc leaf.js")
+        .content_as_bytes(),
+    )
+    .expect("utf8 inc leaf.js");
+    let fresh_leaf = std::str::from_utf8(
+      fresh_out
+        .assets
+        .iter()
+        .find(|a| a.filename().ends_with("leaf.js"))
+        .expect("fresh leaf.js")
+        .content_as_bytes(),
+    )
+    .expect("utf8 fresh leaf.js");
+    assert_eq!(inc_leaf, fresh_leaf);
+    assert!(
+      inc_leaf.contains("console.log(true,"),
+      "expected 'foo' in ns to fold to true in ordinary mode:\n{inc_leaf}"
     );
   }
 }
