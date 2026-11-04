@@ -39,14 +39,17 @@ export { shared as t };
 ### a.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { i as __startAsync, r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 import { n as shared, t as init_shared } from "./shared.js";
 // a.js
 var a;
 function init_a() {
-	return (init_a = __esmMin((async () => {
-		await init_shared();
-		a = `a:${shared}`;
+	return (init_a = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_shared());
+		return __finishAsync(__asyncDependencies0, () => {
+			a = `a:${shared}`;
+		});
 	})))();
 }
 await init_a();
@@ -57,14 +60,17 @@ export { a };
 ### b.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { i as __startAsync, r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 import { n as shared, t as init_shared } from "./shared.js";
 // b.js
 var b;
 function init_b() {
-	return (init_b = __esmMin((async () => {
-		await init_shared();
-		b = `b:${shared}`;
+	return (init_b = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_shared());
+		return __finishAsync(__asyncDependencies0, () => {
+			b = `b:${shared}`;
+		});
 	})))();
 }
 await init_b();
@@ -76,19 +82,21 @@ export { b };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
 
 ```
 
 ### shared.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 // shared.js
 var shared;
 function init_shared() {
-	return (init_shared = __esmMin((async () => {
-		shared = await Promise.resolve("shared");
+	return (init_shared = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			shared = await Promise.resolve("shared");
+		});
 	})))();
 }
 export { shared as n, init_shared as t };

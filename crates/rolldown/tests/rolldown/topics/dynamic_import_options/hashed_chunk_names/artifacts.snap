@@ -6,8 +6,9 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## main.js
 
 ```js
+// HIDDEN [\0rolldown/runtime.js]
 // main.js
-const loaded = import("./target-B6cbPjZ7.js").then((target) => target.value);
+const loaded = __withImportOptions({}, () => import("./target-B6cbPjZ7.js"), false).then((target) => target.value);
 export { loaded };
 
 ```

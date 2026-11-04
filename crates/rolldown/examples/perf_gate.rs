@@ -1,10 +1,12 @@
-use std::{fs, path::PathBuf, time::Instant};
+#![expect(clippy::print_stdout)]
+
+use std::{fmt::Write as _, fs, path::PathBuf, time::Instant};
 
 use rolldown::{
   Bundler, BundlerOptions, ExperimentalOptions, InputItem, RawMinifyOptions, SourceMapType,
   TreeshakeOptions,
 };
-use rolldown_common::ScanMode;
+use rolldown_common::{DevModeOptions, ScanMode};
 
 struct TempFixture(PathBuf);
 
@@ -15,10 +17,7 @@ impl Drop for TempFixture {
 }
 
 fn generate_fixture_dir(tag: &str, with_dynamic_imports: bool) -> TempFixture {
-  let root = std::env::temp_dir().join(format!(
-    "rolldown-perf-gate-{}-{tag}",
-    std::process::id()
-  ));
+  let root = std::env::temp_dir().join(format!("rolldown-perf-gate-{}-{tag}", std::process::id()));
   let _ = fs::remove_dir_all(&root);
   fs::create_dir_all(&root).expect("create temp fixture dir");
   let root = fs::canonicalize(&root).unwrap_or(root);
@@ -28,9 +27,10 @@ fn generate_fixture_dir(tag: &str, with_dynamic_imports: bool) -> TempFixture {
   for i in 0..120 {
     let mut helpers = String::new();
     for h in 0..24 {
-      helpers.push_str(&format!(
-        "function helper_{i}_{h}(x) {{ const a = x + {h}; const b = a * 2; return b - {i}; }}\n"
-      ));
+      let _ = writeln!(
+        helpers,
+        "function helper_{i}_{h}(x) {{ const a = x + {h}; const b = a * 2; return b - {i}; }}"
+      );
     }
     if i == 0 {
       fs::write(
@@ -45,7 +45,7 @@ fn generate_fixture_dir(tag: &str, with_dynamic_imports: bool) -> TempFixture {
       );
       fs::write(root.join(format!("mod_{i}.js")), full).expect("write chained mod");
     }
-    barrel.push_str(&format!("export {{ m{i}, unused_{i} }} from './mod_{i}.js';\n"));
+    let _ = writeln!(barrel, "export {{ m{i}, unused_{i} }} from './mod_{i}.js';");
   }
   fs::write(root.join("barrel.js"), barrel).expect("write barrel");
 
@@ -56,17 +56,14 @@ fn generate_fixture_dir(tag: &str, with_dynamic_imports: bool) -> TempFixture {
         "import {{ m{target} }} from './barrel.js';\nexport const dynVal{d} = () => m{target}();\n"
       );
       fs::write(root.join(format!("dyn_{d}.js")), dyn_code).expect("write dyn");
-      entry.push_str(&format!("export const load_{d} = () => import('./dyn_{d}.js');\n"));
+      let _ = writeln!(entry, "export const load_{d} = () => import('./dyn_{d}.js');");
     }
     entry.push_str("export const total = () => m0() + m1() + m2() + m3() + m4();\n");
   } else {
     entry.push_str("import { leafVal } from './leaf_edit.js';\n");
     entry.push_str("export const total = () => m0() + m1() + m2() + m3() + m4() + leafVal();\n");
-    fs::write(
-      root.join("leaf_edit.js"),
-      "export function leafVal() { return 100; }\n",
-    )
-    .expect("write leaf_edit");
+    fs::write(root.join("leaf_edit.js"), "export function leafVal() { return 100; }\n")
+      .expect("write leaf_edit");
   }
   fs::write(root.join("entry.js"), entry).expect("write entry");
   TempFixture(root)
@@ -126,7 +123,7 @@ async fn bench_incremental_preserve_modules(name: &str, rounds: usize) -> (u128,
     treeshake: TreeshakeOptions::Boolean(false),
     experimental: Some(ExperimentalOptions {
       incremental_build: Some(true),
-      dev_mode: Some(Default::default()),
+      dev_mode: Some(DevModeOptions::default()),
       ..Default::default()
     }),
     ..Default::default()
@@ -134,10 +131,8 @@ async fn bench_incremental_preserve_modules(name: &str, rounds: usize) -> (u128,
   .expect("create incremental bundler");
   bundler.set_omit_reused_chunk_bytes(true);
 
-  let cold_out = bundler
-    .incremental_generate(ScanMode::Full)
-    .await
-    .expect("initial full incremental generate");
+  let cold_out =
+    bundler.incremental_generate(ScanMode::Full).await.expect("initial full incremental generate");
   let asset_count = cold_out.assets.len();
   assert!(asset_count > 0, "expected generated assets for {name}");
 
@@ -146,10 +141,7 @@ async fn bench_incremental_preserve_modules(name: &str, rounds: usize) -> (u128,
   let mut best_ns = u128::MAX;
 
   for round in 0..rounds {
-    let updated = format!(
-      "export function leafVal() {{ return {}; }}\n",
-      100 + round + 1
-    );
+    let updated = format!("export function leafVal() {{ return {}; }}\n", 100 + round + 1);
     fs::write(&target_path, updated).expect("write updated module");
 
     let start = Instant::now();
@@ -183,10 +175,7 @@ async fn bench_incremental_chunked(name: &str, rounds: usize) -> (u128, usize) {
     cwd: Some(cwd.clone()),
     sourcemap: Some(SourceMapType::File),
     treeshake: TreeshakeOptions::Boolean(true),
-    experimental: Some(ExperimentalOptions {
-      incremental_build: Some(true),
-      ..Default::default()
-    }),
+    experimental: Some(ExperimentalOptions { incremental_build: Some(true), ..Default::default() }),
     ..Default::default()
   })
   .expect("create chunked incremental bundler");
@@ -205,9 +194,10 @@ async fn bench_incremental_chunked(name: &str, rounds: usize) -> (u128, usize) {
   for round in 0..rounds {
     let mut helpers = String::new();
     for h in 0..24 {
-      helpers.push_str(&format!(
-        "function helper_3_{h}(x) {{ const a = x + {h}; const b = a * 2; return b - 3; }}\n"
-      ));
+      let _ = writeln!(
+        helpers,
+        "function helper_3_{h}(x) {{ const a = x + {h}; const b = a * 2; return b - 3; }}"
+      );
     }
     let updated = format!(
       "import {{ m2 }} from './mod_2.js';\n{helpers}export function m3() {{ return helper_3_0({}) + helper_3_23(1) + m2(); }}\nexport function unused_3() {{ return 30; }}\n",

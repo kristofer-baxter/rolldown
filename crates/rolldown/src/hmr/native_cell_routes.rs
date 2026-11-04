@@ -170,7 +170,7 @@ fn namespace_may_lead_to_cell(modules: &IndexModules, donor: &NormalModule) -> b
       module
         .named_exports
         .keys()
-        .map(|name| name.as_str())
+        .map(oxc_str::CompactStr::as_str)
         .filter(|name| idx == donor.idx || *name != "default"),
     );
     pending.extend(module.star_export_module_ids());
@@ -296,7 +296,7 @@ fn candidate_routes(
   let mut required = FxHashSet::default();
   let mut cell_donors = FxHashSet::default();
   for module in modules.iter().filter_map(|module| module.as_normal()) {
-    for record in module.import_records.iter() {
+    for record in &module.import_records {
       if let Some(idx) = record.resolved_module {
         if record.kind == ImportKind::Require {
           required.insert(idx);
@@ -624,7 +624,7 @@ fn classify(
     }
     state.insert(idx, 1);
     pending.push((idx, true));
-    for dependency in module.import_records.iter() {
+    for dependency in &module.import_records {
       edges += 1;
       if dependency.kind != ImportKind::Import {
         evaluate = true;

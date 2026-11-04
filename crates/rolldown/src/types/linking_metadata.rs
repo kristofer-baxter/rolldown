@@ -136,12 +136,11 @@ impl LinkingMetadata {
     &self,
     needs_commonjs_export: bool,
   ) -> impl Iterator<Item = (&CompactStr, &ResolvedExport)> {
-    self
-      .sorted_and_non_ambiguous_resolved_exports
-      .iter()
-      .filter_map(move |(name, came_from_cjs)| {
+    self.sorted_and_non_ambiguous_resolved_exports.iter().filter_map(
+      move |(name, came_from_cjs)| {
         (needs_commonjs_export || !came_from_cjs).then_some((name, &self.resolved_exports[name]))
-      })
+      },
+    )
   }
 
   pub fn is_canonical_exports_empty(&self) -> bool {
@@ -202,9 +201,7 @@ impl LinkingMetadata {
     match format {
       OutputFormat::Esm => {
         !rec_meta.contains(ImportRecordMeta::EntryLevelExternal)
-          || self
-            .module_namespace_included_reason
-            .contains(ModuleNamespaceIncludedReason::Unknown)
+          || self.module_namespace_included_reason.contains(ModuleNamespaceIncludedReason::Unknown)
       }
       OutputFormat::Cjs | OutputFormat::Iife | OutputFormat::Umd => true,
     }
@@ -239,13 +236,13 @@ impl LinkingMetadata {
     let partial_used_exports = match entry_point_kind {
       rolldown_common::EntryPointKind::UserDefined
       | rolldown_common::EntryPointKind::EmittedUserDefined => None,
-      rolldown_common::EntryPointKind::DynamicImport => dynamic_import_exports_usage_map
-        .get(&module_idx)
-        .and_then(|usage| match usage {
+      rolldown_common::EntryPointKind::DynamicImport => {
+        dynamic_import_exports_usage_map.get(&module_idx).and_then(|usage| match usage {
           DynamicImportExportsUsage::Complete => None,
           DynamicImportExportsUsage::Partial(set) => Some(set),
           DynamicImportExportsUsage::Single(_) => unreachable!(),
-        }),
+        })
+      }
     };
     self.canonical_exports(needs_commonjs_export).filter(
       move |(name, _)| match partial_used_exports {
@@ -266,15 +263,9 @@ pub type LinkingMetadataVec = IndexVec<ModuleIdx, LinkingMetadata>;
 /// are copied but not reset.
 pub fn linking_metadata_vec_to_included_info(
   metas: &mut LinkingMetadataVec,
-) -> (
-  StmtInclusionVec,
-  ModuleInclusionVec,
-  ModuleNamespaceReasonVec,
-) {
-  let stmt_info_included_vec: StmtInclusionVec = metas
-    .iter_mut()
-    .map(|meta| std::mem::take(&mut meta.stmt_info_included))
-    .collect();
+) -> (StmtInclusionVec, ModuleInclusionVec, ModuleNamespaceReasonVec) {
+  let stmt_info_included_vec: StmtInclusionVec =
+    metas.iter_mut().map(|meta| std::mem::take(&mut meta.stmt_info_included)).collect();
 
   let mut module_included_vec: ModuleInclusionVec = IndexBitSet::new(metas.len());
   for (idx, meta) in metas.iter_enumerated() {
@@ -283,16 +274,10 @@ pub fn linking_metadata_vec_to_included_info(
     }
   }
 
-  let module_namespace_reason_vec: ModuleNamespaceReasonVec = metas
-    .iter()
-    .map(|meta| meta.module_namespace_included_reason)
-    .collect();
+  let module_namespace_reason_vec: ModuleNamespaceReasonVec =
+    metas.iter().map(|meta| meta.module_namespace_included_reason).collect();
 
-  (
-    stmt_info_included_vec,
-    module_included_vec,
-    module_namespace_reason_vec,
-  )
+  (stmt_info_included_vec, module_included_vec, module_namespace_reason_vec)
 }
 
 /// Restores inclusion information back to the module metas.

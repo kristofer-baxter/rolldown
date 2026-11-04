@@ -43,10 +43,7 @@ fn is_safe_define_property_call(expr: &ast::Expression<'_>) -> bool {
   let ast::Expression::StaticMemberExpression(member) = &call.callee else {
     return false;
   };
-  if !matches!(
-    member.property.name.as_str(),
-    "defineProperty" | "defineProperties"
-  ) {
+  if !matches!(member.property.name.as_str(), "defineProperty" | "defineProperties") {
     return false;
   }
   if !matches!(&member.object, ast::Expression::Identifier(ident) if ident.name == "Object") {
@@ -55,12 +52,11 @@ fn is_safe_define_property_call(expr: &ast::Expression<'_>) -> bool {
   if call.arguments.len() < 2 {
     return false;
   }
-  let Some(target) = call.arguments.first().and_then(|arg| arg.as_expression()) else {
+  let Some(target) = call.arguments.first().and_then(ast::Argument::as_expression) else {
     return false;
   };
-  let target_ok =
-    matches!(target, ast::Expression::ObjectExpression(obj) if obj.properties.is_empty())
-      || is_safe_define_property_call(target);
+  let target_ok = matches!(target, ast::Expression::ObjectExpression(obj) if obj.properties.is_empty())
+    || is_safe_define_property_call(target);
   target_ok
     && call.arguments[1..].iter().all(|arg| {
       let Some(arg_expr) = arg.as_expression() else {
@@ -108,9 +104,7 @@ fn is_safe_compound_const_init(expr: &ast::Expression<'_>, depth: usize) -> bool
       ast::ArrayExpressionElement::SpreadElement(_) | ast::ArrayExpressionElement::Elision(_) => {
         false
       }
-      _ => elem
-        .as_expression()
-        .is_some_and(|e| is_safe_compound_const_init(e, depth + 1)),
+      _ => elem.as_expression().is_some_and(|e| is_safe_compound_const_init(e, depth + 1)),
     }),
     ast::Expression::CallExpression(call) => {
       if call.arguments.len() != 1 {
@@ -122,10 +116,8 @@ fn is_safe_compound_const_init(expr: &ast::Expression<'_>, depth: usize) -> bool
       let ast::Expression::StaticMemberExpression(member) = &call.callee else {
         return false;
       };
-      if matches!(
-        member.property.name.as_str(),
-        "freeze" | "seal" | "preventExtensions"
-      ) && matches!(&member.object, ast::Expression::Identifier(ident) if ident.name == "Object")
+      if matches!(member.property.name.as_str(), "freeze" | "seal" | "preventExtensions")
+        && matches!(&member.object, ast::Expression::Identifier(ident) if ident.name == "Object")
       {
         return is_safe_compound_const_init(arg, depth + 1);
       }
@@ -196,7 +188,9 @@ impl LinkStage<'_> {
     let finish = self.runtime.resolve_symbol("__finishAsync");
     let initialize = self.runtime.resolve_symbol("__esmAsync");
     for (idx, infos) in self.stmt_infos.iter_mut_enumerated() {
-      if self.metas[idx].is_tla_or_contains_tla_dependency {
+      if self.metas[idx].is_tla_or_contains_tla_dependency
+        && matches!(self.metas[idx].wrap_kind(), rolldown_common::WrapKind::Esm)
+      {
         for info in &mut infos.infos {
           info.referenced_symbols.extend([start.into(), finish.into(), initialize.into()]);
         }
@@ -206,6 +200,11 @@ impl LinkStage<'_> {
 
   pub(super) fn preserve_temporal_bindings(&mut self) {
     let native_records = crate::utils::native_records::enabled(self.options);
+    if !native_records
+      && !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+    {
+      return;
+    }
     // An acyclic leaf alone is insufficient: a cyclic barrel can read its reexport before
     // traversal reaches the leaf. Every static edge must respect the completed DFS order.
     let acyclic_full_graph = !self.options.is_dev_mode_enabled()
@@ -238,20 +237,15 @@ impl LinkStage<'_> {
       let scope_bindings = bindings.len();
       let ast = self.ast_table[module.idx].as_ref().expect("normal module AST");
       let allow_minified_compounds = self.options.minify.is_enabled()
-        && scopes
-          .get_binding(scopes.root_scope_id(), "Object".into())
-          .is_none();
-      let object_unshadowed = scopes
-        .get_binding(scopes.root_scope_id(), "Object".into())
-        .is_none();
+        && scopes.get_binding(scopes.root_scope_id(), "Object".into()).is_none();
+      let object_unshadowed = scopes.get_binding(scopes.root_scope_id(), "Object".into()).is_none();
       let safe_literals = if acyclic_full_graph
         && !module.meta.has_eval()
         && !self.metas[module.idx].is_tla_or_contains_tla_dependency
         && (allow_minified_compounds
           || !module.import_records.iter().any(|record| record.kind.is_static()))
       {
-        let (primitives, compounds) =
-          literal_const_prefix(ast.program(), allow_minified_compounds);
+        let (primitives, compounds) = literal_const_prefix(ast.program(), allow_minified_compounds);
         let mut set: FxHashSet<_> = primitives
           .into_iter()
           // The scanner excludes mutated bindings from its constant map.
@@ -261,7 +255,7 @@ impl LinkStage<'_> {
           .collect();
         if object_unshadowed {
           for symbol in compounds {
-            if !scopes.get_resolved_references(symbol).any(|r| r.is_write()) {
+            if !scopes.get_resolved_references(symbol).any(oxc::semantic::Reference::is_write) {
               set.insert(symbol);
             }
           }
@@ -306,10 +300,12 @@ impl LinkStage<'_> {
             }
           }
           Statement::ExportDefaultDeclaration(export) => match &export.declaration {
-            ExportDefaultDeclarationKind::FunctionDeclaration(_) => {}
             ExportDefaultDeclarationKind::ClassDeclaration(class) => {
               bindings.push((
-                class.id.as_ref().map_or(module.default_export_ref.symbol, |id| id.symbol_id()),
+                class.id.as_ref().map_or(
+                  module.default_export_ref.symbol,
+                  oxc::ast::ast::BindingIdentifier::symbol_id,
+                ),
                 false,
               ));
             }

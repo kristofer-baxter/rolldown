@@ -34,6 +34,8 @@ jobs:
       (github.event.pull_request.draft != true &&
       !contains(github.event.pull_request.labels.*.name, 'graphite: merge-when-ready'))
     runs-on: ubuntu-latest
+    env:
+      HAS_CODSPEED_TOKEN: ${{ secrets.CODSPEED_TOKEN != '' }}
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
@@ -67,6 +69,7 @@ jobs:
       - wait: benchmark-input
 
       - name: Run the benchmarks
+        if: env.HAS_CODSPEED_TOKEN == 'true'
         uses: CodSpeedHQ/action@373d6868929f444bc08d901fd0eb0ad52a8875ea # v5.2.1
         with:
           run: cargo codspeed run -p bench

@@ -133,10 +133,12 @@ impl GenerateStage<'_> {
 
     let import_edges = self.predicted_static_import_edges(chunk_graph, used_symbol_refs_builder);
     let chunk_cycles = ChunkCycles::from_import_edges(&import_edges);
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options);
     let reverse_static_imports =
       reverse_static_import_index(&self.link_output.module_table.modules);
     let mut cyclic_backward_closure = FxHashSet::default();
-    if !chunk_cycles.sccs.is_empty() {
+    if runtime_semantics && !chunk_cycles.sccs.is_empty() {
       let cyclic_seeds = chunk_cycles
         .sccs
         .iter()
@@ -149,11 +151,13 @@ impl GenerateStage<'_> {
       );
     }
     let mut all_at_risk = FxHashSet::default();
-    for scc in &chunk_cycles.sccs {
-      for &chunk_idx in scc {
-        for &module_idx in &chunk_graph.chunk_table[chunk_idx].modules {
-          if self.is_order_wrap_eligible(module_idx) {
-            all_at_risk.insert(module_idx);
+    if runtime_semantics {
+      for scc in &chunk_cycles.sccs {
+        for &chunk_idx in scc {
+          for &module_idx in &chunk_graph.chunk_table[chunk_idx].modules {
+            if self.is_order_wrap_eligible(module_idx) {
+              all_at_risk.insert(module_idx);
+            }
           }
         }
       }
@@ -176,7 +180,8 @@ impl GenerateStage<'_> {
       // static-import closure rather than poisoning every module reachable from the root chunk.
       if chunk_cycles.reachable_from(root_chunk, &import_edges) {
         at_risk.extend(expected_order.iter().copied().filter(|idx| {
-          cyclic_backward_closure.contains(idx) && self.is_order_wrap_eligible(*idx)
+          (!runtime_semantics || cyclic_backward_closure.contains(idx))
+            && self.is_order_wrap_eligible(*idx)
         }));
       }
       all_at_risk.extend(at_risk.iter().copied());

@@ -42,8 +42,7 @@ fn strip_non_asset_extension(name: &str) -> &str {
   }
 }
 
-#[derive(Debug)]
-#[derive(Default)]
+#[derive(Debug, Default)]
 struct PreGeneratedChunkName {
   /// The representative name used for symbol deconflicting and chunk binding references.
   representative_chunk_name: ArcStr,
@@ -99,11 +98,7 @@ async fn preserve_modules_chunk_name(
         // when module ids keep native separators.
         strip_path_prefix_to_slash(&abs, preserve_modules_root.as_path())
       });
-      if let Some(relative_path) = stripped_by_root {
-        relative_path
-      } else {
-        relative_path_to_slash(abs, input_base)
-      }
+      stripped_by_root.unwrap_or_else(|| relative_path_to_slash(abs, input_base))
     } else {
       path_buf_to_slash(PathBuf::from(virtual_dirname.as_str()).join(p))
     }
@@ -213,13 +208,13 @@ mod resolve_file_urls;
 mod runtime_module_sweep;
 mod simulated_facade_inclusion;
 
-pub(crate) use code_splitting::common_dir_input;
+pub use code_splitting::common_dir_input;
 pub use compute_wrapped_esm_init_metadata::{FinalEsmInitMetadata, Sealed};
 pub use inline_common_chunks::{
   CarriedRender, FileInlineNames, InlineCommonChunksState, InlineReader,
 };
 pub use native_relink_graph::NativeChunkChange;
-pub(crate) use native_relink_graph::is_live_chunk;
+pub use native_relink_graph::is_live_chunk;
 
 #[derive(Debug)]
 pub struct PendingNativeRelinkState {
@@ -232,8 +227,10 @@ pub struct PendingNativeRelinkState {
   pub module_owner_digest: IndexVec<ModuleIdx, [u128; 2]>,
   pub runtime_chunk_sig: Option<[u128; 2]>,
   pub module_has_native_ns: IndexVec<ModuleIdx, bool>,
-  pub render_export_items_index_vec:
-    IndexVec<ChunkIdx, rolldown_utils::indexmap::FxIndexMap<rolldown_common::SymbolRef, Vec<oxc_str::CompactStr>>>,
+  pub render_export_items_index_vec: IndexVec<
+    ChunkIdx,
+    rolldown_utils::indexmap::FxIndexMap<rolldown_common::SymbolRef, Vec<oxc_str::CompactStr>>,
+  >,
   pub index_chunk_to_instances: crate::type_alias::IndexChunkToInstances,
   pub protected_modules: FxHashSet<ModuleIdx>,
   /// The modules that chunk decisions depend on, among the protected ones: deferred imports'
@@ -331,7 +328,9 @@ impl<'a> GenerateStage<'a> {
     // Sealing consumes the builder, so nothing downstream can mutate the set.
     let used_symbol_refs = used_symbol_refs_builder.seal();
     self.compute_retained_export_symbols(&used_symbol_refs);
-    self.narrow_consumer_local_namespace_targets(&mut order_state);
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
+      self.narrow_consumer_local_namespace_targets(&mut order_state);
+    }
 
     // Cross-chunk linking in two halves. `experimentalInlineCommonChunks` decides on the derived
     // final edges and registers the registry's runtime demand; a second derivation then carries
@@ -386,14 +385,15 @@ impl<'a> GenerateStage<'a> {
     }
 
     let resolved_file_urls = self.resolve_file_urls(&chunk_graph).await?;
-    let (chunk_decisions, reused_chunks, relink_digest_state) = self.compute_native_chunk_decisions(
-      &chunk_graph,
-      &resolved_file_urls,
-      &used_symbol_refs,
-      &order_state,
-      &final_esm_init_metadata,
-      &index_chunk_id_to_name,
-    );
+    let (chunk_decisions, reused_chunks, relink_digest_state) = self
+      .compute_native_chunk_decisions(
+        &chunk_graph,
+        &resolved_file_urls,
+        &used_symbol_refs,
+        &order_state,
+        &final_esm_init_metadata,
+        &index_chunk_id_to_name,
+      );
 
     // A file names its carried records' modules together with its own.
     // See internal-docs/inline-common-chunks/implementation.md ("Deconflicting").
@@ -489,7 +489,7 @@ impl<'a> GenerateStage<'a> {
       let chunks_len = chunk_graph.chunk_table.len();
       let mut sorted_output_template = Vec::with_capacity(chunks_len);
       let mut reused_chunk_filenames_pool =
-        FxHashSet::with_capacity_and_hasher(chunks_len, Default::default());
+        FxHashSet::with_capacity_and_hasher(chunks_len, rustc_hash::FxBuildHasher);
       for (chunk_idx, chunk) in chunk_graph.chunk_table.iter_enumerated() {
         let module_idx = chunk.modules[0];
         let cached_chunk = &cache.cached_native_chunks[&module_idx].chunk;
@@ -542,11 +542,7 @@ impl<'a> GenerateStage<'a> {
   pub async fn generate_fast_native_relink(
     &mut self,
     cached_relink: &mut PendingNativeRelinkState,
-    dirty_modules_with_used: &[(
-      ModuleIdx,
-      ChunkIdx,
-      FxHashSet<rolldown_common::SymbolRef>,
-    )],
+    dirty_modules_with_used: &[(ModuleIdx, ChunkIdx, FxHashSet<rolldown_common::SymbolRef>)],
     graph_change: Option<&NativeChunkChange>,
   ) -> BuildResult<Result<(BundleOutput, Vec<ArcStr>), &'static str>> {
     let retired_filenames = match graph_change {
@@ -636,7 +632,8 @@ impl<'a> GenerateStage<'a> {
     let mut dirty_rendered_modules = Vec::with_capacity(dirty_modules_with_used.len());
     let mut diagnostics = Vec::new();
     for &(idx, chunk_idx, _) in dirty_modules_with_used {
-      let mut ast = self.ast_table[idx].as_ref().expect("normal module ast").clone_with_another_arena();
+      let mut ast =
+        self.ast_table[idx].as_ref().expect("normal module ast").clone_with_another_arena();
       let module = self.link_output.module_table[idx].as_normal().unwrap();
       let ast_scope = &self.link_output.symbol_db[idx].as_ref().unwrap().ast_scopes;
       let chunk = &cached_relink.chunk_graph.chunk_table[chunk_idx];
@@ -710,6 +707,7 @@ impl<'a> GenerateStage<'a> {
 
   /// Notices:
   /// - Should generate filenames that are stable cross builds and os.
+  #[expect(clippy::too_many_lines)]
   #[tracing::instrument(level = "debug", skip_all)]
   async fn generate_chunk_name_and_preliminary_filenames(
     &mut self,
@@ -728,8 +726,8 @@ impl<'a> GenerateStage<'a> {
     if can_cache_naming && let Some(cache) = self.cache.as_ref() {
       use std::hash::Hash;
       use xxhash_rust::xxh3::Xxh3;
-      let mut h0 = Xxh3::with_seed(0x243f6a8885a308d3);
-      let mut h1 = Xxh3::with_seed(0x13198a2e03707344);
+      let mut h0 = Xxh3::with_seed(0x243f_6a88_85a3_08d3);
+      let mut h1 = Xxh3::with_seed(0x1319_8a2e_0370_7344);
       chunk_graph.sorted_chunk_idx_vec.len().hash(&mut h0);
       chunk_graph.sorted_chunk_idx_vec.len().hash(&mut h1);
       let mut order_sig_valid = true;
@@ -826,7 +824,8 @@ impl<'a> GenerateStage<'a> {
                 ChunkKind::EntryPoint { module: entry_module_id, meta, .. } => {
                   let module = &modules[entry_module_id];
                   let generated = if preserve_modules {
-                    preserve_modules_chunk_name(options, module.id().as_str(), input_base.as_str()).await?
+                    preserve_modules_chunk_name(options, module.id().as_str(), input_base.as_str())
+                      .await?
                   } else if meta.contains(rolldown_common::ChunkMeta::UserDefinedEntry) {
                     // try extract meaningful input name from path
                     if let Some(file_stem) =
@@ -847,7 +846,8 @@ impl<'a> GenerateStage<'a> {
                       }
                     }
                   } else {
-                    let chunk_name = sanitize_filename.call(&module.id().representative_name()).await?;
+                    let chunk_name =
+                      sanitize_filename.call(&module.id().representative_name()).await?;
 
                     PreGeneratedChunkName {
                       representative_chunk_name: chunk_name.clone(),
@@ -941,7 +941,7 @@ impl<'a> GenerateStage<'a> {
           chunk.name = Some(cached.chunk_name.clone());
           chunk.absolute_preliminary_filename = Some(cached.absolute_preliminary_filename.clone());
           chunk.preliminary_filename = Some(cached.preliminary_filename.clone());
-          chunk.preliminary_sourcemap_filename = cached.preliminary_sourcemap_filename.clone();
+          chunk.preliminary_sourcemap_filename.clone_from(&cached.preliminary_sourcemap_filename);
           reused_naming_count += 1;
           continue;
         }
@@ -950,7 +950,8 @@ impl<'a> GenerateStage<'a> {
       let used_before = used_name_counts.len();
       let explicit_name = chunk.name.clone();
       let pre_generated_chunk_name = &mut index_pre_generated_names[*chunk_id];
-      if !pre_generated_chunk_name.chunk_filename.is_ascii()
+      if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+        && !pre_generated_chunk_name.chunk_filename.is_ascii()
         && !self.options.preserve_modules
         && matches!(
           &self.options.chunk_filenames,
@@ -1025,7 +1026,7 @@ impl<'a> GenerateStage<'a> {
         .await?;
       let cacheable_kind = match (chunk.modules.as_slice(), &chunk.kind) {
         ([module_idx], ChunkKind::EntryPoint { module: entry_module_id, meta, .. })
-          if *entry_module_id == *module_idx =>
+          if entry_module_id == module_idx =>
         {
           Some((*module_idx, meta.contains(rolldown_common::ChunkMeta::UserDefinedEntry)))
         }
@@ -1047,9 +1048,9 @@ impl<'a> GenerateStage<'a> {
           && chunk.file_name.is_none()
           && used_name_counts.len() == used_before + expected_added
           && used_name_counts.get(key.as_str()).is_some_and(|c| *c == 2)
-          && sm_key
-            .as_ref()
-            .is_none_or(|sk| sk != &key && used_name_counts.get(sk.as_str()).is_some_and(|c| *c == 2)))
+          && sm_key.as_ref().is_none_or(|sk| {
+            sk != &key && used_name_counts.get(sk.as_str()).is_some_and(|c| *c == 2)
+          }))
         .then(|| {
           let mut keys = vec![key];
           if let Some(sk) = sm_key {
@@ -1080,7 +1081,8 @@ impl<'a> GenerateStage<'a> {
     if let Some(cache) = self.cache.as_deref_mut() {
       let build_collision_free = used_name_counts.iter().all(|e| *e.value() == 2);
       let all_cached_after = order_matches_previous
-        || reused_naming_count + newly_cached_namings.len() == chunk_graph.sorted_chunk_idx_vec.len();
+        || reused_naming_count + newly_cached_namings.len()
+          == chunk_graph.sorted_chunk_idx_vec.len();
       for (module_idx, mut naming) in newly_cached_namings {
         if !build_collision_free {
           naming.used_name_keys = None;
@@ -1094,7 +1096,12 @@ impl<'a> GenerateStage<'a> {
     Ok((index_chunk_id_to_representative_name, record_ids))
   }
 
-  #[expect(clippy::type_complexity)]
+  #[expect(
+    clippy::type_complexity,
+    clippy::too_many_lines,
+    clippy::items_after_statements,
+    clippy::cast_possible_truncation
+  )]
   fn compute_native_chunk_decisions(
     &self,
     chunk_graph: &ChunkGraph,
@@ -1118,11 +1125,8 @@ impl<'a> GenerateStage<'a> {
     use std::hash::Hash;
     use xxhash_rust::xxh3::Xxh3;
 
-    let empty = (
-      IndexVec::from_vec(vec![None; chunk_graph.chunk_table.len()]),
-      FxHashSet::default(),
-      None,
-    );
+    let empty =
+      (IndexVec::from_vec(vec![None; chunk_graph.chunk_table.len()]), FxHashSet::default(), None);
     let Some(cache) = self.cache.as_ref() else {
       return empty;
     };
@@ -1145,7 +1149,7 @@ impl<'a> GenerateStage<'a> {
     struct DualHasher(Xxh3, Xxh3);
     impl DualHasher {
       fn new() -> Self {
-        Self(Xxh3::with_seed(0x243f6a8885a308d3), Xxh3::with_seed(0x13198a2e03707344))
+        Self(Xxh3::with_seed(0x243f_6a88_85a3_08d3), Xxh3::with_seed(0x1319_8a2e_0370_7344))
       }
       fn write_val<T: Hash + ?Sized>(&mut self, val: &T) {
         val.hash(&mut self.0);
@@ -1188,7 +1192,7 @@ impl<'a> GenerateStage<'a> {
     let runtime_chunk_sig = runtime_chunk_idx.and_then(|rt_idx| {
       let rt_chunk = chunk_graph.chunk_table.get(rt_idx)?;
       let mut h = DualHasher::new();
-      h.write_val(&rt_chunk.preliminary_filename.as_ref().map(|f| f.as_str()));
+      h.write_val(&rt_chunk.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
       let mut exp_acc = (0u128, 0u128);
       for (sym_ref, names) in &rt_chunk.exports_to_other_chunks {
         let mut eh = DualHasher::new();
@@ -1229,15 +1233,15 @@ impl<'a> GenerateStage<'a> {
           let ometa = &self.link_output.metas[idx];
           let chunk_file = chunk_graph.module_to_chunk[idx]
             .and_then(|cidx| chunk_graph.chunk_table.get(cidx))
-            .and_then(|c| c.preliminary_filename.as_ref().map(|f| f.as_str()));
+            .and_then(|c| c.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
           let entry_chunk_file = chunk_graph
             .entry_module_to_entry_chunk
             .get(&idx)
             .and_then(|cidx| chunk_graph.chunk_table.get(*cidx))
-            .and_then(|c| c.preliminary_filename.as_ref().map(|f| f.as_str()));
-          let init_target = order_state.esm_init_target(idx, ometa).map(|t| {
-            (sym_id_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)
-          });
+            .and_then(|c| c.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
+          let init_target = order_state
+            .esm_init_target(idx, ometa)
+            .map(|t| (sym_id_key(t.wrapper_ref), t.tla_tainted, t.origin as u8));
           let init_noop = final_esm_init_metadata.init_is_noop(idx);
           let hash_exported_sym = |mh: &mut DualHasher, sref: rolldown_common::SymbolRef| {
             let cref = self.link_output.symbol_db.canonical_ref_for(sref);
@@ -1245,7 +1249,7 @@ impl<'a> GenerateStage<'a> {
             let owner_chunk_file = sym
               .chunk_idx
               .and_then(|cidx| chunk_graph.chunk_table.get(cidx))
-              .and_then(|c| c.preliminary_filename.as_ref().map(|f| f.as_str()));
+              .and_then(|c| c.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
             let ns_alias = sym.namespace_alias.as_ref().map(|na| {
               let ns_canon = self.link_output.symbol_db.canonical_ref_for(na.namespace_ref);
               (na.property_name.as_str(), sym_id_key(ns_canon))
@@ -1323,11 +1327,7 @@ impl<'a> GenerateStage<'a> {
           }
           mh.write_unordered(9, ometa.resolved_exports.len(), rexp_acc);
           mh.write_val(
-            &self
-              .link_output
-              .safely_merge_cjs_ns_map
-              .get(&idx)
-              .map(|info| info.needs_interop),
+            &self.link_output.safely_merge_cjs_ns_map.get(&idx).map(|info| info.needs_interop),
           );
         }
         mh.finish()
@@ -1391,7 +1391,7 @@ impl<'a> GenerateStage<'a> {
     )
   }
 
-  #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
+  #[expect(clippy::too_many_arguments, clippy::too_many_lines, clippy::cast_possible_truncation)]
   pub(crate) fn compute_single_native_chunk_decision(
     &self,
     cache: &ScanStageCache,
@@ -1412,7 +1412,7 @@ impl<'a> GenerateStage<'a> {
     struct DualHasher(Xxh3, Xxh3);
     impl DualHasher {
       fn new() -> Self {
-        Self(Xxh3::with_seed(0x243f6a8885a308d3), Xxh3::with_seed(0x13198a2e03707344))
+        Self(Xxh3::with_seed(0x243f_6a88_85a3_08d3), Xxh3::with_seed(0x1319_8a2e_0370_7344))
       }
       fn write_val<T: Hash + ?Sized>(&mut self, val: &T) {
         val.hash(&mut self.0);
@@ -1505,7 +1505,7 @@ impl<'a> GenerateStage<'a> {
       module_idx.raw(),
       module.ecma_view.dummy_record_set.len(),
       preliminary_filename.as_str(),
-      chunk.preliminary_sourcemap_filename.as_ref().map(|f| f.as_str()),
+      chunk.preliminary_sourcemap_filename.as_deref().map(arcstr::ArcStr::as_str),
       chunk.name.as_deref(),
       chunk.input_base.as_str(),
       runtime_chunk_sig,
@@ -1520,30 +1520,42 @@ impl<'a> GenerateStage<'a> {
     }
     h.write_val(&chunk.entry_level_external_module_idx.len());
     for &ext_idx in &chunk.entry_level_external_module_idx {
-      let ext_path = self.link_output.module_table[ext_idx]
-        .as_external()
-        .map(|e| (e.get_import_path(chunk, self.resolved_paths.as_ref()), e.get_file_name(self.resolved_paths.as_ref())));
+      let ext_path = self.link_output.module_table[ext_idx].as_external().map(|e| {
+        (
+          e.get_import_path(chunk, self.resolved_paths.as_ref()),
+          e.get_file_name(self.resolved_paths.as_ref()),
+        )
+      });
       h.write_val(&(ext_idx.raw(), ext_path));
     }
     h.write_val(&chunk.direct_imports_from_external_modules.len());
     for (ext_idx, named_imports) in &chunk.direct_imports_from_external_modules {
-      let ext_path = self.link_output.module_table[*ext_idx]
-        .as_external()
-        .map(|e| (e.get_import_path(chunk, self.resolved_paths.as_ref()), e.get_file_name(self.resolved_paths.as_ref())));
+      let ext_path = self.link_output.module_table[*ext_idx].as_external().map(|e| {
+        (
+          e.get_import_path(chunk, self.resolved_paths.as_ref()),
+          e.get_file_name(self.resolved_paths.as_ref()),
+        )
+      });
       h.write_val(&(ext_idx.raw(), ext_path, named_imports.len()));
     }
     h.write_val(&chunk.dynamic_imports_from_external_modules.len());
     for &ext_idx in &chunk.dynamic_imports_from_external_modules {
-      let ext_path = self.link_output.module_table[ext_idx]
-        .as_external()
-        .map(|e| (e.get_import_path(chunk, self.resolved_paths.as_ref()), e.get_file_name(self.resolved_paths.as_ref())));
+      let ext_path = self.link_output.module_table[ext_idx].as_external().map(|e| {
+        (
+          e.get_import_path(chunk, self.resolved_paths.as_ref()),
+          e.get_file_name(self.resolved_paths.as_ref()),
+        )
+      });
       h.write_val(&(ext_idx.raw(), ext_path));
     }
     h.write_val(&chunk.import_symbol_from_external_modules.len());
     for &ext_idx in &chunk.import_symbol_from_external_modules {
-      let ext_path = self.link_output.module_table[ext_idx]
-        .as_external()
-        .map(|e| (e.get_import_path(chunk, self.resolved_paths.as_ref()), e.get_file_name(self.resolved_paths.as_ref())));
+      let ext_path = self.link_output.module_table[ext_idx].as_external().map(|e| {
+        (
+          e.get_import_path(chunk, self.resolved_paths.as_ref()),
+          e.get_file_name(self.resolved_paths.as_ref()),
+        )
+      });
       h.write_val(&(ext_idx.raw(), ext_path));
     }
 
@@ -1563,9 +1575,8 @@ impl<'a> GenerateStage<'a> {
           .as_normal()
           .is_some_and(rolldown_common::NormalModule::is_hmr_partially_accepting_module);
         h.write_val(&(row_idx.raw(), row_mod.stable_id().as_str(), partially_accepting));
-        let bindings = row_mod
-          .as_normal()
-          .map(crate::hmr::module_graph_delta::static_import_bindings);
+        let bindings =
+          row_mod.as_normal().map(crate::hmr::module_graph_delta::static_import_bindings);
         for (rec_idx, rec) in row_mod.import_records().iter_enumerated() {
           let target_stable =
             rec.resolved_module.map(|t| self.link_output.module_table[t].stable_id().as_str());
@@ -1578,8 +1589,7 @@ impl<'a> GenerateStage<'a> {
             rec.meta.bits(),
             target_stable,
             target_partially_accepting,
-            target_partially_accepting
-              .then(|| bindings.as_ref().and_then(|b| b.get(&rec_idx))),
+            target_partially_accepting.then(|| bindings.as_ref().and_then(|b| b.get(&rec_idx))),
           ));
         }
       }
@@ -1589,9 +1599,9 @@ impl<'a> GenerateStage<'a> {
     for (exporter_chunk_idx, items) in &chunk.imports_from_other_chunks {
       let exporter_chunk = &chunk_graph.chunk_table[*exporter_chunk_idx];
       h.write_val(&(
-        exporter_chunk.preliminary_filename.as_ref().map(|f| f.as_str()),
-        index_chunk_id_to_name.get(exporter_chunk_idx).map(|n| n.as_str()),
-        exporter_chunk.entry_module_idx().map(|i| i.raw()),
+        exporter_chunk.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str),
+        index_chunk_id_to_name.get(exporter_chunk_idx).map(arcstr::ArcStr::as_str),
+        exporter_chunk.entry_module_idx().map(ModuleIdx::raw),
         items.len(),
       ));
       for item in items {
@@ -1614,24 +1624,20 @@ impl<'a> GenerateStage<'a> {
     h.write_val(&chunk.cross_chunk_imports.len());
     for &importee_chunk_idx in &chunk.cross_chunk_imports {
       let importee_chunk = &chunk_graph.chunk_table[importee_chunk_idx];
-      h.write_val(&importee_chunk.preliminary_filename.as_ref().map(|f| f.as_str()));
+      h.write_val(&importee_chunk.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
     }
 
     h.write_val(&chunk.cross_chunk_dynamic_imports.len());
     for &importee_chunk_idx in &chunk.cross_chunk_dynamic_imports {
       let importee_chunk = &chunk_graph.chunk_table[importee_chunk_idx];
-      h.write_val(&importee_chunk.preliminary_filename.as_ref().map(|f| f.as_str()));
+      h.write_val(&importee_chunk.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
     }
 
     let mut exp_acc = (0u128, 0u128);
     for (export_ref, aliases) in &chunk.exports_to_other_chunks {
       let mut eh = DualHasher::new();
       let canonical_ref = symbol_db.canonical_ref_for(*export_ref);
-      eh.write_val(&(
-        sym_id_key(*export_ref),
-        sym_id_key(canonical_ref),
-        aliases,
-      ));
+      eh.write_val(&(sym_id_key(*export_ref), sym_id_key(canonical_ref), aliases));
       let [d0, d1] = eh.finish();
       exp_acc = (exp_acc.0.wrapping_add(d0), exp_acc.1.wrapping_add(d1));
     }
@@ -1640,8 +1646,8 @@ impl<'a> GenerateStage<'a> {
     h.write_val(&(
       meta.is_included,
       meta.wrap_kind() as u8,
-      meta.wrapper_ref.map(&sym_id_key),
-      meta.wrapper_stmt_info.map(|s| s.raw()),
+      meta.wrapper_ref.map(sym_id_key),
+      meta.wrapper_stmt_info.map(rolldown_common::StmtInfoIdx::raw),
       meta.concatenated_wrapped_module_kind as u8,
       meta.is_tla_or_contains_tla_dependency,
       meta.has_dynamic_exports,
@@ -1663,10 +1669,10 @@ impl<'a> GenerateStage<'a> {
     // #821).
     h.write_val(
       &(matches!(meta.wrap_kind(), rolldown_common::WrapKind::Cjs)
-        && self
-          .link_output
-          .unreachable_modules
-          .imported_by_static_or_dynamic_import(&self.link_output.module_table.modules, module_idx)),
+        && self.link_output.unreachable_modules.imported_by_static_or_dynamic_import(
+          &self.link_output.module_table.modules,
+          module_idx,
+        )),
     );
     for stmt_idx in 0..self.link_output.stmt_infos[module_idx].len() {
       let sidx = rolldown_common::StmtInfoIdx::from_raw_unchecked(stmt_idx as u32);
@@ -1678,12 +1684,7 @@ impl<'a> GenerateStage<'a> {
       let mut eh = DualHasher::new();
       let flag_used = is_sym_used(*flag);
       let is_const = meta.temporal_constants.contains(binding);
-      eh.write_val(&(
-        sym_id_key(*binding),
-        sym_id_key(*flag),
-        flag_used,
-        is_const,
-      ));
+      eh.write_val(&(sym_id_key(*binding), sym_id_key(*flag), flag_used, is_const));
       let [d0, d1] = eh.finish();
       temp_acc = (temp_acc.0.wrapping_add(d0), temp_acc.1.wrapping_add(d1));
     }
@@ -1737,10 +1738,7 @@ impl<'a> GenerateStage<'a> {
         res.prop_and_related_span_list.len(),
       ));
       if let Some((cjs_sym, _)) = res.target_commonjs_exported_symbol {
-        hash_const_export_meta(
-          &mut eh,
-          self.link_output.global_constant_symbol_map.get(&cjs_sym),
-        );
+        hash_const_export_meta(&mut eh, self.link_output.global_constant_symbol_map.get(&cjs_sym));
       }
       for prop in &res.prop_and_related_span_list {
         eh.write_val(&(prop.name.as_str(), prop.span.start, prop.span.end));
@@ -1764,11 +1762,7 @@ impl<'a> GenerateStage<'a> {
       let sym = symbol_db.get(canonical_ref);
       let ns_alias = sym.namespace_alias.as_ref().map(|na| {
         let ns_canon = symbol_db.canonical_ref_for(na.namespace_ref);
-        (
-          na.property_name.as_str(),
-          sym_id_key(ns_canon),
-          module_owner_digest[ns_canon.owner],
-        )
+        (na.property_name.as_str(), sym_id_key(ns_canon), module_owner_digest[ns_canon.owner])
       });
       h.write_val(&(
         sym_id_key(sym_ref),
@@ -1782,13 +1776,9 @@ impl<'a> GenerateStage<'a> {
         module_owner_digest[canonical_ref.owner],
       ));
       hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&sym_ref));
-      hash_const_export_meta(
-        h,
-        self.link_output.global_constant_symbol_map.get(&canonical_ref),
-      );
+      hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&canonical_ref));
     };
-    let local_sym_count =
-      symbol_db[module_idx].as_ref().map_or(0, |db| db.classic_data.len());
+    let local_sym_count = symbol_db[module_idx].as_ref().map_or(0, |db| db.classic_data.len());
     let mut seen_local_syms = vec![false; local_sym_count];
     let mut seen_other_syms = FxHashSet::default();
     let mut hash_sym = |h: &mut DualHasher, sym_ref: rolldown_common::SymbolRef| {
@@ -1807,10 +1797,7 @@ impl<'a> GenerateStage<'a> {
               self.link_output.retained_export_symbols.contains(&sym_ref),
               false,
             ));
-            hash_const_export_meta(
-              h,
-              self.link_output.global_constant_symbol_map.get(&sym_ref),
-            );
+            hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&sym_ref));
             return;
           }
           hash_sym_full(h, sym_ref);
@@ -1878,17 +1865,20 @@ impl<'a> GenerateStage<'a> {
       let merged_cjs_ns = chunk_graph.finalized_cjs_ns_map_idx_vec[chunk_idx]
         .get(&rec.namespace_ref)
         .copied()
-        .map(&sym_id_key);
+        .map(sym_id_key);
       h.write_val(&(
         rec.kind as u8,
         rec.meta.bits(),
-        rec.resolved_module.map(|m| m.raw()),
+        rec.resolved_module.map(ModuleIdx::raw),
         merged_cjs_ns,
       ));
       if let Some(importee_idx) = rec.resolved_module {
-        let ext_path = self.link_output.module_table[importee_idx]
-          .as_external()
-          .map(|e| (e.get_import_path(chunk, self.resolved_paths.as_ref()), e.get_file_name(self.resolved_paths.as_ref())));
+        let ext_path = self.link_output.module_table[importee_idx].as_external().map(|e| {
+          (
+            e.get_import_path(chunk, self.resolved_paths.as_ref()),
+            e.get_file_name(self.resolved_paths.as_ref()),
+          )
+        });
         let importee_meta = &metas[importee_idx];
         let omittable_star = cache.export_star_modules.contains(&module_idx)
           && crate::utils::native_records::omittable_star_evaluation(

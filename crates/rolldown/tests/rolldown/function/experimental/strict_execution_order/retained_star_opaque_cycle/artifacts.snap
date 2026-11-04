@@ -83,7 +83,7 @@ export { __esmMin as t };
 ### bridge.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 // bridge.js
 function x() {
 	return 1;
@@ -98,14 +98,16 @@ export { x as n, init_bridge as t };
 ### main.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 // main.js
 var namespaceCopy;
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await import("./page-b.js");
-		namespaceCopy = { ...await import("./page-a.js") };
-		if (namespaceCopy.x() !== 1 || namespaceCopy.common !== "common" || namespaceCopy.commonLeaf !== "common" || namespaceCopy._ !== void 0 || namespaceCopy.underscoreLeaf !== void 0) throw new Error("opaque dynamic import observed the wrong namespace");
+	return (init_main = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			await import("./page-b.js");
+			namespaceCopy = { ...await import("./page-a.js") };
+			if (namespaceCopy.x() !== 1 || namespaceCopy.common !== "common" || namespaceCopy.commonLeaf !== "common" || namespaceCopy._ !== void 0 || namespaceCopy.underscoreLeaf !== void 0) throw new Error("opaque dynamic import observed the wrong namespace");
+		});
 	})))();
 }
 await init_main();
@@ -115,7 +117,7 @@ await init_main();
 ### page-a.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 import { n as x } from "./bridge.js";
 // common.js
 function init() {
@@ -143,7 +145,7 @@ export { _, _ as underscoreLeaf, common, common as commonLeaf, x };
 ### page-b.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 import { n as x } from "./bridge.js";
 // page-b.js
 function init_page_b() {
@@ -160,6 +162,6 @@ init_page_b();
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
 
 ```

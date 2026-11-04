@@ -249,7 +249,7 @@ jobs:
     strategy:
       fail-fast: false
     name: Build Node Package
-    runs-on: namespace-profile-linux-x64-default
+    runs-on: ubuntu-latest
     env:
       RELEASING: 'true'
     steps:
@@ -295,7 +295,7 @@ jobs:
     strategy:
       fail-fast: false
     name: Build `@rolldown/browser` Package
-    runs-on: namespace-profile-linux-x64-default
+    runs-on: ubuntu-latest
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
@@ -344,7 +344,7 @@ jobs:
     strategy:
       fail-fast: false
     name: Build `@rolldown/debug` Package
-    runs-on: namespace-profile-linux-x64-default
+    runs-on: ubuntu-latest
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 

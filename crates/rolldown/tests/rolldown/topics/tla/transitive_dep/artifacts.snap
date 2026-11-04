@@ -23,22 +23,29 @@ export { value };
 // tla.js
 var value$1;
 function init_tla() {
-	return (init_tla = __esmMin((async () => {
-		value$1 = await Promise.resolve("tla");
+	return (init_tla = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			value$1 = await Promise.resolve("tla");
+		});
 	})))();
 }
 // lib.js
 var value;
 function init_lib() {
-	return (init_lib = __esmMin((async () => {
-		await init_tla();
-		value = value$1 + "+lib";
+	return (init_lib = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_tla());
+		return __finishAsync(__asyncDependencies0, () => {
+			value = value$1 + "+lib";
+		});
 	})))();
 }
 // main.js
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await init_lib();
+	return (init_main = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_lib());
+		return __finishAsync(__asyncDependencies0, () => {});
 	})))();
 }
 await init_main();

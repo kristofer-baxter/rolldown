@@ -365,6 +365,7 @@ impl GenerateStage<'_> {
   /// entry chunk when possible. The function iterates through pending common chunks and either:
   /// 1. Merges modules into an existing entry chunk if safe to do so
   /// 2. Creates a new common chunk if no suitable merge target is found
+  #[expect(clippy::too_many_lines)]
   pub(super) fn try_insert_common_module_to_exist_chunk(
     &self,
     chunk_graph: &mut ChunkGraph,
@@ -372,6 +373,21 @@ impl GenerateStage<'_> {
     input_base: &ArcStr,
     temp_chunk_graph: &mut ChunkOptimizationGraph,
   ) {
+    #[derive(Clone, PartialEq, Eq, Hash)]
+    enum CoalesceBucketKey {
+      UserEntries(Vec<ChunkIdx>, bool),
+      AsyncCommon(bool),
+    }
+    fn has_revision_url(source: &str) -> bool {
+      let mut rest = source;
+      while let Some(pos) = rest.find("/r/") {
+        rest = &rest[pos + 3..];
+        if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
+          return true;
+        }
+      }
+      false
+    }
     let static_entry_chunk_reference: FxHashMap<ChunkIdx, FxHashSet<ChunkIdx>> =
       self.construct_static_entry_to_reached_dynamic_entries_map(chunk_graph);
 
@@ -426,28 +442,10 @@ impl GenerateStage<'_> {
         Some((bits.clone(), *temp_chunk_idx, chunk_idxs, merge_target))
       })
       .collect();
-
-    #[derive(Clone, PartialEq, Eq, Hash)]
-    enum CoalesceBucketKey {
-      UserEntries(Vec<ChunkIdx>, bool),
-      AsyncCommon(bool),
-    }
-    fn has_revision_url(source: &str) -> bool {
-      let mut rest = source;
-      while let Some(pos) = rest.find("/r/") {
-        rest = &rest[pos + 3..];
-        if rest.as_bytes().first().is_some_and(u8::is_ascii_digit) {
-          return true;
-        }
-      }
-      false
-    }
     let topology_config = crate::utils::topology_config::get(self.options);
     let coalescing_policy = topology_config.as_ref().and_then(|cfg| cfg.common_chunk_coalescing);
-    let cycle_merging = topology_config
-      .as_ref()
-      .and_then(|cfg| cfg.cycle_merging)
-      .unwrap_or_else(|| {
+    let cycle_merging =
+      topology_config.as_ref().and_then(|cfg| cfg.cycle_merging).unwrap_or_else(|| {
         if self.options.experimental.is_on_demand_wrapping_enabled() {
           crate::utils::topology_config::CycleMergingPolicy::Forbid
         } else {
@@ -458,12 +456,7 @@ impl GenerateStage<'_> {
       || matches!(cycle_merging, crate::utils::topology_config::CycleMergingPolicy::Forbid);
     let coalesce_wrapped_common_chunks =
       matches!(self.options.format, rolldown_common::OutputFormat::Esm)
-        && self
-          .link_output
-          .module_table
-          .modules
-          .iter()
-          .all(|m| matches!(m, Module::Normal(_)))
+        && self.link_output.module_table.modules.iter().all(|m| matches!(m, Module::Normal(_)))
         && match coalescing_policy {
           Some(crate::utils::topology_config::CommonChunkCoalescing::Off) => false,
           Some(
@@ -480,9 +473,8 @@ impl GenerateStage<'_> {
       coalescing_policy,
       Some(crate::utils::topology_config::CommonChunkCoalescing::Aggressive)
     ) || coalescing_policy.is_none();
-    let max_chunk_bytes_override = topology_config
-      .as_ref()
-      .and_then(|cfg| cfg.chunk_size.map(|c| c.max_bytes as usize));
+    let max_chunk_bytes_override =
+      topology_config.as_ref().and_then(|cfg| cfg.chunk_size.map(|c| c.max_bytes as usize));
     let mut coalesced_shards: FxHashMap<CoalesceBucketKey, (ChunkIdx, usize)> =
       FxHashMap::default();
 
@@ -563,15 +555,13 @@ impl GenerateStage<'_> {
           None
         };
         if let Some((bucket_key, max_shard_bytes)) = bucket_and_limit {
-          let existing_target = coalesced_shards.get_mut(&bucket_key).and_then(
-            |(candidate_idx, used_bytes)| {
+          let existing_target =
+            coalesced_shards.get_mut(&bucket_key).and_then(|(candidate_idx, used_bytes)| {
               let cycle_safe = if forbid_cycles {
-                temp_chunk_graph
-                  .to_temp_idx(*candidate_idx)
-                  .is_some_and(|target_temp_idx| {
-                    !temp_chunk_graph
-                      .would_create_circular_dependency(temp_chunk_idx, target_temp_idx)
-                  })
+                temp_chunk_graph.to_temp_idx(*candidate_idx).is_some_and(|target_temp_idx| {
+                  !temp_chunk_graph
+                    .would_create_circular_dependency(temp_chunk_idx, target_temp_idx)
+                })
               } else {
                 true
               };
@@ -580,8 +570,7 @@ impl GenerateStage<'_> {
                 is_coalesced_merge = true;
                 *candidate_idx
               })
-            },
-          );
+            });
           if existing_target.is_none() {
             coalesce_info = Some((bucket_key, module_bytes));
           }
@@ -2318,6 +2307,7 @@ impl GenerateStage<'_> {
   /// When `max_initial_requests` or `max_async_requests` is configured and exceeded for an entry,
   /// deterministically coalesce the smallest cycle-safe common chunks on that entry's load path
   /// (minimizing overfetch cost) until within budget or no legal merge remains.
+  #[expect(clippy::too_many_lines, clippy::type_complexity)]
   pub(super) fn enforce_entry_request_budgets(&self, chunk_graph: &mut ChunkGraph) {
     let Some(topology_config) = crate::utils::topology_config::get(self.options) else {
       return;
@@ -2456,11 +2446,8 @@ impl GenerateStage<'_> {
           if is_mf_shared {
             continue;
           }
-          let chunk_bytes: usize = chunk
-            .modules
-            .iter()
-            .map(|&m| self.link_output.module_table[m].size())
-            .sum();
+          let chunk_bytes: usize =
+            chunk.modules.iter().map(|&m| self.link_output.module_table[m].size()).sum();
           eligible_common.push((c_idx, chunk_bytes));
         }
 
@@ -2476,10 +2463,8 @@ impl GenerateStage<'_> {
             let c1 = &chunk_graph.chunk_table[c1_idx];
             let c2 = &chunk_graph.chunk_table[c2_idx];
 
-            let c1_initial =
-              c1.bits.index_of_one().any(|b| user_defined_entry_bits.has_bit(b));
-            let c2_initial =
-              c2.bits.index_of_one().any(|b| user_defined_entry_bits.has_bit(b));
+            let c1_initial = c1.bits.index_of_one().any(|b| user_defined_entry_bits.has_bit(b));
+            let c2_initial = c2.bits.index_of_one().any(|b| user_defined_entry_bits.has_bit(b));
             if c1_initial != c2_initial {
               continue;
             }
@@ -2520,9 +2505,7 @@ impl GenerateStage<'_> {
               }
             }
 
-            if forbid_cycles
-              && Self::chunk_graph_merge_creates_cycle(c2_idx, c1_idx, &chunk_deps)
-            {
+            if forbid_cycles && Self::chunk_graph_merge_creates_cycle(c2_idx, c1_idx, &chunk_deps) {
               continue;
             }
 
@@ -2646,8 +2629,7 @@ impl GenerateStage<'_> {
     target_chunk_idx: ChunkIdx,
     chunk_deps: &IndexVec<ChunkIdx, FxHashSet<ChunkIdx>>,
   ) -> bool {
-    let is_merged =
-      |idx: ChunkIdx| idx == source_chunk_idx || idx == target_chunk_idx;
+    let is_merged = |idx: ChunkIdx| idx == source_chunk_idx || idx == target_chunk_idx;
     let mut queue: VecDeque<ChunkIdx> = chunk_deps[source_chunk_idx]
       .iter()
       .chain(chunk_deps[target_chunk_idx].iter())

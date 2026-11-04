@@ -34,16 +34,17 @@ use crate::{
 use super::scan_stage::NormalizedScanStageOutput;
 
 mod bind_imports_and_exports;
-pub(crate) use bind_imports_and_exports::{
-  appended_module_exports, bind_appended_module_imports, commonjs_exports_public,
-  inlined_commonjs_constants, split_json_defaults,
+pub use bind_imports_and_exports::{
+  appended_module_exports, bind_appended_module_imports, cjs_default_is_module_exports,
+  commonjs_exports_public, fold_namespace_in_check, inlined_commonjs_constants,
+  split_json_defaults,
 };
 mod compute_tla;
 mod create_exports_for_ecma_modules;
 mod cross_module_optimization;
 mod deferred_imports;
 mod determine_module_exports_kind;
-pub(crate) use determine_module_exports_kind::commonjs_interop;
+pub use determine_module_exports_kind::commonjs_interop;
 mod generate_lazy_export;
 mod patch_module_dependencies;
 mod reference_needed_symbols;
@@ -52,15 +53,13 @@ mod sort_modules;
 mod temporal_bindings;
 mod tree_shaking;
 
-pub(crate) use tree_shaking::determine_side_effects::{
-  linked_side_effects, propagate_side_effects,
-};
+pub use tree_shaking::determine_side_effects::{linked_side_effects, propagate_side_effects};
 pub use tree_shaking::{
   IncludeContext, ModuleInclusionVec, ModuleNamespaceReasonVec, StmtInclusionVec,
   SymbolIncludeReason, compute_body_demand_keys, include_runtime_symbol, include_symbol,
 };
 mod wrapping;
-pub(crate) use wrapping::{cjs_wrapper_name, cjs_wrapper_stmt_info, dynamic_exports};
+pub use wrapping::{cjs_wrapper_name, cjs_wrapper_stmt_info, dynamic_exports};
 
 /// Information about safely merged CJS namespaces for a module
 #[derive(Debug, Default, Clone)]
@@ -109,12 +108,8 @@ impl UnreachableModules {
     idx: ModuleIdx,
   ) -> bool {
     modules[idx].as_normal().is_some_and(|module| {
-      module
-        .ecma_view
-        .importers_idx
-        .iter()
-        .chain(&module.ecma_view.dynamic_importers_idx)
-        .any(|&importer| {
+      module.ecma_view.importers_idx.iter().chain(&module.ecma_view.dynamic_importers_idx).any(
+        |&importer| {
           self.reaches(importer)
             && modules[importer].as_normal().is_some_and(|importer| {
               importer.import_records.iter().any(|record| {
@@ -122,7 +117,8 @@ impl UnreachableModules {
                   && record.resolved_module == Some(idx)
               })
             })
-        })
+        },
+      )
     })
   }
 }
@@ -130,14 +126,14 @@ impl UnreachableModules {
 /// What a scan from a graph's user-defined entries and its runtime module loads: the modules that
 /// resolved import records of any kind reach from them, in discovery order (#681), and the dynamic
 /// entries that those modules import with `import()`.
-pub(crate) struct Reachability {
+pub struct Reachability {
   reached: IndexBitSet<ModuleIdx>,
   dynamically_imported: IndexBitSet<ModuleIdx>,
   discovery_order: IndexVec<ModuleIdx, u32>,
 }
 
 impl Reachability {
-  pub(crate) fn new(modules: &IndexModules, roots: impl IntoIterator<Item = ModuleIdx>) -> Self {
+  pub fn new(modules: &IndexModules, roots: impl IntoIterator<Item = ModuleIdx>) -> Self {
     let mut reached = IndexBitSet::new(modules.len());
     let mut dynamically_imported = IndexBitSet::new(modules.len());
     let mut discovery_order = IndexVec::from_vec(vec![u32::MAX; modules.len()]);
@@ -309,17 +305,10 @@ impl<'a> LinkStage<'a> {
         .par_iter_mut()
         .filter_map(|m| {
           let m = m.as_normal_mut()?;
-          Some(
-            std::mem::take(&mut m.constant_export_map)
-              .into_iter()
-              .map(|(symbol_id, v)| {
-                let symbol_ref = SymbolRef {
-                  owner: m.idx,
-                  symbol: symbol_id,
-                };
-                (symbol_ref, v)
-              }),
-          )
+          Some(std::mem::take(&mut m.constant_export_map).into_iter().map(|(symbol_id, v)| {
+            let symbol_ref = SymbolRef { owner: m.idx, symbol: symbol_id };
+            (symbol_ref, v)
+          }))
         })
         .flatten_iter()
         .collect::<FxHashMap<SymbolRef, ConstExportMeta>>()
@@ -330,18 +319,11 @@ impl<'a> LinkStage<'a> {
     // We need to preserve the original order of user defined entry points.
     let mut rest = scan_stage_output
       .entry_points
-      .extract_if(0.., |item| {
-        !matches!(item.kind, EntryPointKind::UserDefined)
-      })
+      .extract_if(0.., |item| !matches!(item.kind, EntryPointKind::UserDefined))
       .collect_vec();
 
     rest.sort_by_cached_key(|item| {
-      (
-        item.kind,
-        scan_stage_output.module_table.modules[item.idx]
-          .id()
-          .as_str(),
-      )
+      (item.kind, scan_stage_output.module_table.modules[item.idx].id().as_str())
     });
 
     scan_stage_output.entry_points.extend(rest);
@@ -477,11 +459,7 @@ impl<'a> LinkStage<'a> {
     tracing::trace!(
       modules = self.metas.len(),
       included_modules = self.metas.iter().filter(|meta| meta.is_included).count(),
-      resolved_exports = self
-        .metas
-        .iter()
-        .map(|meta| meta.resolved_exports.len())
-        .sum::<usize>(),
+      resolved_exports = self.metas.iter().map(|meta| meta.resolved_exports.len()).sum::<usize>(),
       "link metadata ready"
     );
 
@@ -555,7 +533,7 @@ impl<'a> LinkStage<'a> {
 /// Whether `module`'s own `then` export is a module namespace (`export * as then from`, or an
 /// `import * as` that it exports as `then`). A namespace object isn't callable, so resolving an
 /// `import()` of the module doesn't call it, and the import keeps only the names that it reads.
-pub(crate) fn exports_namespace_as_then(module: &NormalModule) -> bool {
+pub fn exports_namespace_as_then(module: &NormalModule) -> bool {
   module.named_exports.get("then").is_some_and(|export| {
     module.named_imports.get(&export.referenced).is_some_and(|import| import.imported.is_star())
   })

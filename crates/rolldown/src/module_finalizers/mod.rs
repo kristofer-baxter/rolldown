@@ -625,6 +625,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         continue;
       }
       let init_expr = self.wrapped_esm_init_call_expr(init.owner, SPAN, true, true);
+      self.record_static_esm_init_expr(&init_expr);
       stmts.push(ast::Statement::new_expression_statement(SPAN, init_expr, self));
     }
     stmts
@@ -1207,6 +1208,19 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     if !should_hoist {
       return None;
     }
+    if crate::utils::native_records::enabled(self.ctx.options)
+      && !matches!(
+        self.ctx.wrapper_mode(),
+        ModuleWrapperMode::InteropEsm(_) | ModuleWrapperMode::ExecutionOrder(_)
+      )
+      && !decl
+        .declarations
+        .iter()
+        .flat_map(|var_decl| var_decl.id.get_binding_identifiers())
+        .any(|binding| self.temporal_declarations.contains_key(binding.name.as_str()))
+    {
+      return None;
+    }
     let mut ret = vec![];
     let exprs = decl.declarations.take_in(self).into_iter().filter_map(|var_decl| {
       ret.extend(var_decl.id.get_binding_identifiers().iter().map(|item| item.name));
@@ -1261,6 +1275,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     ))
   }
 
+  #[expect(clippy::too_many_lines)]
   fn generate_declaration_of_module_namespace_object(&self) -> Vec<ast::Statement<'ast>> {
     if !self.module_namespace_included {
       return vec![];
@@ -1325,13 +1340,15 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
 
     // Even if the module namespace is included, some exports may not be used due to `optimize_facade_dynamic_entry_chunks`
     // https://github.com/rolldown/rolldown/blob/d6d65f9080e427cd9feef56eb7a110fbcf6c1414/crates/rolldown/src/stages/generate_stage/chunk_optimizer.rs#L347-L354
-    let json_namespace_is_default_only =
-      crate::utils::import_options::is_json_module(self.ctx.module)
-        && !crate::utils::import_options::json_namespace_has_properties(
-          self.ctx.module,
-          self.ctx.modules,
-          |idx| self.ctx.unreachable_modules.reaches(idx),
-        );
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options);
+    let json_namespace_is_default_only = runtime_semantics
+      && crate::utils::import_options::is_json_module(self.ctx.module)
+      && !crate::utils::import_options::json_namespace_has_properties(
+        self.ctx.module,
+        self.ctx.modules,
+        |idx| self.ctx.unreachable_modules.reaches(idx),
+      );
     arg_obj_expr.properties.extend(self.ctx.linking_info.canonical_exports(false).filter_map(
       |(export, resolved_export)| {
         // Bundler-only named JSON bindings are not JSON namespace properties, unless an importer
@@ -1391,30 +1408,46 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     // complete at runtime is a namespace object even without names of its own.
     let fixed = !self.star_exports_complete_namespace();
     let module_namespace_rhs =
-      if fixed && arg_obj_expr.properties.is_empty() && !self.ctx.options.generated_code.symbols {
+      if (!runtime_semantics || self.ctx.linking_info.is_canonical_exports_empty())
+        && fixed
+        && arg_obj_expr.properties.is_empty()
+        && !self.ctx.options.generated_code.symbols
+      {
         Expression::ObjectExpression(oxc::allocator::Box::new_in(arg_obj_expr, self))
       } else {
         let obj_expr = ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.allocator()));
-        let args = oxc::allocator::Vec::from_iter_in(
-          [
-            obj_expr,
-            ast::Argument::new_numeric_literal(
-              SPAN,
-              if self.ctx.options.generated_code.symbols { 0.0 } else { 1.0 },
-              None,
-              NumberBase::Decimal,
-              self,
-            ),
-            ast::Argument::new_numeric_literal(
-              SPAN,
-              if fixed { 1.0 } else { 0.0 },
-              None,
-              NumberBase::Decimal,
-              self,
-            ),
-          ],
-          self,
-        );
+        let args = if runtime_semantics {
+          oxc::allocator::Vec::from_iter_in(
+            [
+              obj_expr,
+              ast::Argument::new_numeric_literal(
+                SPAN,
+                if self.ctx.options.generated_code.symbols { 0.0 } else { 1.0 },
+                None,
+                NumberBase::Decimal,
+                self,
+              ),
+              ast::Argument::new_numeric_literal(
+                SPAN,
+                if fixed { 1.0 } else { 0.0 },
+                None,
+                NumberBase::Decimal,
+                self,
+              ),
+            ],
+            self,
+          )
+        } else if self.ctx.options.generated_code.symbols {
+          oxc::allocator::Vec::from_iter_in([obj_expr], self)
+        } else {
+          oxc::allocator::Vec::from_iter_in(
+            [
+              obj_expr,
+              ast::Argument::new_numeric_literal(SPAN, 1.0, None, NumberBase::Decimal, self),
+            ],
+            self,
+          )
+        };
         ast::Expression::new_call_expression_with_pure(
           SPAN,
           self.finalized_expr_for_runtime_symbol("__exportAll"),
@@ -1523,8 +1556,9 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// Whether star exports add names to the module's namespace object at runtime, through
   /// `__reExport`, rather than its declaration fixing them.
   fn star_exports_complete_namespace(&self) -> bool {
-    self.ctx.linking_info.has_dynamic_exports
-      || !self.ctx.linking_info.star_exports_from_external_modules.is_empty()
+    crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+      && (self.ctx.linking_info.has_dynamic_exports
+        || !self.ctx.linking_info.star_exports_from_external_modules.is_empty())
   }
 
   /// `__exportAll(ns)`, which the module runs once it has run its star exports: the namespace
@@ -1810,12 +1844,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     {
       return None;
     }
-    let name = self
-      .ctx
-      .linking_info
-      .sorted_and_non_ambiguous_resolved_exports
-      .keys()
-      .find(|name| {
+    let name =
+      self.ctx.linking_info.sorted_and_non_ambiguous_resolved_exports.keys().find(|name| {
         self.ctx.linking_info.resolved_exports.get(*name).is_some_and(|export| {
           self.ctx.symbol_db.canonical_ref_for(export.symbol_ref) == canonical
         })
@@ -1882,10 +1912,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     span: Span,
   ) -> Expression<'ast> {
     let (mut object, _) = self.finalized_expr_for_symbol_ref(object_ref, false, false);
-    let stepped_past_default = self.ctx.linking_infos[target.owner]
-      .resolved_exports
-      .get("default")
-      .is_some_and(|default| {
+    let stepped_past_default =
+      self.ctx.linking_infos[target.owner].resolved_exports.get("default").is_some_and(|default| {
         default.symbol_ref != target && depended_refs.contains(&default.symbol_ref)
       });
     if stepped_past_default {
@@ -1914,7 +1942,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         target_commonjs_exported_symbol: Some((target, _)),
         depended_refs,
         ..
-      }) if self.callee_member == Some(member_expr.node_id()) => {
+      }) if self.callee_member == Some(member_expr.node_id()) && props.len() == 1 => {
         Some(self.commonjs_member_callee(*object_ref, *target, depended_refs, props, span))
       }
       Some(MemberExprRefResolution {
@@ -1931,8 +1959,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             }) {
             is_inlined_commonjs_export = true;
             export_meta.value.to_expression(self.ast_builder.builder())
-          } else if let Some(read) = self
-            .native_enclosing_class_read(self.ctx.symbol_db.canonical_ref_for(object_ref))
+          } else if let Some(read) =
+            self.native_enclosing_class_read(self.ctx.symbol_db.canonical_ref_for(object_ref))
           {
             read
           } else {
@@ -2157,9 +2185,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                 if importee_linking_info.wrap_kind() == WrapKind::None {
                   // Linking unwraps ESM JSON data; require reads its value, not a namespace.
                   return Some(
-                    self
-                      .finalized_expr_for_symbol_ref(importee.default_export_ref, false, false)
-                      .0,
+                    self.finalized_expr_for_symbol_ref(importee.default_export_ref, false, false).0,
                   );
                 }
                 // Nodejs treats json files as an esm module with a default export and rolldown follows this behavior.
@@ -2312,7 +2338,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     let rec = &self.ctx.module.import_records[*rec_idx];
     let importee_id = rec.resolved_module?;
 
-    if !self.ctx.options.is_dev_mode_enabled()
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+      && !self.ctx.options.is_dev_mode_enabled()
       && self.ctx.chunk.modules.contains(&importee_id)
       && let Module::Normal(importee) = &self.ctx.modules[importee_id]
       && !importee.exports_kind.is_commonjs()
@@ -2475,15 +2502,17 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   }
 
   #[expect(clippy::too_many_lines)]
-  fn remove_unused_top_level_stmt(&mut self, program: &mut ast::Program<'ast>) -> usize {
+  fn remove_unused_top_level_stmt(&mut self, program: &mut ast::Program<'ast>) -> (usize, usize) {
     let mut last_import_stmt_idx = None;
+    let mut module_decls_end = None;
 
     let old_body = program.body.take_in(self);
     // the first statement info is the namespace variable declaration
     // skip first statement info to make sure `program.body` has same index as `stmt_infos`
     old_body.into_iter().enumerate().zip(self.ctx.stmt_infos.iter_enumerated().skip(1)).for_each(
       |((_top_stmt_idx, mut top_stmt), (stmt_info_idx, stmt_info))| {
-        let is_module_decl = top_stmt.is_module_declaration_with_source();
+        let has_module_source = top_stmt.is_module_declaration_with_source();
+        let mut is_module_decl = false;
         (|| {
           let is_order_runtime_stmt = self.ctx.order_wrap_state.forces_runtime_stmt(
             self.ctx.runtime,
@@ -2492,6 +2521,11 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
           );
           let is_stmt_included = self.ctx.linking_info.stmt_info_included.has_bit(stmt_info_idx)
             || is_order_runtime_stmt;
+          is_module_decl = (is_stmt_included
+            || crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options))
+            && (crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+              || !matches!(top_stmt, ast::Statement::ExportAllDeclaration(ref d) if d.exported.is_none()))
+            && has_module_source;
 
           // Retained re-export paths can belong to included statements too. Emit the same
           // sealed targets used by registration before ordinary lowering; module-wide dedup
@@ -2994,9 +3028,13 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         if is_module_decl {
           last_import_stmt_idx = Some(program.body.len());
         }
+        if has_module_source {
+          module_decls_end = Some(program.body.len());
+        }
       },
     );
-    last_import_stmt_idx.unwrap_or(0)
+    let last_import_stmt_idx = last_import_stmt_idx.unwrap_or(0);
+    (last_import_stmt_idx, module_decls_end.unwrap_or(0).max(last_import_stmt_idx))
   }
 
   fn process_fn(
@@ -3146,6 +3184,9 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   }
 
   fn dynamic_namespace_key(&self, call: &mut CallExpression<'ast>, key: Expression<'ast>) {
+    if !crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+      return;
+    }
     if call.arguments.len() == 1 {
       call.arguments.push(ast::Argument::new_numeric_literal(
         SPAN,
@@ -3167,6 +3208,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   ///    Convert `import('./some-module.js')` to `import('./some-module.js').then(n => n.ns)`
   ///
   /// Returns `Some(Expression)` if the import was rewritten, `None` otherwise.
+  #[expect(clippy::too_many_lines)]
   fn rewrite_dynamic_import_for_merged_entry(
     &self,
     expr: &mut ast::ImportExpression<'ast>,
@@ -3238,16 +3280,29 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         let (finalized_namespace, _) =
           self.finalized_expr_for_symbol_ref(importee.namespace_object_ref, false, false);
         if target.tla_tainted {
-          // `__importNamespace(init_xxx, namespace_exports)` settles after the async init.
-          let (wrapper, _) = self.finalized_expr_for_symbol_ref(target.wrapper_ref, false, false);
-          return Some(Expression::new_call_expression(
-            SPAN,
-            self.finalized_expr_for_runtime_symbol("__importNamespace"),
-            None,
-            [ast::Argument::from(wrapper), ast::Argument::from(finalized_namespace)],
-            false,
-            self,
-          ));
+          if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+            // `__importNamespace(init_xxx, namespace_exports)` settles after the async init.
+            let (wrapper, _) = self.finalized_expr_for_symbol_ref(target.wrapper_ref, false, false);
+            return Some(Expression::new_call_expression(
+              SPAN,
+              self.finalized_expr_for_runtime_symbol("__importNamespace"),
+              None,
+              [ast::Argument::from(wrapper), ast::Argument::from(finalized_namespace)],
+              false,
+              self,
+            ));
+          }
+          let wrapper_call_expr = self.wrapped_esm_init_call_expr(importee_idx, SPAN, true, true);
+          let seq_expr =
+            Expression::new_seq_in_parens(wrapper_call_expr, finalized_namespace, self);
+          let mut then_call = Expression::new_promise_resolve_then(seq_expr, self);
+          if let Expression::CallExpression(call_expr) = &mut then_call
+            && let Some(ast::Argument::ArrowFunctionExpression(arrow)) =
+              call_expr.arguments.first_mut()
+          {
+            arrow.r#async = true;
+          }
+          return Some(then_call);
         }
         let wrapper_call_expr = self.wrapped_esm_init_call_expr(importee_idx, SPAN, true, false);
 
@@ -3388,8 +3443,12 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
               && target.tla_tainted
             {
               // An async init is awaited: `.then(n => __importNamespace(n.init_xxx, n.namespace))`.
-              let mut call_expr =
-                CallExpression::new_then_call_esm_wrappers_with_namespace(base_expr, &[], ns_name, self);
+              let mut call_expr = CallExpression::new_then_call_esm_wrappers_with_namespace(
+                base_expr,
+                &[],
+                ns_name,
+                self,
+              );
               if let Some(ast::Argument::ArrowFunctionExpression(arrow)) =
                 call_expr.arguments.first_mut()
               {
@@ -3402,15 +3461,25 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                     self,
                   )
                 };
-                let import_namespace = Expression::new_call_expression(
-                  SPAN,
-                  self.finalized_expr_for_runtime_symbol("__importNamespace"),
-                  None,
-                  [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
-                  false,
-                  self,
-                );
-                arrow.body = ast::ArrowFunctionBody::from(import_namespace);
+                if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+                {
+                  let import_namespace = Expression::new_call_expression(
+                    SPAN,
+                    self.finalized_expr_for_runtime_symbol("__importNamespace"),
+                    None,
+                    [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
+                    false,
+                    self,
+                  );
+                  arrow.body = ast::ArrowFunctionBody::from(import_namespace);
+                } else {
+                  arrow.r#async = true;
+                  let init_call =
+                    Expression::new_call_expression(SPAN, member(name), None, [], false, self);
+                  let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
+                  let seq_expr = Expression::new_seq_in_parens(await_init, member(ns_name), self);
+                  arrow.body = ast::ArrowFunctionBody::from(seq_expr);
+                }
               }
               Some(Expression::CallExpression(call_expr))
             } else if let Some(ns_name) = namespace_export_name {
@@ -3448,6 +3517,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     }
   }
 
+  #[expect(clippy::too_many_lines)]
   fn try_rewrite_import_expression(&mut self, node: &mut ast::Expression<'ast>) -> bool {
     let ast::Expression::ImportExpression(expr) = node else {
       return false;

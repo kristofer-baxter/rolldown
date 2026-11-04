@@ -17,7 +17,7 @@ use crate::utils::native_record_ast::{self, Cell};
 
 /// Dev mode retains declarations for future updates, but an unused binding import must still
 /// honor its dependency's side-effects contract. Run after linking so invalid imports are checked.
-pub(crate) fn unused_side_effect_free_import(
+pub fn unused_side_effect_free_import(
   module: &NormalModule,
   record_idx: rolldown_common::ImportRecordIdx,
   modules: &rolldown_common::IndexModules,
@@ -28,7 +28,7 @@ pub(crate) fn unused_side_effect_free_import(
 
 /// Whether `modules` gives module `idx` no side effects: a normal module that its table
 /// classifies so.
-pub(crate) fn pure_module(
+pub fn pure_module(
   modules: &rolldown_common::IndexModules,
   idx: rolldown_common::ModuleIdx,
 ) -> bool {
@@ -40,7 +40,7 @@ pub(crate) fn pure_module(
 /// scan's, gives a module whose own statements have none, `DeterminedSideEffects::Analyzed(false)`,
 /// none even when its imports reach side effects, which linking gives it (`linked_side_effects`),
 /// and which keep an unused import of it (#697).
-pub(crate) fn unused_pure_import(
+pub fn unused_pure_import(
   module: &NormalModule,
   record_idx: rolldown_common::ImportRecordIdx,
   pure: impl Fn(rolldown_common::ModuleIdx) -> bool,
@@ -78,7 +78,7 @@ pub(crate) fn unused_pure_import(
 /// module that the update `rescanned`. Either counts only where it holds every binding that the
 /// module imports.
 #[cfg(feature = "experimental")]
-pub(crate) fn import_scoping<'a>(
+pub fn import_scoping<'a>(
   symbols: &'a rolldown_common::SymbolRefDb,
   cached: Option<&'a crate::types::scan_stage_cache::CachedNativeRelinkState>,
   module: &NormalModule,
@@ -107,7 +107,7 @@ pub(crate) fn import_scoping<'a>(
 /// `scoping`, or, without a scope tree, whether it may: an import that binds names of such a
 /// module and re-exports none of them.
 #[cfg(feature = "experimental")]
-pub(crate) fn drops_import(
+pub fn drops_import(
   module: &NormalModule,
   record_idx: rolldown_common::ImportRecordIdx,
   pure: impl Fn(rolldown_common::ModuleIdx) -> bool,
@@ -133,7 +133,7 @@ pub(crate) fn drops_import(
 /// The records of `module`'s `import defer` declarations in `program`, which link their targets
 /// without evaluating them.
 #[cfg(feature = "experimental")]
-pub(crate) fn deferred_records(
+pub fn deferred_records(
   module: &NormalModule,
   program: &ast::Program,
 ) -> rustc_hash::FxHashSet<rolldown_common::ImportRecordIdx> {
@@ -569,10 +569,10 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
   }
 
   fn initial_evaluation(&self) -> Option<ast::Expression<'ast>> {
-    let target = self
-      .ctx
-      .order_wrap_state
-      .esm_init_target(self.ctx.idx, self.ctx.linking_info)?;
+    if !crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+      return None;
+    }
+    let target = self.ctx.order_wrap_state.esm_init_target(self.ctx.idx, self.ctx.linking_info)?;
     Some(ast::Expression::new_identifier(
       SPAN,
       ast::Str::from_str_in(self.canonical_name_for(target.wrapper_ref), &self.builder()),

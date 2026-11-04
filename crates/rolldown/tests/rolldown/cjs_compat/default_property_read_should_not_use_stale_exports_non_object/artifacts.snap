@@ -20,6 +20,6 @@ var require_cjs = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 
 // main.js
 var import_cjs = /* @__PURE__ */ __toESM(require_cjs());
-assert.equal(import_cjs.foo, 2);
+assert.equal(import_cjs.default.foo, 2);
 
 ```

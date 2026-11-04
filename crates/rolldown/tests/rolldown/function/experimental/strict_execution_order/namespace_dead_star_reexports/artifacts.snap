@@ -6,12 +6,14 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## main.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { i as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 // main.js
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await import("./page-b.js");
-		await import("./page-a.js");
+	return (init_main = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			await import("./page-b.js");
+			await import("./page-a.js");
+		});
 	})))();
 }
 await init_main();
@@ -21,7 +23,7 @@ await init_main();
 ## page-a.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 import assert from "node:assert";
 // default-only.js
 function mark$1() {
@@ -63,7 +65,7 @@ init_page_a();
 ## page-b.js
 
 ```js
-import { n as __exportAll, t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
 import assert from "node:assert";
 // bridge.js
 var bridge_exports = /* @__PURE__ */ __exportAll({ x: () => x });
@@ -90,7 +92,7 @@ init_page_b();
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __exportAll as n, __esmMin as t };
+export { __startAsync as a, __finishAsync as i, __esmMin as n, __exportAll as r, __esmAsync as t };
 
 ```
 

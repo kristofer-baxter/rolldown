@@ -65,7 +65,7 @@ pub struct NativeChunkChange {
 }
 
 /// Whether a chunk still holds its module, rather than a module that a fast relink retired.
-pub(crate) fn is_live_chunk(chunk_graph: &ChunkGraph, chunk_idx: ChunkIdx) -> bool {
+pub fn is_live_chunk(chunk_graph: &ChunkGraph, chunk_idx: ChunkIdx) -> bool {
   chunk_graph.chunk_table[chunk_idx].entry_module_idx().is_some_and(|module| {
     chunk_graph.module_to_chunk.get(module).and_then(|c| *c) == Some(chunk_idx)
   })
@@ -647,7 +647,8 @@ impl GenerateStage<'_> {
             } else {
               appended.contains(s.to_ascii_lowercase().as_str())
             }
-          }) || (!own && name_family(filename.as_str()).iter().any(|name| related.contains(name)))
+          }) || (!own
+            && name_family(filename.as_str()).iter().any(|name| related.contains(name)))
           {
             reject!("renamed_record");
           }

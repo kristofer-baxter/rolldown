@@ -5,7 +5,7 @@ use oxc::ast::ast::CommentContent;
 use oxc::ast::ast::Program;
 use oxc::ast::ast::{Declaration, ExportDefaultDeclarationKind, Statement};
 use oxc::ast_visit::{VisitJs, VisitJsMut, walk_js};
-use oxc::diagnostics::Severity as OxcSeverity;
+use oxc::diagnostics::{LabeledSpan, Severity as OxcSeverity};
 use oxc::minifier::{CompressOptions, Compressor, TreeShakeOptions};
 use oxc::semantic::{Scoping, Stats};
 use oxc::syntax::symbol::SymbolFlags;
@@ -33,7 +33,7 @@ pub struct PreProcessEcmaAst {
 }
 
 impl PreProcessEcmaAst {
-  #[expect(clippy::too_many_arguments)]
+  #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
   pub fn build(
     &mut self,
     mut ast: EcmaAst,
@@ -67,15 +67,11 @@ impl PreProcessEcmaAst {
 
     // Step 1: Build initial semantic data and check for semantic errors.
     let semantic_ret = ast.program.with_dependent(|_owner, dep| {
-      semantic_builder_for_transform()
-        .with_check_syntax_error(true)
-        .build(&dep.program)
+      semantic_builder_for_transform().with_check_syntax_error(true).build(&dep.program)
     });
 
-    let (errors, warnings): (Vec<_>, Vec<_>) = semantic_ret
-      .diagnostics
-      .into_iter()
-      .partition(|w| w.severity == OxcSeverity::Error);
+    let (errors, warnings): (Vec<_>, Vec<_>) =
+      semantic_ret.diagnostics.into_iter().partition(|w| w.severity == OxcSeverity::Error);
 
     let mut warnings = if errors.is_empty() {
       BuildDiagnostic::from_oxc_diagnostics(
@@ -106,12 +102,15 @@ impl PreProcessEcmaAst {
 
     self.stats = semantic_ret.semantic.stats();
     let mut scoping = Some(semantic_ret.semantic.into_scoping());
-    let module_resources = ast.program().body.iter().any(|statement| {
-      matches!(statement, Statement::VariableDeclaration(declaration)
-        if matches!(declaration.kind,
-          oxc::ast::ast::VariableDeclarationKind::Using
-          | oxc::ast::ast::VariableDeclarationKind::AwaitUsing))
-    });
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(bundle_options);
+    let module_resources = runtime_semantics
+      && ast.program().body.iter().any(|statement| {
+        matches!(statement, Statement::VariableDeclaration(declaration)
+          if matches!(declaration.kind,
+            oxc::ast::ast::VariableDeclarationKind::Using
+            | oxc::ast::ast::VariableDeclarationKind::AwaitUsing))
+      });
     let resource_bindings: Vec<_> = if module_resources {
       let scopes = scoping.as_ref().unwrap();
       scopes
@@ -152,9 +151,8 @@ impl PreProcessEcmaAst {
         let Some(body_scopes) = scoping_ref.get_enum_body_scopes(symbol_id) else {
           continue;
         };
-        let members = enum_values
-          .entry(CompactStr::from(scoping_ref.symbol_name(symbol_id)))
-          .or_default();
+        let members =
+          enum_values.entry(CompactStr::from(scoping_ref.symbol_name(symbol_id))).or_default();
 
         for &body_scope in body_scopes {
           for (member_name, &member_sym) in scoping_ref.get_bindings(body_scope) {
@@ -180,17 +178,13 @@ impl PreProcessEcmaAst {
 
     // Step 2: Run define plugin.
     if let Some(replace_global_define_config) = replace_global_define_config {
-      ast.program.with_mut(
-        |WithMutFields {
-           program, allocator, ..
-         }| {
-          let ret = ReplaceGlobalDefines::new(allocator, replace_global_define_config.clone())
-            .build(scoping.take().unwrap(), program);
-          if !ret.changed {
-            scoping = Some(ret.scoping);
-          }
-        },
-      );
+      ast.program.with_mut(|WithMutFields { program, allocator, .. }| {
+        let ret = ReplaceGlobalDefines::new(allocator, replace_global_define_config.clone())
+          .build(scoping.take().unwrap(), program);
+        if !ret.changed {
+          scoping = Some(ret.scoping);
+        }
+      });
     }
 
     // Step 3: Transform TypeScript and jsx.
@@ -206,56 +200,48 @@ impl PreProcessEcmaAst {
       // Run transformer on JS files containing `</script` to handle tagged template literals.
       || contains_script_closing_tag(ast.source().as_bytes())
     {
-      ast.program.with_mut(
-        |WithMutFields {
-           program, allocator, ..
-         }| {
-          // Pass file path only for non-JS modules (TS/TSX/JSX) to enable tsconfig discovery.
-          // For plain JS files, we skip tsconfig lookup since they don't need TS-specific transformations.
-          let mut transform_options = bundle_options
-            .transform_options
-            .options_for_file(is_not_js.then_some(Path::new(resolved_id)), &mut warnings)?;
-          // Bundler module wrappers cannot retain a top-level resource lifetime.
-          // Lower it before wrapping even when the output target supports using.
-          if module_resources {
-            std::sync::Arc::make_mut(&mut transform_options)
-              .env
-              .es2026
-              .explicit_resource_management = true;
-          }
-          if !transform_options.jsx.jsx_plugin {
-            preserve_jsx = true;
-          }
+      ast.program.with_mut(|WithMutFields { program, allocator, .. }| {
+        // Pass file path only for non-JS modules (TS/TSX/JSX) to enable tsconfig discovery.
+        // For plain JS files, we skip tsconfig lookup since they don't need TS-specific transformations.
+        let mut transform_options = bundle_options
+          .transform_options
+          .options_for_file(is_not_js.then_some(Path::new(resolved_id)), &mut warnings)?;
+        // Bundler module wrappers cannot retain a top-level resource lifetime.
+        // Lower it before wrapping even when the output target supports using.
+        if module_resources {
+          std::sync::Arc::make_mut(&mut transform_options)
+            .env
+            .es2026
+            .explicit_resource_management = true;
+        }
+        if !transform_options.jsx.jsx_plugin {
+          preserve_jsx = true;
+        }
 
-          let scoping = self.recreate_scoping(&mut scoping, program);
-          let ret = Transformer::new(allocator, Path::new(stable_id), &transform_options)
-            .build_with_scoping(scoping, program);
+        let scoping = self.recreate_scoping(&mut scoping, program);
+        let ret = Transformer::new(allocator, Path::new(stable_id), &transform_options)
+          .build_with_scoping(scoping, program);
 
-          let (errors, transformer_warnings): (Vec<_>, Vec<_>) = ret
-            .diagnostics
-            .into_iter()
-            .partition(|error| error.severity == OxcSeverity::Error);
-          if !errors.is_empty() {
-            return Err(BatchedBuildDiagnostic::from(
-              BuildDiagnostic::from_oxc_diagnostics(
-                errors,
-                &source,
-                resolved_id,
-                Severity::Error,
-                EventKind::TransformError,
-              ),
-            ));
-          }
-          warnings.extend(BuildDiagnostic::from_oxc_diagnostics(
-            transformer_warnings,
+        let (errors, transformer_warnings): (Vec<_>, Vec<_>) =
+          ret.diagnostics.into_iter().partition(|error| error.severity == OxcSeverity::Error);
+        if !errors.is_empty() {
+          return Err(BatchedBuildDiagnostic::from(BuildDiagnostic::from_oxc_diagnostics(
+            errors,
             &source,
             resolved_id,
-            Severity::Warning,
-            EventKind::ToleratedTransform,
-          ));
-          Ok(())
-        },
-      )?;
+            Severity::Error,
+            EventKind::TransformError,
+          )));
+        }
+        warnings.extend(BuildDiagnostic::from_oxc_diagnostics(
+          transformer_warnings,
+          &source,
+          resolved_id,
+          Severity::Warning,
+          EventKind::ToleratedTransform,
+        ));
+        Ok(())
+      })?;
     }
 
     debug_assert!(
@@ -265,65 +251,72 @@ impl PreProcessEcmaAst {
 
     // Step 4: Run inject plugin.
     if !bundle_options.inject.is_empty() {
-      ast.program.with_mut(
-        |WithMutFields {
-           program, allocator, ..
-         }| {
-          let new_scoping = self.recreate_scoping(&mut scoping, program);
-          let inject_config = bundle_options.oxc_inject_global_variables_config.clone();
-          let ret =
-            InjectGlobalVariables::new(allocator, inject_config).build(new_scoping, program);
-          if !ret.changed {
-            scoping = Some(ret.scoping);
-          }
-        },
-      );
+      ast.program.with_mut(|WithMutFields { program, allocator, .. }| {
+        let new_scoping = self.recreate_scoping(&mut scoping, program);
+        let inject_config = bundle_options.oxc_inject_global_variables_config.clone();
+        let ret = InjectGlobalVariables::new(allocator, inject_config).build(new_scoping, program);
+        if !ret.changed {
+          scoping = Some(ret.scoping);
+        }
+      });
     }
 
     // Step 5: Run DCE.
     // Avoid DCE for lazy export.
     if bundle_options.treeshake.is_some() && !has_lazy_export {
-      ast.program.with_mut(
-        |WithMutFields {
-           program, allocator, ..
-         }| {
-      let mut scoping = self.recreate_scoping(&mut scoping, program);
-      if fold_adjacent_define_property(program, &scoping, allocator) {
-        scoping = self.recreate_scoping(&mut None, program);
-      }
-          Self::restore_resource_bindings(&mut scoping, &resource_bindings);
-          // Oxc DCE assumes TDZ errors cannot occur. Keep lexical reads opaque until
-          // the finalizer replaces this internal intrinsic with real binding guards.
-          if super::temporal_reads::preserve_temporal_reads(program, &scoping, allocator) {
-            scoping = self.recreate_scoping(&mut None, program);
-          }
-          let mut treeshake = TreeShakeOptions::from(&bundle_options.treeshake);
-          treeshake.invalid_import_side_effects = true;
-          let options = CompressOptions {
-            target: bundle_options.transform_options.target.clone(),
-            treeshake,
-            ..CompressOptions::dce()
-          };
-          Compressor::new(allocator).dead_code_elimination_with_scoping(program, scoping, options);
-        },
-      );
+      ast.program.with_mut(|WithMutFields { program, allocator, .. }| {
+        let mut scoping = self.recreate_scoping(&mut scoping, program);
+        if fold_adjacent_define_property(program, &scoping, allocator) {
+          scoping = self.recreate_scoping(&mut None, program);
+        }
+        Self::restore_resource_bindings(&mut scoping, &resource_bindings);
+        // Oxc DCE assumes TDZ errors cannot occur. Keep lexical reads opaque until
+        // the finalizer replaces this internal intrinsic with real binding guards.
+        if (runtime_semantics || crate::utils::native_records::enabled(bundle_options))
+          && super::temporal_reads::preserve_temporal_reads(program, &scoping, allocator)
+        {
+          scoping = self.recreate_scoping(&mut None, program);
+        }
+        let mut treeshake = TreeShakeOptions::from(&bundle_options.treeshake);
+        treeshake.invalid_import_side_effects = true;
+        let options = CompressOptions {
+          target: bundle_options.transform_options.target.clone(),
+          treeshake,
+          ..CompressOptions::dce()
+        };
+        Compressor::new(allocator).dead_code_elimination_with_scoping(program, scoping, options);
+      });
     }
 
     // Step 6: Modify AST for Rolldown.
-    let mut scoping = ast.program.with_mut(
-      |WithMutFields {
-         program, allocator, ..
-       }| {
+    let (mut scoping, import_defer_spans) =
+      ast.program.with_mut(|WithMutFields { program, allocator, .. }| {
         let mut pre_processor = PreProcessor::new(
           allocator,
           bundle_options.keep_names,
           Some(&bundle_options.drop_labels),
-        );
+        )
+        .with_lower_import_defer(!runtime_semantics);
         pre_processor.visit_program(program);
-        self.recreate_scoping(&mut None, program)
-      },
-    );
+        let defer_spans = pre_processor.take_defer_spans();
+        (self.recreate_scoping(&mut None, program), defer_spans)
+      });
     Self::restore_resource_bindings(&mut scoping, &resource_bindings);
+
+    warnings.extend(import_defer_spans.into_iter().map(|span| {
+      BuildDiagnostic::oxc_error(
+        source.clone(),
+        resolved_id.to_string(),
+        String::new(),
+        "`import defer` is currently lowered to a normal import. This changes execution timing because side effects run immediately instead of when the deferred import is first used.".to_string(),
+        vec![LabeledSpan::at(
+          span.start..span.end,
+          "The deferred phase is removed here.",
+        )],
+        EventKind::UnsupportedFeatureError,
+      )
+      .with_severity_warning()
+    }));
 
     Ok(ParseToEcmaAstResult {
       ast,
@@ -362,10 +355,7 @@ fn fold_adjacent_define_property<'a>(
   scoping: &Scoping,
   _allocator: &'a oxc::allocator::Allocator,
 ) -> bool {
-  if scoping
-    .get_binding(scoping.root_scope_id(), "Object".into())
-    .is_some()
-  {
+  if scoping.get_binding(scoping.root_scope_id(), "Object".into()).is_some() {
     return false;
   }
   let mut changed = false;
@@ -406,9 +396,7 @@ fn fold_adjacent_define_property<'a>(
               &call.arguments[0],
               oxc::ast::ast::Argument::Identifier(arg0) if arg0.name.as_str() == target_name
             )
-            && call.arguments[1..]
-              .iter()
-              .all(is_safe_define_property_arg)
+            && call.arguments[1..].iter().all(is_safe_define_property_arg)
             && !call.arguments[1..]
               .iter()
               .any(|arg| argument_references_ident_eagerly(arg, target_name))
@@ -451,10 +439,7 @@ fn is_object_define_property_callee(callee: &oxc::ast::ast::Expression<'_>) -> b
   let oxc::ast::ast::Expression::StaticMemberExpression(member) = callee else {
     return false;
   };
-  if !matches!(
-    member.property.name.as_str(),
-    "defineProperty" | "defineProperties"
-  ) {
+  if !matches!(member.property.name.as_str(), "defineProperty" | "defineProperties") {
     return false;
   }
   matches!(
@@ -481,8 +466,8 @@ fn is_safe_define_property_arg(arg: &oxc::ast::ast::Argument<'_>) -> bool {
     | oxc::ast::ast::Expression::NumericLiteral(_)
     | oxc::ast::ast::Expression::BooleanLiteral(_)
     | oxc::ast::ast::Expression::NullLiteral(_) => true,
-    oxc::ast::ast::Expression::ObjectExpression(obj) => obj.properties.iter().all(|prop| {
-      match prop {
+    oxc::ast::ast::Expression::ObjectExpression(obj) => {
+      obj.properties.iter().all(|prop| match prop {
         oxc::ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
           !p.computed
             && matches!(p.kind, oxc::ast::ast::PropertyKind::Init)
@@ -497,26 +482,20 @@ fn is_safe_define_property_arg(arg: &oxc::ast::ast::Argument<'_>) -> bool {
             )
         }
         oxc::ast::ast::ObjectPropertyKind::SpreadProperty(_) => false,
-      }
-    }),
+      })
+    }
     _ => false,
   }
 }
 
-fn argument_references_ident_eagerly(
-  arg: &oxc::ast::ast::Argument<'_>,
-  ident_name: &str,
-) -> bool {
+fn argument_references_ident_eagerly(arg: &oxc::ast::ast::Argument<'_>, ident_name: &str) -> bool {
   match arg.as_expression() {
     Some(expr) => expr_references_ident_eagerly(expr, ident_name),
     None => true,
   }
 }
 
-fn expr_references_ident_eagerly(
-  expr: &oxc::ast::ast::Expression<'_>,
-  ident_name: &str,
-) -> bool {
+fn expr_references_ident_eagerly(expr: &oxc::ast::ast::Expression<'_>, ident_name: &str) -> bool {
   match expr {
     oxc::ast::ast::Expression::Identifier(ident) => ident.name.as_str() == ident_name,
     oxc::ast::ast::Expression::BooleanLiteral(_)
@@ -527,16 +506,18 @@ fn expr_references_ident_eagerly(
     | oxc::ast::ast::Expression::StringLiteral(_)
     | oxc::ast::ast::Expression::FunctionExpression(_)
     | oxc::ast::ast::Expression::ArrowFunctionExpression(_) => false,
-    oxc::ast::ast::Expression::ObjectExpression(obj) => obj.properties.iter().any(|prop| match prop {
-      oxc::ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
-        !matches!(p.kind, oxc::ast::ast::PropertyKind::Init)
-          || p.computed
-          || expr_references_ident_eagerly(&p.value, ident_name)
-      }
-      oxc::ast::ast::ObjectPropertyKind::SpreadProperty(s) => {
-        expr_references_ident_eagerly(&s.argument, ident_name)
-      }
-    }),
+    oxc::ast::ast::Expression::ObjectExpression(obj) => {
+      obj.properties.iter().any(|prop| match prop {
+        oxc::ast::ast::ObjectPropertyKind::ObjectProperty(p) => {
+          !matches!(p.kind, oxc::ast::ast::PropertyKind::Init)
+            || p.computed
+            || expr_references_ident_eagerly(&p.value, ident_name)
+        }
+        oxc::ast::ast::ObjectPropertyKind::SpreadProperty(s) => {
+          expr_references_ident_eagerly(&s.argument, ident_name)
+        }
+      })
+    }
     _ => true,
   }
 }

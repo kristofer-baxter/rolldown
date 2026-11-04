@@ -100,17 +100,11 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
 
     if matches!(self.linking_info.wrap_kind(), WrapKind::Cjs) && legacy_wrapper_is_included {
       return ModuleWrapperMode::InteropCjs(
-        self
-          .linking_info
-          .wrapper_ref
-          .expect("included CJS wrapper should have a symbol"),
+        self.linking_info.wrapper_ref.expect("included CJS wrapper should have a symbol"),
       );
     }
 
-    let Some(target) = self
-      .order_wrap_state
-      .esm_init_target(self.idx, self.linking_info)
-    else {
+    let Some(target) = self.order_wrap_state.esm_init_target(self.idx, self.linking_info) else {
       return ModuleWrapperMode::None;
     };
     let declaration_is_included = match target.origin {
@@ -147,12 +141,7 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
         .remove_map
         .get(&self.idx)
         .cloned()
-        .map(|idxs| {
-          idxs
-            .into_iter()
-            .map(|idx| (idx, String::new()))
-            .collect::<FxIndexMap<_, _>>()
-        })
+        .map(|idxs| idxs.into_iter().map(|idx| (idx, String::new())).collect::<FxIndexMap<_, _>>())
         .unwrap_or_default();
 
       let temporal_bindings: FxHashMap<_, _> = self
@@ -225,18 +214,14 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
       let missing_file_reference_ids = finalizer.missing_file_reference_ids;
       if !missing_file_reference_ids.is_empty() {
         let module = finalizer.ctx.module;
-        diagnostics.extend(
-          missing_file_reference_ids
-            .into_iter()
-            .map(|(reference_id, span)| {
-              BuildDiagnostic::file_not_found(
-                reference_id.as_str(),
-                module.id.to_string(),
-                module.ecma_view.source.clone(),
-                span,
-              )
-            }),
-        );
+        diagnostics.extend(missing_file_reference_ids.into_iter().map(|(reference_id, span)| {
+          BuildDiagnostic::file_not_found(
+            reference_id.as_str(),
+            module.id.to_string(),
+            module.ecma_view.source.clone(),
+            span,
+          )
+        }));
       }
 
       let mut resolve_file_url_errors = finalizer.resolve_file_url_errors;
@@ -246,16 +231,9 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
         resolve_file_url_errors.sort_unstable();
         resolve_file_url_errors.dedup();
         // Attribute each failure to its plugin, so the user sees `[plugin foo] ...`
-        diagnostics.extend(
-          resolve_file_url_errors
-            .into_iter()
-            .map(|(plugin_name, message)| {
-              BuildDiagnostic::plugin_error(
-                CausedPlugin::new(plugin_name),
-                anyhow::anyhow!(message),
-              )
-            }),
-        );
+        diagnostics.extend(resolve_file_url_errors.into_iter().map(|(plugin_name, message)| {
+          BuildDiagnostic::plugin_error(CausedPlugin::new(plugin_name), anyhow::anyhow!(message))
+        }));
       }
 
       (

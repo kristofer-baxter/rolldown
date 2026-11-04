@@ -52,7 +52,7 @@ assert.strictEqual(setOpacity("blue", .2), "blue:0.2");
 ### css.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 // color.js
 var setOpacity;
 function init_color() {
@@ -74,7 +74,7 @@ export { init_color as n, setOpacity as r, init_css as t };
 ### first.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 import { r as setOpacity, t as init_css } from "./css.js";
 import assert from "node:assert";
 // theme.js
@@ -99,12 +99,14 @@ init_first();
 ### main.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 // main.js
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await import("./first.js");
-		await import("./second.js");
+	return (init_main = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			await import("./first.js");
+			await import("./second.js");
+		});
 	})))();
 }
 await init_main();
@@ -115,14 +117,14 @@ await init_main();
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
 
 ```
 
 ### second.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 import { r as setOpacity, t as init_css } from "./css.js";
 import assert from "node:assert";
 // second.js

@@ -38,9 +38,13 @@ globalThis.__events = [];
 
 const entry = await import('./dist/main.js');
 
-assert.deepStrictEqual(globalThis.__events, ['cn', 'clone-deep', 'main:a b']);
+const expectedEvents =
+  globalThis.__configName === 'on-demand'
+    ? ['cn', 'clone-deep', 'main:a b']
+    : ['clone-deep', 'cn', 'main:a b'];
+assert.deepStrictEqual(globalThis.__events, expectedEvents);
 
 const route = await entry.loadRoute();
 
 assert.deepStrictEqual(route.value, { value: 1 });
-assert.deepStrictEqual(globalThis.__events, ['cn', 'clone-deep', 'main:a b', 'route']);
+assert.deepStrictEqual(globalThis.__events, [...expectedEvents, 'route']);

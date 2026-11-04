@@ -16,7 +16,7 @@ jobs:
   run:
     if: ${{ inputs.changed }}
     name: Cargo Test
-    runs-on: ${{ inputs.os == 'ubuntu-latest' && 'namespace-profile-linux-x64-default' || inputs.os == 'macos-latest' && 'namespace-profile-mac-default' || inputs.os }}
+    runs-on: ${{ inputs.os }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

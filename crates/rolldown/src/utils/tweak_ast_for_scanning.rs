@@ -19,6 +19,11 @@ pub struct PreProcessor<'ast, 'a> {
   /// so dynamic imports nested inside the dropped block never enter the
   /// module graph.
   drop_labels: Option<&'a FxHashSet<String>>,
+  lower_import_defer: bool,
+  /// Spans of `import defer ...` statements / expressions whose `defer` phase
+  /// was lowered to a regular import. Read after `visit_program` to emit the
+  /// `UNSUPPORTED_FEATURE` warning.
+  defer_spans: Vec<Span>,
 }
 
 impl<'ast, 'a> PreProcessor<'ast, 'a> {
@@ -32,11 +37,20 @@ impl<'ast, 'a> PreProcessor<'ast, 'a> {
       top_level_stmt_temp_storage: vec![],
       keep_names,
       drop_labels: drop_labels.filter(|set| {
-        set
-          .iter()
-          .any(|label| !label.starts_with(super::topology_config::TOPOLOGY_KEY_HEADER))
+        set.iter().any(|label| !label.starts_with(super::topology_config::TOPOLOGY_KEY_HEADER))
       }),
+      lower_import_defer: false,
+      defer_spans: vec![],
     }
+  }
+
+  pub fn with_lower_import_defer(mut self, lower_import_defer: bool) -> Self {
+    self.lower_import_defer = lower_import_defer;
+    self
+  }
+
+  pub fn take_defer_spans(&mut self) -> Vec<Span> {
+    std::mem::take(&mut self.defer_spans)
   }
 
   /// Replace `it` with an empty statement when it is a `LabeledStatement`
@@ -143,6 +157,14 @@ impl<'ast, 'a> PreProcessor<'ast, 'a> {
 }
 
 impl<'ast> VisitJsMut<'ast> for PreProcessor<'ast, '_> {
+  fn visit_import_declaration(&mut self, it: &mut ast::ImportDeclaration<'ast>) {
+    if self.lower_import_defer && matches!(it.phase, Some(ast::ImportPhase::Defer)) {
+      self.defer_spans.push(it.span);
+      it.phase = None;
+    }
+    walk_js_mut::walk_import_declaration(self, it);
+  }
+
   fn visit_program(&mut self, program: &mut ast::Program<'ast>) {
     let original_body = program.body.take_in(self);
     program.body.reserve_exact(original_body.len());
@@ -203,6 +225,14 @@ impl<'ast> VisitJsMut<'ast> for PreProcessor<'ast, '_> {
         it.push(stmt);
       }
     }
+  }
+
+  fn visit_import_expression(&mut self, it: &mut ast::ImportExpression<'ast>) {
+    if self.lower_import_defer && matches!(it.phase, Some(ast::ImportPhase::Defer)) {
+      self.defer_spans.push(it.span);
+      it.phase = None;
+    }
+    walk_js_mut::walk_import_expression(self, it);
   }
 
   fn visit_expression(&mut self, it: &mut ast::Expression<'ast>) {

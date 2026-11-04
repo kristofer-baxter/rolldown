@@ -67,10 +67,10 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
           match parent_parent_kind {
             parent_parent_kind if parent_parent_kind.is_member_expression_kind() => {
               let parent_parent = parent_parent_kind.as_member_expression_kind().unwrap();
-              Self::check_assignment_target_property(
+              Some(Self::check_assignment_target_property(
                 &parent_parent,
                 self.visit_path.get(cursor - 2)?,
-              )
+              ))
             }
             AstKind::CallExpression(call_expr)
               if call_expr
@@ -90,7 +90,10 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
           // one scenario:
           // 1. exports.__esModule = true;
           let member_expr = kind.as_member_expression_kind().unwrap();
-          Self::check_assignment_target_property(&member_expr, self.visit_path.get(cursor - 1)?)
+          Some(Self::check_assignment_target_property(
+            &member_expr,
+            self.visit_path.get(cursor - 1)?,
+          ))
         }
       },
       AstKind::CallExpression(call_expr)
@@ -135,28 +138,30 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   fn check_assignment_target_property(
     member_expr: &MemberExpressionKind,
     parent: &AstKind<'ast>,
-  ) -> Option<CommonJsAstType> {
+  ) -> CommonJsAstType {
     let static_property_name = member_expr.static_property_name();
 
     if !member_expr.is_assigned_to_in_parent(parent) {
-      return Some(CommonJsAstType::ExportsRead);
+      return CommonJsAstType::ExportsRead;
     }
 
     // Rolldown stores export names as UTF-8, so a name with a lone surrogate is treated like a
     // computed one.
     let Some(static_property_name) = static_property_name.and_then(JSStr::as_str) else {
-      return Some(CommonJsAstType::ExportsPropWrite(CompactStr::from("*")));
+      return CommonJsAstType::ExportsPropWrite(CompactStr::from("*"));
     };
     if static_property_name != "__esModule" {
-      return Some(CommonJsAstType::ExportsPropWrite(CompactStr::from(static_property_name)));
+      return CommonJsAstType::ExportsPropWrite(CompactStr::from(static_property_name));
     }
 
-    let assignment_expr = parent.as_assignment_expression()?;
-
-    let Expression::BooleanLiteral(bool_lit) = &assignment_expr.right else {
-      return Some(CommonJsAstType::ExportsPropWrite("__esModule".into()));
-    };
-    bool_lit.value.then_some(CommonJsAstType::EsModuleFlag)
+    if let Some(assignment_expr) = parent.as_assignment_expression()
+      && assignment_expr.operator == ast::AssignmentOperator::Assign
+      && let Expression::BooleanLiteral(bool_lit) = &assignment_expr.right
+      && bool_lit.value
+    {
+      return CommonJsAstType::EsModuleFlag;
+    }
+    CommonJsAstType::ExportsPropWrite("__esModule".into())
   }
 
   /// check if the `module` is used as : module.exports = require('mod');

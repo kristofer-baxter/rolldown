@@ -169,10 +169,13 @@ export class DevRuntime {
 
   /**
    * @param {string} id
-   * @param {(id: string) => void} fn
-   * @param {number} [stamp]
+   * @param {string | ((id: string) => void)} kindOrFn
+   * @param {((id: string) => void) | number} [fnOrStamp]
+   * @param {number} [stampArg]
    */
-  registerFactory(id, fn, stamp = 0) {
+  registerFactory(id, kindOrFn, fnOrStamp = 0, stampArg = 0) {
+    const fn = typeof kindOrFn === 'function' ? kindOrFn : /** @type {(id: string) => void} */ (fnOrStamp);
+    const stamp = typeof kindOrFn === 'function' ? /** @type {number} */ (fnOrStamp ?? 0) : stampArg;
     if (stamp < (this.factoryStamps.get(id) ?? 0)) return;
     this.factoryStamps.set(id, stamp);
     this.factories.set(id, fn);

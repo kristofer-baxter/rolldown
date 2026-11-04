@@ -37,15 +37,18 @@ function init_log() {
 }
 // main.js
 function init_main() {
-	return (init_main = __esmMin((async () => {
+	return (init_main = __esmAsync((() => {
+		var __asyncDependencies0 = [];
 		init_log();
-		{
-			await using _ = { async [Symbol.asyncDispose]() {
-				await Promise.resolve();
-				log.push("disposed");
-			} };
-			log.push("body");
-		}
+		return __finishAsync(__asyncDependencies0, async () => {
+			{
+				await using _ = { async [Symbol.asyncDispose]() {
+					await Promise.resolve();
+					log.push("disposed");
+				} };
+				log.push("body");
+			}
+		});
 	})))();
 }
 await init_main();

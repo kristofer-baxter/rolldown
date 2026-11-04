@@ -41,7 +41,10 @@ impl GenerateStage<'_> {
             && if let Some(pre_rendered_chunk) = chunk.pre_rendered_chunk.as_ref() {
               pre_rendered_chunk.module_ids.contains(importer_id)
             } else {
-              chunk.modules.iter().any(|idx| self.link_output.module_table[*idx].id() == importer_id)
+              chunk
+                .modules
+                .iter()
+                .any(|idx| self.link_output.module_table[*idx].id() == importer_id)
             }
         });
 

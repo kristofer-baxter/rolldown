@@ -106,14 +106,8 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
       // `ExecutionOrderSensitive` is read outside the wrap planner too — it gates which leaf
       // modules `sort_chunk_modules` may sort by id — so it has to mean the same thing in every
       // strict plan. Collecting the reasons only for the selective plan left the default weaker.
-      if self
-        .immutable_ctx
-        .options
-        .is_strict_execution_order_enabled()
-        && !self
-          .result
-          .ecma_view_meta
-          .contains(EcmaViewMeta::ExecutionOrderSensitive)
+      if self.immutable_ctx.options.is_strict_execution_order_enabled()
+        && !self.result.ecma_view_meta.contains(EcmaViewMeta::ExecutionOrderSensitive)
         && !stmt_eval_facts.is_order_sensitive()
       {
         analyzer.add_top_level_eager_order_reasons(stmt, &mut stmt_eval_facts);
@@ -132,65 +126,36 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
       // Tree-shaking side effects / global reads / pure annotations come from the analyzer.
       // Top-level reads of imported bindings are detected by a separate uniform walk so the
       // signal is complete by construction (no per-expression-form gaps).
-      if self
-        .immutable_ctx
-        .options
-        .is_strict_execution_order_enabled()
-      {
-        let has_top_level_import_read = self
-          .result
-          .ecma_view_meta
-          .contains(EcmaViewMeta::TopLevelImportRead)
-          || TopLevelImportReadDetector::detect(&self.result.symbol_ref_db.ast_scopes, stmt);
+      if self.immutable_ctx.options.is_strict_execution_order_enabled() {
+        let has_top_level_import_read =
+          self.result.ecma_view_meta.contains(EcmaViewMeta::TopLevelImportRead)
+            || TopLevelImportReadDetector::detect(&self.result.symbol_ref_db.ast_scopes, stmt);
         if stmt_eval_facts.is_order_sensitive() || has_top_level_import_read {
-          self
-            .result
-            .ecma_view_meta
-            .insert(EcmaViewMeta::ExecutionOrderSensitive);
+          self.result.ecma_view_meta.insert(EcmaViewMeta::ExecutionOrderSensitive);
         }
         if has_top_level_import_read {
-          self
-            .result
-            .ecma_view_meta
-            .insert(EcmaViewMeta::TopLevelImportRead);
+          self.result.ecma_view_meta.insert(EcmaViewMeta::TopLevelImportRead);
         }
-      } else if !self
-        .result
-        .ecma_view_meta
-        .contains(EcmaViewMeta::ExecutionOrderSensitive)
+      } else if !self.result.ecma_view_meta.contains(EcmaViewMeta::ExecutionOrderSensitive)
         && (stmt_eval_facts.is_order_sensitive()
           || TopLevelImportReadDetector::detect(&self.result.symbol_ref_db.ast_scopes, stmt))
       {
         // Preserve the flag-off scanner path: once sensitivity is known, later statements do not
         // need the strict-only import-read classification and must not pay for another AST walk.
-        self
-          .result
-          .ecma_view_meta
-          .insert(EcmaViewMeta::ExecutionOrderSensitive);
+        self.result.ecma_view_meta.insert(EcmaViewMeta::ExecutionOrderSensitive);
       }
-      self
-        .result
-        .stmt_infos
-        .add_stmt_info(std::mem::take(&mut self.current_stmt_info));
+      self.result.stmt_infos.add_stmt_info(std::mem::take(&mut self.current_stmt_info));
     }
 
     if self.untranspiled_syntax.contains(UntranspiledSyntax::Jsx) {
       self
         .result
         .errors
-        .push(BuildDiagnostic::untranspiled_syntax(
-          self.immutable_ctx.id.to_string(),
-          "JSX",
-        ));
+        .push(BuildDiagnostic::untranspiled_syntax(self.immutable_ctx.id.to_string(), "JSX"));
     }
 
     self.result.hashbang_range = program.hashbang.as_ref().map(GetSpan::span);
-    if self
-      .immutable_ctx
-      .options
-      .checks
-      .contains(EventKindSwitcher::ModuleLevelDirective)
-    {
+    if self.immutable_ctx.options.checks.contains(EventKindSwitcher::ModuleLevelDirective) {
       for directive in &program.directives {
         if !directive.is_use_strict() {
           self.result.warnings.push(
@@ -219,28 +184,17 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
     // Check if dynamic import record is a pure dynamic import
     for (rec_idx, usage) in &self.result.dynamic_import_rec_exports_usage {
       if matches!(usage, DynamicImportExportsUsage::Partial(set) if set.is_empty()) {
-        self.result.import_records[*rec_idx]
-          .meta
-          .insert(ImportRecordMeta::PureDynamicImport);
+        self.result.import_records[*rec_idx].meta.insert(ImportRecordMeta::PureDynamicImport);
       }
     }
 
     // check if the module is a reexport cjs module e.g.
     // module.exports = require('a');
     // normalize ast usage flag
-    if self
-      .result
-      .ast_usage
-      .contains(EcmaModuleAstUsage::ModuleRef)
-      || !self
-        .result
-        .ast_usage
-        .contains(EcmaModuleAstUsage::ExportsRef)
+    if self.result.ast_usage.contains(EcmaModuleAstUsage::ModuleRef)
+      || !self.result.ast_usage.contains(EcmaModuleAstUsage::ExportsRef)
     {
-      self
-        .result
-        .ast_usage
-        .remove(EcmaModuleAstUsage::AllStaticExportPropertyAccess);
+      self.result.ast_usage.remove(EcmaModuleAstUsage::AllStaticExportPropertyAccess);
     }
     self.leave_scope();
   }
@@ -283,10 +237,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
   fn visit_return_statement(&mut self, stmt: &ast::ReturnStatement<'ast>) {
     // Top-level return statements are only valid in CommonJS modules
     if self.is_top_level {
-      self
-        .result
-        .ast_usage
-        .insert(EcmaModuleAstUsage::TopLevelReturn);
+      self.result.ast_usage.insert(EcmaModuleAstUsage::TopLevelReturn);
     }
     walk_js::walk_return_statement(self, stmt);
   }
@@ -311,14 +262,24 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
         {
           let mut meta = ImportRecordMeta::empty();
           meta.set(ImportRecordMeta::IsTopLevel, self.is_root_scope());
-          meta.set(
-            ImportRecordMeta::IsUnspannedImport,
-            expr.source.span().is_empty(),
-          );
-          meta.set(
-            ImportRecordMeta::InTryCatchBlock,
-            self.in_side_try_catch_block(),
-          );
+          meta.set(ImportRecordMeta::IsUnspannedImport, expr.source.span().is_empty());
+          meta.set(ImportRecordMeta::InTryCatchBlock, self.in_side_try_catch_block());
+          if expr.phase.is_none()
+            && let Some(options) = &expr.options
+          {
+            meta.set(
+              ImportRecordMeta::HasNonEmptyImportOptions,
+              !crate::utils::import_options::is_empty_import_options(options),
+            );
+            meta.set(
+              ImportRecordMeta::HasJsonTypeImportOptions,
+              crate::utils::import_options::is_json_type_import_options(options),
+            );
+            meta.set(
+              ImportRecordMeta::HasTextTypeImportOptions,
+              crate::utils::import_options::is_text_type_import_options(options),
+            );
+          }
           meta
         },
         Some(expr.node_id()),
@@ -332,10 +293,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
       self.result.imports.insert(expr.node_id(), import_rec_idx);
     } else {
       // No import record - either @vite-ignore or non-static dynamic import
-      self
-        .current_stmt_info
-        .meta
-        .insert(StmtInfoMeta::NonStaticDynamicImport);
+      self.current_stmt_info.meta.insert(StmtInfoMeta::NonStaticDynamicImport);
     }
     walk_js::walk_import_expression(self, expr);
   }
@@ -348,9 +306,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
             && member_expr.static_property_name().is_some_and(|name| name == "exports")
             && self.is_global_identifier_reference(id)
           {
-            self
-              .cjs_module_ident
-              .get_or_insert(Span::new(id.span.start, id.span.start + 6));
+            self.cjs_module_ident.get_or_insert(Span::new(id.span.start, id.span.start + 6));
             // `module.exports = <value>` replaces the entire exports object,
             // so all prior `exports.xxx` constants are stale.
             self.has_cjs_exports_reassignment = true;
@@ -364,10 +320,8 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
               .and_then(|(span, name)| Some((span, name.as_str()?)))
             {
               // `exports.test = ...`
-              let exported_symbol = self
-                .result
-                .symbol_ref_db
-                .create_facade_root_symbol_ref(export_name);
+              let exported_symbol =
+                self.result.symbol_ref_db.create_facade_root_symbol_ref(export_name);
 
               self.declare_link_only_symbol_ref(exported_symbol.symbol);
 
@@ -385,11 +339,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
                 .commonjs_exports
                 .entry(export_name.into())
                 .or_default()
-                .push(LocalExport {
-                  referenced: exported_symbol,
-                  span,
-                  came_from_commonjs: true,
-                });
+                .push(LocalExport { referenced: exported_symbol, span, came_from_commonjs: true });
             }
           }
         }
@@ -400,9 +350,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
               && member_expr.property.name == "exports"
               && self.is_global_identifier_reference(id)
             {
-              self
-                .cjs_module_ident
-                .get_or_insert(Span::new(id.span.start, id.span.start + 6));
+              self.cjs_module_ident.get_or_insert(Span::new(id.span.start, id.span.start + 6));
             }
           }
         }
@@ -414,11 +362,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
   }
 
   fn visit_new_expression(&mut self, it: &ast::NewExpression<'ast>) {
-    if self
-      .immutable_ctx
-      .flat_options
-      .resolve_new_url_to_asset_enabled()
-    {
+    if self.immutable_ctx.flat_options.resolve_new_url_to_asset_enabled() {
       self.handle_new_url_with_string_literal_and_import_meta_url(it);
     }
     walk_js::walk_new_expression(self, it);
@@ -434,15 +378,12 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
       && let Some(property_name) = it.static_property_name().and_then(JSStr::as_str)
       && let Some(file_url) = utils::file_url::strip_file_url_prefix(property_name)
     {
-      self
-        .result
-        .rolldown_file_url_references
-        .push(RolldownFileUrlReference {
-          node_id: it.node_id(),
-          stmt_info_idx: self.current_stmt_idx,
-          reference_id: CompactStr::from(file_url.reference_id),
-          url_id: file_url.url_id.map(CompactStr::from),
-        });
+      self.result.rolldown_file_url_references.push(RolldownFileUrlReference {
+        node_id: it.node_id(),
+        stmt_info_idx: self.current_stmt_idx,
+        reference_id: CompactStr::from(file_url.reference_id),
+        url_id: file_url.url_id.map(CompactStr::from),
+      });
     }
     walk_js::walk_member_expression(self, it);
   }
@@ -458,9 +399,10 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
       self.last_nested_this_stmt_idx = Some(self.current_stmt_idx);
     } else {
       self.top_level_this_expr_set.insert(it.node_id());
-      // A CommonJS module's top-level `this` is its exports object (#693).
-      self.note_commonjs_exports_use(it.span, 0);
     }
+    // A CommonJS module's top-level `this` (or `this` inside an `Object.defineProperty(exports, ...)`
+    // accessor) is its exports object (#693).
+    self.note_commonjs_exports_use(it.span, 0);
     walk_js::walk_this_expression(self, it);
   }
 
@@ -532,10 +474,7 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
           | Expression::ClassExpression(_)
       )
     {
-      self
-        .current_stmt_info
-        .meta
-        .insert(StmtInfoMeta::KeepNamesType);
+      self.current_stmt_info.meta.insert(StmtInfoMeta::KeepNamesType);
     }
     walk_js::walk_expression(self, it);
   }
@@ -579,16 +518,10 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
     use ast::ExportDefaultDeclarationKind;
     match &it.declaration {
       ExportDefaultDeclarationKind::FunctionDeclaration(func) if func.id.is_none() => {
-        self
-          .current_stmt_info
-          .meta
-          .insert(StmtInfoMeta::KeepNamesType);
+        self.current_stmt_info.meta.insert(StmtInfoMeta::KeepNamesType);
       }
       ExportDefaultDeclarationKind::ClassDeclaration(class) if class.id.is_none() => {
-        self
-          .current_stmt_info
-          .meta
-          .insert(StmtInfoMeta::KeepNamesType);
+        self.current_stmt_info.meta.insert(StmtInfoMeta::KeepNamesType);
       }
       _ => {}
     }
@@ -606,10 +539,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         self.immutable_ctx.options.format.as_str().into(),
       ));
     }
-    self
-      .result
-      .ast_usage
-      .insert(EcmaModuleAstUsage::TopLevelAwait);
+    self.result.ast_usage.insert(EcmaModuleAstUsage::TopLevelAwait);
     if self.result.tla_keyword_span.is_none() {
       self.result.tla_keyword_span = Some(span);
     }
@@ -658,6 +588,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     }
   }
 
+  #[expect(clippy::too_many_lines)]
   fn process_identifier_ref_by_scope(&mut self, ident_ref: &IdentifierReference) {
     match self.resolve_identifier_reference(ident_ref) {
       super::IdentifierReferenceKind::Global => {
@@ -720,24 +651,14 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
                 unreachable!()
               }
               Some(CommonJsAstType::ExportsRead) => {
-                self
-                  .result
-                  .ast_usage
-                  .insert(EcmaModuleAstUsage::UnknownExportsRead);
+                self.result.ast_usage.insert(EcmaModuleAstUsage::UnknownExportsRead);
               }
               None => match self.try_extract_parent_static_member_expr_chain(1) {
                 Some((_node_id, _span, prop)) => {
-                  self
-                    .cjs_named_exports_usage
-                    .entry(prop[0].name.clone())
-                    .or_default()
-                    .read += 1;
+                  self.cjs_named_exports_usage.entry(prop[0].name.clone()).or_default().read += 1;
                 }
                 _ => {
-                  self
-                    .result
-                    .ast_usage
-                    .insert(EcmaModuleAstUsage::UnknownExportsRead);
+                  self.result.ast_usage.insert(EcmaModuleAstUsage::UnknownExportsRead);
                 }
               },
             }
@@ -765,19 +686,13 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
             // should not replace require in `runtime` code
             if is_dummy_record
               && self.immutable_ctx.id.as_ref() != RUNTIME_MODULE_KEY
-              && self
-                .immutable_ctx
-                .flat_options
-                .should_call_runtime_require()
+              && self.immutable_ctx.flat_options.should_call_runtime_require()
               && self
                 .immutable_ctx
                 .flat_options
                 .polyfill_require_for_esm_format_with_node_platform()
             {
-              self
-                .current_stmt_info
-                .meta
-                .insert(StmtInfoMeta::HasDummyRecord);
+              self.current_stmt_info.meta.insert(StmtInfoMeta::HasDummyRecord);
               self.result.dummy_record_set.insert(ident_ref.node_id());
             }
           }
@@ -791,9 +706,19 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         // if the identifier_reference is a NamedImport MemberExpr access, we store it as a `MemberExpr`
         // use this flag to avoid insert it as `Symbol` at the same time.
         let mut is_inserted_before = false;
-        let deleting_member = self.visit_path.iter().any(|kind| {
-          matches!(kind, AstKind::UnaryExpression(expr) if expr.operator == ast::UnaryOperator::Delete)
-        });
+        let runtime_semantics = crate::utils::native_records::runtime_module_semantics_enabled(
+          self.immutable_ctx.options,
+        );
+        let deleting_member = (runtime_semantics
+          || self.result.named_imports.get(&root_symbol_id).is_some_and(|import| {
+            matches!(
+              &import.imported,
+              rolldown_common::Specifier::Literal(name) if name.as_str() == "default"
+            )
+          }))
+          && self.visit_path.iter().any(|kind| {
+            matches!(kind, AstKind::UnaryExpression(expr) if expr.operator == ast::UnaryOperator::Delete)
+          });
         let writing_namespace = is_member_write
           && self
             .result
@@ -822,7 +747,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         }
         if let Some(named_import) = self.result.named_imports.get(&root_symbol_id)
           && !deleting_member
-          && !writing_namespace
+          && !(runtime_semantics && writing_namespace)
         {
           let ty = match named_import.imported {
             rolldown_common::Specifier::Star => MemberExprObjectReferencedType::Namespace,
@@ -902,10 +827,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         }
 
         if is_member_write
-          && !self
-            .immutable_ctx
-            .flat_options
-            .property_write_side_effects()
+          && !self.immutable_ctx.flat_options.property_write_side_effects()
           && self.is_top_level
         {
           // Since `0` is always namespace object stmt info
@@ -917,15 +839,9 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
 
         self.check_import_assign(ident_ref, root_symbol_id.symbol);
 
-        match (
-          self.cur_class_decl,
-          self.resolve_symbol_from_reference(ident_ref),
-        ) {
+        match (self.cur_class_decl, self.resolve_symbol_from_reference(ident_ref)) {
           (Some(cur_class_decl), Some(referenced_to)) if cur_class_decl == referenced_to => {
-            self
-              .result
-              .self_referenced_class_decl_symbol_ids
-              .insert(cur_class_decl);
+            self.result.self_referenced_class_decl_symbol_ids.insert(cur_class_decl);
           }
           _ => {}
         }
@@ -935,10 +851,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         // name starts with lowercase get uppercased to remain valid component references.
         if self.immutable_ctx.flat_options.jsx_preserve()
           && self.visit_path.last().is_some_and(|ast_kind| {
-            matches!(
-              ast_kind,
-              AstKind::JSXOpeningElement(_) | AstKind::JSXClosingElement(_)
-            )
+            matches!(ast_kind, AstKind::JSXOpeningElement(_) | AstKind::JSXClosingElement(_))
           })
         {
           let symbol_ref_flags = root_symbol_id.flags_mut(&mut self.result.symbol_ref_db);
@@ -1006,10 +919,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
             //    in the last position, it is still used if it meant any other astKind
             // 2. `1, 2, (1, require('a')), 1` => since the last child contains `require`, but it is
             //    not in the last position, the state should change to unused
-            let last = seq_expr
-              .expressions
-              .last()
-              .expect("should have at least one child");
+            let last = seq_expr.expressions.last().expect("should have at least one child");
 
             if !last.span().is_empty() && !expr.span.is_empty() {
               is_require_used = last.span().contains_inclusive(expr.span);
@@ -1031,14 +941,12 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     // Compiler-owned CJS helpers are binding references, not CommonJS views of the runtime.
     // Treating them as require edges would wrap the runtime in its own uninitialized helpers.
     let value = to_usv_str(value);
-    let kind = if matches!(
-      value.as_ref(),
-      "\0rolldown/computed-import" | "\0rolldown/import-meta-url"
-    ) {
-      ImportKind::Import
-    } else {
-      ImportKind::Require
-    };
+    let kind =
+      if matches!(value.as_ref(), "\0rolldown/computed-import" | "\0rolldown/import-meta-url") {
+        ImportKind::Import
+      } else {
+        ImportKind::Require
+      };
     let id = self.add_import_record(&value, kind, span, expr.span, init_meta, None);
     self.result.imports.insert(expr.node_id(), id);
     true

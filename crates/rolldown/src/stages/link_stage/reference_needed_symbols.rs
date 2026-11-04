@@ -239,7 +239,12 @@ impl LinkStage<'_> {
                         .referenced_symbols
                         .push(self.runtime.resolve_symbol("__rethrowModuleLinkError").into());
                     }
-                    if !self.options.is_dev_mode_enabled() && !importee.exports_kind.is_commonjs() {
+                    let runtime_semantics =
+                      crate::utils::native_records::runtime_module_semantics_enabled(self.options);
+                    if runtime_semantics
+                      && !self.options.is_dev_mode_enabled()
+                      && !importee.exports_kind.is_commonjs()
+                    {
                       stmt_info
                         .referenced_symbols
                         .push(self.runtime.resolve_symbol("__importNamespace").into());
@@ -252,9 +257,19 @@ impl LinkStage<'_> {
                         }
                       }
                     }
-                    stmt_info
-                      .referenced_symbols
-                      .push(self.runtime.resolve_symbol("__withImportOptions").into());
+                    let json = crate::utils::import_options::is_json_module(importee);
+                    let text = crate::utils::import_options::is_text_module(importee);
+                    let options_statically_satisfied =
+                      !rec.meta.contains(ImportRecordMeta::HasNonEmptyImportOptions)
+                        || (text && rec.meta.contains(ImportRecordMeta::HasTextTypeImportOptions))
+                        || (!text
+                          && json
+                          && rec.meta.contains(ImportRecordMeta::HasJsonTypeImportOptions));
+                    if runtime_semantics || !options_statically_satisfied {
+                      stmt_info
+                        .referenced_symbols
+                        .push(self.runtime.resolve_symbol("__withImportOptions").into());
+                    }
                     if crate::deferred_resolution_error::failure_message(
                       &self.module_table.modules,
                       module_idx,

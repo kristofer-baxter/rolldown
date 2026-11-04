@@ -23,7 +23,7 @@ use super::{
 };
 
 impl GenerateStage<'_> {
-  pub(crate) fn render_normal_module_with(
+  pub fn render_normal_module_with(
     options: &rolldown_common::NormalizedBundlerOptions,
     link_output: &crate::stages::link_stage::LinkStageOutput,
     module: &NormalModule,
@@ -63,6 +63,7 @@ impl GenerateStage<'_> {
       );
       return ModuleRenderOutput {
         code: output.code,
+        #[expect(clippy::redundant_closure_for_method_calls)]
         map: output.map.map(|map| map.into_owned()),
       };
     }
@@ -77,7 +78,7 @@ impl GenerateStage<'_> {
     Self::render_normal_module_with(self.options, self.link_output, module, ast)
   }
 
-  pub(crate) fn finalize_and_render_cached_module(
+  pub fn finalize_and_render_cached_module(
     ctx: &crate::types::generator::GenerateContext<'_>,
     module: &NormalModule,
   ) -> Option<std::sync::Arc<[Box<dyn rolldown_sourcemap::Source + Send + Sync>]>> {
@@ -118,16 +119,12 @@ impl GenerateStage<'_> {
       inline_state: &empty_inline_state,
     };
     let _ = finalizer_ctx.finalize_normal_module(&mut ast, ast_scope);
-    let rendered = Self::render_normal_module_with(
-      ctx.options,
-      ctx.link_output,
-      module,
-      &ast,
-    );
+    let rendered = Self::render_normal_module_with(ctx.options, ctx.link_output, module, &ast);
     drop(ast);
     crate::utils::render_ecma_module::render_ecma_module(module, ctx.options, rendered).sources
   }
 
+  #[expect(clippy::too_many_lines)]
   #[tracing::instrument(level = "debug", skip_all)]
   pub(super) fn finalize_modules(
     &mut self,
@@ -215,7 +212,8 @@ impl GenerateStage<'_> {
               inline_state: &self.inline_state,
             };
 
-            let concatenated_wrapped_module_kind = ctx.linking_info.concatenated_wrapped_module_kind;
+            let concatenated_wrapped_module_kind =
+              ctx.linking_info.concatenated_wrapped_module_kind;
             let (
               transferred_import_record,
               rendered_concatenated_wrapped_module_parts,
@@ -243,7 +241,11 @@ impl GenerateStage<'_> {
 
             let payload = (!transferred_import_record.is_empty()
               || !matches!(concatenated_wrapped_module_kind, ConcatenateWrappedModuleKind::None))
-            .then_some((idx, transferred_import_record, rendered_concatenated_wrapped_module_parts));
+            .then_some((
+              idx,
+              transferred_import_record,
+              rendered_concatenated_wrapped_module_parts,
+            ));
             Some((idx, payload, module_diagnostics, rendered, deferred_ast, None))
           })
           .collect::<Vec<_>>();
@@ -266,13 +268,13 @@ impl GenerateStage<'_> {
             if chunk_graph.post_chunk_optimization_operations.contains_key(&cidx) {
               return [0, 0];
             }
-            let mut h0 = Xxh3::with_seed(0x243f6a8885a308d3);
-            let mut h1 = Xxh3::with_seed(0x13198a2e03707344);
+            let mut h0 = Xxh3::with_seed(0x243f_6a88_85a3_08d3);
+            let mut h1 = Xxh3::with_seed(0x1319_8a2e_0370_7344);
             if let Some(db) = self.link_output.symbol_db[runtime_id].as_ref() {
               for sym_id in db.classic_data.indices() {
                 let sref: rolldown_common::SymbolRef = (runtime_id, sym_id).into();
                 let cref = self.link_output.symbol_db.canonical_ref_for(sref);
-                let cname = chunk.canonical_names.get(&cref).map(|n| n.as_str());
+                let cname = chunk.canonical_names.get(&cref).map(oxc_str::CompactStr::as_str);
                 (sym_id.index(), cname).hash(&mut h0);
                 (sym_id.index(), cname).hash(&mut h1);
               }
@@ -330,10 +332,8 @@ impl GenerateStage<'_> {
             None
           };
           if let Some(digest) = finalize_digest
-            && let Some(cached) = self
-              .cache
-              .as_ref()
-              .and_then(|c| c.cached_finalized_modules.get(&idx))
+            && let Some(cached) =
+              self.cache.as_ref().and_then(|c| c.cached_finalized_modules.get(&idx))
             && cached.digest == digest
           {
             return Some((
@@ -403,11 +403,8 @@ impl GenerateStage<'_> {
           {
             let rendered = self.render_normal_module(module, &ast);
             drop(ast);
-            let ecma = crate::utils::render_ecma_module::render_ecma_module(
-              module,
-              self.options,
-              rendered,
-            );
+            let ecma =
+              crate::utils::render_ecma_module::render_ecma_module(module, self.options, rendered);
             let cacheable = module_diagnostics.is_empty() && ecma.warnings.is_empty();
             module_diagnostics.extend(ecma.warnings);
             return Some((
@@ -445,9 +442,8 @@ impl GenerateStage<'_> {
     }
     let mut normalized_transfer_parts_rendered_maps = FxHashMap::default();
     let mut diagnostics = vec![];
-    let mut rendered_modules: IndexVec<ModuleIdx, Option<ModuleRenderOutput>> = IndexVec::from_vec(
-      (0..self.link_output.module_table.modules.len()).map(|_| None).collect(),
-    );
+    let mut rendered_modules: IndexVec<ModuleIdx, Option<ModuleRenderOutput>> =
+      IndexVec::from_vec((0..self.link_output.module_table.modules.len()).map(|_| None).collect());
     let mut deferred_asts: Vec<(ModuleIdx, EcmaAst)> = Vec::new();
     for (idx, payload, module_diagnostics, rendered, deferred_ast, cached_entry) in finalized {
       diagnostics.extend(module_diagnostics);
@@ -545,6 +541,7 @@ impl GenerateStage<'_> {
     Ok(rendered_modules)
   }
 
+  #[expect(clippy::type_complexity, clippy::cast_possible_truncation)]
   fn compute_importee_reexport_wrap_digests(
     &self,
     chunk_graph: &ChunkGraph,
@@ -563,23 +560,23 @@ impl GenerateStage<'_> {
       #[inline]
       fn write(&mut self, bytes: &[u8]) {
         for &b in bytes {
-          self.0 = (self.0 ^ (b as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+          self.0 = (self.0 ^ u128::from(b)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
         }
       }
       #[inline]
       fn write_u8(&mut self, i: u8) {
-        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        self.0 = (self.0 ^ u128::from(i)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
       }
       #[inline]
       fn write_u32(&mut self, i: u32) {
-        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        self.0 = (self.0 ^ u128::from(i)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
       }
     }
     let sym_key = |s: rolldown_common::SymbolRef| -> (u32, u32) {
       if self.link_output.symbol_db.is_facade_symbol(s) {
         (s.owner.raw(), u32::MAX)
       } else {
-        (s.owner.raw(), s.symbol.index() as u32)
+        (s.owner.raw(), u32::try_from(s.symbol.index()).unwrap_or(u32::MAX))
       }
     };
     self
@@ -599,20 +596,18 @@ impl GenerateStage<'_> {
             if !matches!(exp_meta.wrap_kind(), rolldown_common::WrapKind::None)
               || order_state.esm_init_target(exp_owner, exp_meta).is_some()
             {
-              let mut h0 = RegHasher(0x243f6a8885a308d3_13198a2e03707344);
-              let mut h1 = RegHasher(0xa4093822299f31d0_082efa98ec4e6c89);
+              let mut h0 = RegHasher(0x243f_6a88_85a3_08d3_1319_8a2e_0370_7344);
+              let mut h1 = RegHasher(0xa409_3822_299f_31d0_082e_fa98_ec4e_6c89);
               let v = (
                 exp_owner.raw(),
                 exp_meta.wrap_kind() as u8,
-                exp_meta.wrapper_ref.map(&sym_key),
-                exp_meta
-                  .wrapper_stmt_info
-                  .is_some_and(|s| exp_meta.stmt_info_included.has_bit(s)),
-                order_state.esm_init_target(exp_owner, exp_meta).map(|t| {
-                  (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)
-                }),
+                exp_meta.wrapper_ref.map(sym_key),
+                exp_meta.wrapper_stmt_info.is_some_and(|s| exp_meta.stmt_info_included.has_bit(s)),
+                order_state
+                  .esm_init_target(exp_owner, exp_meta)
+                  .map(|t| (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)),
                 final_esm_init_metadata.init_is_noop(exp_owner),
-                chunk_graph.module_to_chunk[exp_owner].map(|c| c.raw()),
+                chunk_graph.module_to_chunk[exp_owner].map(ChunkIdx::raw),
               );
               v.hash(&mut h0);
               v.hash(&mut h1);
@@ -629,7 +624,13 @@ impl GenerateStage<'_> {
       .into()
   }
 
-  #[expect(clippy::too_many_arguments, clippy::too_many_lines)]
+  #[expect(
+    clippy::too_many_arguments,
+    clippy::too_many_lines,
+    clippy::type_complexity,
+    clippy::items_after_statements,
+    clippy::cast_possible_truncation
+  )]
   fn compute_module_finalize_digest(
     &self,
     module_idx: ModuleIdx,
@@ -674,42 +675,41 @@ impl GenerateStage<'_> {
       #[inline]
       fn write(&mut self, bytes: &[u8]) {
         let mut h = self.0;
-        let mut chunks = bytes.chunks_exact(8);
-        for chunk in &mut chunks {
-          let k = u64::from_le_bytes(chunk.try_into().unwrap()) as u128;
-          h = (h ^ k).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        let (chunks, rem) = bytes.as_chunks::<8>();
+        for &chunk in chunks {
+          let k = u128::from(u64::from_le_bytes(chunk));
+          h = (h ^ k).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
           h ^= h >> 61;
         }
-        let rem = chunks.remainder();
         if !rem.is_empty() {
           let mut tail = [0u8; 8];
           tail[..rem.len()].copy_from_slice(rem);
-          let k = u64::from_le_bytes(tail) as u128;
+          let k = u128::from(u64::from_le_bytes(tail));
           h = (h ^ k ^ ((rem.len() as u128) << 64))
-            .wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+            .wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
           h ^= h >> 61;
         }
         self.0 = h;
       }
       #[inline]
       fn write_u8(&mut self, i: u8) {
-        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        self.0 = (self.0 ^ u128::from(i)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
       }
       #[inline]
       fn write_u32(&mut self, i: u32) {
-        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        self.0 = (self.0 ^ u128::from(i)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
       }
       #[inline]
       fn write_u64(&mut self, i: u64) {
-        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        self.0 = (self.0 ^ u128::from(i)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
       }
       #[inline]
       fn write_usize(&mut self, i: usize) {
-        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        self.0 = (self.0 ^ (i as u128)).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
       }
       #[inline]
       fn write_u128(&mut self, i: u128) {
-        let mut h = (self.0 ^ i).wrapping_mul(0x9e3779b97f4a7c15_f39cc0605cedc835);
+        let mut h = (self.0 ^ i).wrapping_mul(0x9e37_79b9_7f4a_7c15_f39c_c060_5ced_c835);
         h ^= h >> 61;
         self.0 = h;
       }
@@ -719,8 +719,8 @@ impl GenerateStage<'_> {
       #[inline]
       fn new() -> Self {
         Self(
-          RegHasher(0x243f6a8885a308d3_13198a2e03707344),
-          RegHasher(0xa4093822299f31d0_082efa98ec4e6c89),
+          RegHasher(0x243f_6a88_85a3_08d3_1319_8a2e_0370_7344),
+          RegHasher(0xa409_3822_299f_31d0_082e_fa98_ec4e_6c89),
         )
       }
       #[inline]
@@ -734,10 +734,7 @@ impl GenerateStage<'_> {
       }
       #[inline]
       fn finish(self) -> [u128; 2] {
-        [
-          self.0.0 ^ (self.0.0 >> 63),
-          self.1.0 ^ (self.1.0 >> 63),
-        ]
+        [self.0.0 ^ (self.0.0 >> 63), self.1.0 ^ (self.1.0 >> 63)]
       }
     }
 
@@ -767,8 +764,8 @@ impl GenerateStage<'_> {
         s_idx,
         c.owner.raw(),
         c_idx,
-        chunk.canonical_names.get(&c).map(|n| n.as_str()),
-        chunk.canonical_names.get(&s).map(|n| n.as_str()),
+        chunk.canonical_names.get(&c).map(oxc_str::CompactStr::as_str),
+        chunk.canonical_names.get(&s).map(oxc_str::CompactStr::as_str),
       )
     };
 
@@ -781,7 +778,7 @@ impl GenerateStage<'_> {
       runtime_digest,
       meta.is_included,
       meta.wrap_kind() as u8,
-      meta.wrapper_ref.map(&sym_key),
+      meta.wrapper_ref.map(sym_key),
     ));
     if let Some(f) = chunk.preliminary_filename.as_ref() {
       rolldown_utils::hash_placeholder::visit_with_placeholders_defaulted(
@@ -792,7 +789,7 @@ impl GenerateStage<'_> {
       );
     }
     h.write_val(&(
-      meta.wrapper_stmt_info.map(|s| s.raw()),
+      meta.wrapper_stmt_info.map(rolldown_common::StmtInfoIdx::raw),
       meta.is_tla_or_contains_tla_dependency,
       meta.has_dynamic_exports,
       meta.module_namespace_included_reason.bits(),
@@ -827,16 +824,12 @@ impl GenerateStage<'_> {
     }
     h.write_unordered(7, meta.temporal_symbols.len(), temp_acc);
     h.write_val(&(
-      order_state.esm_init_target(module_idx, meta).map(|t| {
-        (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)
-      }),
+      order_state
+        .esm_init_target(module_idx, meta)
+        .map(|t| (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)),
       order_state.order_wrapper_chunk(module_idx) == Some(chunk_idx),
       final_esm_init_metadata.init_is_noop(module_idx),
-      self
-        .link_output
-        .safely_merge_cjs_ns_map
-        .get(&module_idx)
-        .map(|info| info.needs_interop),
+      self.link_output.safely_merge_cjs_ns_map.get(&module_idx).map(|info| info.needs_interop),
     ));
     if let Some(targets_by_stmt) = final_esm_init_metadata.transitive_init_targets(module_idx) {
       let mut t_acc = (0u128, 0u128);
@@ -849,9 +842,9 @@ impl GenerateStage<'_> {
               eh.write_val(&(
                 1u8,
                 m_idx.raw(),
-                order_state.esm_init_target(*m_idx, &self.link_output.metas[*m_idx]).map(|t| {
-                  (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)
-                }),
+                order_state
+                  .esm_init_target(*m_idx, &self.link_output.metas[*m_idx])
+                  .map(|t| (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)),
                 final_esm_init_metadata.init_is_noop(*m_idx),
               ));
             }
@@ -891,19 +884,14 @@ impl GenerateStage<'_> {
     for (node_id, res) in &meta.resolved_member_expr_refs {
       let mut eh = DualHasher::new();
       let resolved_info = res.resolved.map(|r| {
-        let r_owner_exports = self.link_output.module_table[r.owner]
-          .as_normal()
-          .map(|m| m.exports_kind as u8);
+        let r_owner_exports =
+          self.link_output.module_table[r.owner].as_normal().map(|m| m.exports_kind as u8);
         (
           sym_key(r),
           r.is_not_reassigned(symbol_db),
           self.link_output.metas[r.owner].wrap_kind() as u8,
           r_owner_exports,
-          self
-            .link_output
-            .safely_merge_cjs_ns_map
-            .get(&r.owner)
-            .map(|i| i.needs_interop),
+          self.link_output.safely_merge_cjs_ns_map.get(&r.owner).map(|i| i.needs_interop),
         )
       });
       eh.write_val(&(
@@ -913,10 +901,7 @@ impl GenerateStage<'_> {
         res.prop_and_related_span_list.len(),
       ));
       if let Some((cjs_sym, _)) = res.target_commonjs_exported_symbol {
-        hash_const_export_meta(
-          &mut eh,
-          self.link_output.global_constant_symbol_map.get(&cjs_sym),
-        );
+        hash_const_export_meta(&mut eh, self.link_output.global_constant_symbol_map.get(&cjs_sym));
       }
       for prop in &res.prop_and_related_span_list {
         eh.write_val(&(prop.name.as_str(), prop.span.start, prop.span.end));
@@ -972,11 +957,7 @@ impl GenerateStage<'_> {
           na.property_name.as_str(),
           sym_key(ns_canon),
           cache.module_scan_generation(ns_canon.owner),
-          self
-            .link_output
-            .safely_merge_cjs_ns_map
-            .get(&ns_canon.owner)
-            .map(|i| i.needs_interop),
+          self.link_output.safely_merge_cjs_ns_map.get(&ns_canon.owner).map(|i| i.needs_interop),
         )
       });
       let temporal_guard = self.link_output.metas[canonical_ref.owner]
@@ -994,18 +975,14 @@ impl GenerateStage<'_> {
         symbol_db.is_facade_symbol(canonical_ref),
         sym_ref.is_not_reassigned(symbol_db),
         canonical_ref.is_not_reassigned(symbol_db),
-        sym.chunk_idx.map(|c| c.raw()),
+        sym.chunk_idx.map(ChunkIdx::raw),
         ns_alias,
       ));
       h.write_val(&temporal_guard);
       hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&sym_ref));
-      hash_const_export_meta(
-        h,
-        self.link_output.global_constant_symbol_map.get(&canonical_ref),
-      );
+      hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&canonical_ref));
     };
-    let local_sym_count =
-      symbol_db[module_idx].as_ref().map_or(0, |db| db.classic_data.len());
+    let local_sym_count = symbol_db[module_idx].as_ref().map_or(0, |db| db.classic_data.len());
     let mut seen_local_syms = vec![false; local_sym_count];
     let mut seen_other_syms = FxHashSet::default();
     let mut hash_sym = |h: &mut DualHasher, sym_ref: rolldown_common::SymbolRef| {
@@ -1021,11 +998,7 @@ impl GenerateStage<'_> {
       }
       let key = (
         sym_ref.owner.raw(),
-        if symbol_db.is_facade_symbol(sym_ref) {
-          u32::MAX
-        } else {
-          sym_ref.symbol.index() as u32
-        },
+        if symbol_db.is_facade_symbol(sym_ref) { u32::MAX } else { sym_ref.symbol.index() as u32 },
       );
       if seen_other_syms.insert(key) {
         hash_sym_full(h, sym_ref);
@@ -1074,16 +1047,15 @@ impl GenerateStage<'_> {
       let merged_cjs_ns = chunk_graph.finalized_cjs_ns_map_idx_vec[chunk_idx]
         .get(&rec.namespace_ref)
         .copied()
-        .map(&sym_key);
-      let carrier_key = super::order_wrap_state::OrderCjsCarrierKey {
-        importer: module_idx,
-        record: rec_idx,
-      };
-      let carrier_wrapper = order_state.order_cjs_carrier(carrier_key).map(|c| sym_key(c.wrapper_ref));
+        .map(sym_key);
+      let carrier_key =
+        super::order_wrap_state::OrderCjsCarrierKey { importer: module_idx, record: rec_idx };
+      let carrier_wrapper =
+        order_state.order_cjs_carrier(carrier_key).map(|c| sym_key(c.wrapper_ref));
       h.write_val(&(
         rec.kind as u8,
         rec.meta.bits(),
-        rec.resolved_module.map(|m| m.raw()),
+        rec.resolved_module.map(ModuleIdx::raw),
         merged_cjs_ns,
         carrier_wrapper,
       ));
@@ -1096,19 +1068,19 @@ impl GenerateStage<'_> {
           let importee_meta = &self.link_output.metas[importee_idx];
           let importee_chunk_file = chunk_graph.module_to_chunk[importee_idx]
             .and_then(|cidx| chunk_graph.chunk_table.get(cidx))
-            .and_then(|c| c.preliminary_filename.as_ref().map(|f| f.as_str()));
+            .and_then(|c| c.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
           let importee_entry_chunk_file = chunk_graph
             .entry_module_to_entry_chunk
             .get(&importee_idx)
             .and_then(|cidx| chunk_graph.chunk_table.get(*cidx))
-            .and_then(|c| c.preliminary_filename.as_ref().map(|f| f.as_str()));
-          let importee_init = order_state.esm_init_target(importee_idx, importee_meta).map(|t| {
-            (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8)
-          });
+            .and_then(|c| c.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
+          let importee_init = order_state
+            .esm_init_target(importee_idx, importee_meta)
+            .map(|t| (sym_key(t.wrapper_ref), t.tla_tainted, t.origin as u8));
           h.write_val(&(
             importee_normal.exports_kind as u8,
             importee_meta.wrap_kind() as u8,
-            importee_meta.wrapper_ref.map(&sym_key),
+            importee_meta.wrapper_ref.map(sym_key),
             importee_meta
               .wrapper_stmt_info
               .is_some_and(|s| importee_meta.stmt_info_included.has_bit(s)),

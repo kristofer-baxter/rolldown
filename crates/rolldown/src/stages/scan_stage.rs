@@ -61,7 +61,9 @@ impl NormalizedScanStageOutput {
   /// Make a snapshot of the current ScanStage, skipping clone some fields that is immutable in
   /// following stage
   pub fn make_copy(&mut self) -> Self {
-    use rolldown_utils::rayon::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+    use rolldown_utils::rayon::{
+      IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+    };
     Self {
       module_table: rolldown_common::ModuleTable {
         modules: oxc_index::IndexVec::from_vec(
@@ -83,9 +85,7 @@ impl NormalizedScanStageOutput {
         ),
       },
       index_ecma_ast: std::mem::take(&mut self.index_ecma_ast),
-      stmt_infos: oxc_index::IndexVec::from_vec(
-        self.stmt_infos.raw.par_iter().cloned().collect(),
-      ),
+      stmt_infos: oxc_index::IndexVec::from_vec(self.stmt_infos.raw.par_iter().cloned().collect()),
       entry_points: self.entry_points.clone(),
       symbol_ref_db: self.symbol_ref_db.clone_without_scoping(),
       runtime: self.runtime.clone(),

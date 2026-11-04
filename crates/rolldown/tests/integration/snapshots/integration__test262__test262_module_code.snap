@@ -2,7 +2,7 @@
 source: crates/rolldown/tests/integration/test262.rs
 expression: snapshot
 ---
-Summary: 545 passed, 54 failed, 599 total
+Summary: 546 passed, 53 failed, 599 total
 
 ---
 
@@ -1382,12 +1382,9 @@ Cannot assign to import 'renamed'
 ---
 
 # language/module-code/namespace/internals/delete-non-exported.js
-Result: FAIL
-Reason: Rolldown treats deletions of export bindings as bundle errors instead of runtime errors
+Result: PASS
 Expected: success
-Actual:
-Cannot assign to import 'default'
-Cannot assign to import 'undef'
+Actual: Runtime execution succeeded
 ---
 
 # language/module-code/namespace/internals/enumerate-binding-uninit.js

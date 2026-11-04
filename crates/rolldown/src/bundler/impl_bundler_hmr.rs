@@ -228,6 +228,7 @@ impl Bundler {
 
   /// The walks of [`Self::compute_entry_evaluated_modules`], from `roots`, or from the
   /// user-defined entries.
+  #[expect(clippy::too_many_lines)]
   fn evaluate_records(
     &self,
     stamp_table: &HmrStampTable,
@@ -300,9 +301,7 @@ impl Bundler {
     // record imports it bare.
     let recordless = |idx: rolldown_common::ModuleIdx| {
       recorded.is_some_and(|recorded| {
-        !modules[idx]
-          .as_normal()
-          .is_some_and(|module| recorded.contains(module.stable_id.as_str()))
+        !modules[idx].as_normal().is_some_and(|module| recorded.contains(module.stable_id.as_str()))
       })
     };
     // A bypassed import evaluates the native cells and literal records of the bindings that its
@@ -354,7 +353,7 @@ impl Bundler {
       let mut visited = Visited::new(sparse, modules.len());
       let mut evaluated = FxHashMap::with_capacity_and_hasher(
         if sparse { 0 } else { modules.len() },
-        Default::default(),
+        rustc_hash::FxBuildHasher,
       );
       let mut uncertain = FxHashSet::default();
       let mut stack = vec![entry];
@@ -422,7 +421,7 @@ impl Bundler {
             {
               if deferred_imports.is_some_and(|records| records.contains(&rec_idx)) {
                 later.push(dep_idx);
-              } else if crate::hmr::utils::drops_import(module, rec_idx, &pure, scoping) {
+              } else if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) {
                 bypassable.insert(modules[dep_idx].id().as_arc_str().clone());
                 unbound.push(dep_idx);
               } else {
@@ -562,7 +561,7 @@ impl Bundler {
               }
               // The record imports bare a target that has a record of its own, or may.
               ImportKind::Import
-                if crate::hmr::utils::drops_import(module, rec_idx, &pure, scoping) =>
+                if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) =>
               {
                 if !recordless(dep_idx) {
                   required.push(dep_idx);
@@ -591,24 +590,19 @@ impl Bundler {
           continue;
         }
         bypassable.insert(module.id.as_arc_str().clone());
-        later.extend(
-          module
-            .import_records
-            .iter()
-            .filter_map(|rec| match rec.kind {
-              ImportKind::Import | ImportKind::Require => rec.resolved_module,
-              ImportKind::HotAccept | ImportKind::NewUrl => {
-                rec.resolved_module.filter(|&idx| !recordless(idx))
-              }
-              ImportKind::DynamicImport => {
-                if let Some(dep_idx) = rec.resolved_module.filter(|&idx| !recordless(idx)) {
-                  dynamic.push(dep_idx);
-                }
-                None
-              }
-              _ => None,
-            }),
-        );
+        later.extend(module.import_records.iter().filter_map(|rec| match rec.kind {
+          ImportKind::Import | ImportKind::Require => rec.resolved_module,
+          ImportKind::HotAccept | ImportKind::NewUrl => {
+            rec.resolved_module.filter(|&idx| !recordless(idx))
+          }
+          ImportKind::DynamicImport => {
+            if let Some(dep_idx) = rec.resolved_module.filter(|&idx| !recordless(idx)) {
+              dynamic.push(dep_idx);
+            }
+            None
+          }
+          _ => None,
+        }));
       }
       // A route whose native records a page may open and hold defers what only its `import defer`
       // records reach, which its own static imports don't evaluate as the route loads (#696).
@@ -671,7 +665,7 @@ impl Bundler {
               {
                 if deferred_imports.is_some_and(|records| records.contains(&rec_idx)) {
                   route_later.push(dep_idx);
-                } else if crate::hmr::utils::drops_import(module, rec_idx, &pure, scoping) {
+                } else if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) {
                   bypassable.insert(modules[dep_idx].id().as_arc_str().clone());
                   unbound.push(dep_idx);
                 } else {
@@ -731,7 +725,7 @@ impl Bundler {
                   route_later.push(dep_idx);
                 }
                 ImportKind::Import
-                  if crate::hmr::utils::drops_import(module, rec_idx, &pure, scoping) =>
+                  if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) =>
                 {
                   if !recordless(dep_idx) {
                     route_required.push(dep_idx);
@@ -881,9 +875,9 @@ impl Bundler {
       return false;
     };
     snapshot.module_table.modules.iter().filter_map(Module::as_normal).any(|module| {
-      snapshot.index_ecma_ast[module.idx].as_ref().is_some_and(|ast| {
-        !crate::hmr::utils::deferred_records(module, ast.program()).is_empty()
-      })
+      snapshot.index_ecma_ast[module.idx]
+        .as_ref()
+        .is_some_and(|ast| !crate::hmr::utils::deferred_records(module, ast.program()).is_empty())
     })
   }
 

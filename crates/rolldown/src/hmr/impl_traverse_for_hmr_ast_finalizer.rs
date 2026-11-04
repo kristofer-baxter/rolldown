@@ -51,13 +51,18 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
     if let ast::AssignmentTargetProperty::AssignmentTargetPropertyIdentifier(property) = node
       && let Some(target) = self.imported_assignment_target(&property.binding, ctx)
     {
-      let symbol = ctx.scoping().get_reference(
-        property.binding.reference_id.get().expect("import reference"),
-      ).symbol_id().expect("import symbol");
+      let symbol = ctx
+        .scoping()
+        .get_reference(property.binding.reference_id.get().expect("import reference"))
+        .symbol_id()
+        .expect("import symbol");
       let key = ast::Str::from_str_in(ctx.scoping().symbol_name(symbol), self);
       let value = if let Some(initializer) = property.init.take() {
         ast::AssignmentTargetMaybeDefault::new_assignment_target_with_default(
-          SPAN, target.into(), initializer, self,
+          SPAN,
+          target.into(),
+          initializer,
+          self,
         )
       } else {
         target.into()
@@ -166,7 +171,8 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
     // of them.
     debug_assert!(load_exports_stmts.is_empty());
     // The copies above are the module's star exports, after which its namespace takes no names.
-    if !self.re_export_all_dependencies.is_empty()
+    if self.runtime_module_semantics
+      && !self.re_export_all_dependencies.is_empty()
       && matches!(self.exports_kind, rolldown_common::ExportsKind::Esm)
     {
       dependencies_init_fn_stmts.push(self.create_star_namespace_completion_stmt());
@@ -229,11 +235,7 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
                 self,
               ),
               None,
-              Some(Expression::new_member_access_expr(
-                CJS_ROLLDOWN_MODULE_REF,
-                "exports",
-                self,
-              )),
+              Some(Expression::new_member_access_expr(CJS_ROLLDOWN_MODULE_REF, "exports", self)),
               false,
               self,
             ),
@@ -257,9 +259,7 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
     try_block.body.extend(cjs_module_locals);
     try_block.body.extend(runtime_module_register);
     try_block.body.extend(dependencies_init_fn_stmts);
-    try_block
-      .body
-      .push(self.create_module_hot_context_initializer_stmt());
+    try_block.body.push(self.create_module_hot_context_initializer_stmt());
     try_block.body.extend(node.body.take_in(self));
 
     node
@@ -323,19 +323,17 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
       None,
       self,
     ));
-    register_factory_args.push(ast::Argument::new_string_literal(
-      SPAN,
-      oxc::ast::ast::Str::from_str_in(
-        if self.exports_kind.is_commonjs() {
-          "cjs"
-        } else {
-          "esm"
-        },
+    if self.runtime_module_semantics {
+      register_factory_args.push(ast::Argument::new_string_literal(
+        SPAN,
+        oxc::ast::ast::Str::from_str_in(
+          if self.exports_kind.is_commonjs() { "cjs" } else { "esm" },
+          self,
+        ),
+        None,
         self,
-      ),
-      None,
-      self,
-    ));
+      ));
+    }
     register_factory_args
       .push(ast::Argument::from(ast::Expression::FunctionExpression(user_code_wrapper)));
     if self.stamp != 0 {
@@ -357,11 +355,7 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
       self,
     );
 
-    node.body.push(ast::Statement::new_expression_statement(
-      SPAN,
-      register_factory_call,
-      self,
-    ));
+    node.body.push(ast::Statement::new_expression_statement(SPAN, register_factory_call, self));
   }
 
   fn enter_call_expression(
@@ -371,7 +365,10 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
   ) {
     self.rewrite_hot_accept_call_deps(node);
     crate::utils::import_options::rewrite_hmr_import_attribute_target(
-      node, self.module, self.modules, self,
+      node,
+      self.module,
+      self.modules,
+      self,
     );
   }
 
@@ -437,6 +434,9 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
     reference: &ast::IdentifierReference<'ast>,
     ctx: &oxc_traverse::TraverseCtx<'ast, ()>,
   ) -> Option<ast::SimpleAssignmentTarget<'ast>> {
+    if !self.runtime_module_semantics {
+      return None;
+    }
     let reference = ctx.scoping().get_reference(reference.reference_id.get()?);
     let binding = self.import_bindings.get(&reference.symbol_id()?)?;
     let expression = format!(

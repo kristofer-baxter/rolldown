@@ -12,9 +12,7 @@ use rolldown_common::{HmrLazyChunkOutput, HmrStampTable};
 use rolldown_error::{BuildResult, ResultExt};
 use rolldown_fs_watcher::{FsWatcher, FsWatcherConfig};
 use rolldown_utils::dashmap::FxDashSet;
-use rustc_hash::FxHashMap;
-#[cfg(feature = "testing")]
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 use tokio::sync::{Mutex, mpsc::unbounded_channel};
 
 use rolldown::{Bundler, BundlerBuilder, BundlerConfig, NormalizedBundlerOptions};
@@ -404,7 +402,7 @@ impl DevEngine {
         proxy_module_id.clone(),
         &client_id,
         &shipped,
-        &Default::default(),
+        &FxHashSet::default(),
         &top_level_evaluated,
         None,
         None,

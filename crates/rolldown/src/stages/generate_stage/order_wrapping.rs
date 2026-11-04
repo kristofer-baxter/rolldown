@@ -44,7 +44,7 @@ const THEN: &str = "then";
 
 #[derive(Clone, Copy)]
 pub(super) struct LiveDynamicImporter {
-  module_idx: ModuleIdx,
+  pub(super) module_idx: ModuleIdx,
   /// The chunk hosting the importer, i.e. where the rewritten call site would carry the trigger.
   /// `None` means the importer has no chunk of its own, so it cannot carry one.
   pub(super) trigger_chunk: Option<ChunkIdx>,
@@ -130,15 +130,13 @@ fn statement_has_no_local_wrapper_body(stmt: &Statement) -> bool {
     return true;
   }
   match stmt {
-    Statement::FunctionDeclaration(_) => true,
+    Statement::FunctionDeclaration(_) | Statement::ExportNamedDeclaration(_) => true,
     Statement::ExportDefaultDeclaration(export) => {
       matches!(export.declaration, ExportDefaultDeclarationKind::FunctionDeclaration(_))
     }
-    Statement::ExportDeclaration(export) => match &export.declaration {
-      Declaration::FunctionDeclaration(_) => true,
-      _ => false,
-    },
-    Statement::ExportNamedDeclaration(_) => true,
+    Statement::ExportDeclaration(export) => {
+      matches!(&export.declaration, Declaration::FunctionDeclaration(_))
+    }
     _ => false,
   }
 }
@@ -241,7 +239,9 @@ pub(super) fn consumer_local_reexport_plan(
       };
       if ast.program().body.is_empty()
         || !ast.program().body.iter().enumerate().all(|(stmt_idx, stmt)| {
-          !meta.stmt_info_included.has_bit(StmtInfoIdx::from(stmt_idx + 1))
+          (declared_pass
+            && input.route_declared_barrels
+            && !meta.stmt_info_included.has_bit(StmtInfoIdx::from(stmt_idx + 1)))
             || statement_is_direct_reexport(stmt)
         })
       {
@@ -708,7 +708,9 @@ impl GenerateStage<'_> {
   /// for it. A build without code splitting keeps the shared wrapper: its inlined `import()` calls
   /// the wrapper and its chunk placement doesn't reach the leaves through a route.
   pub(super) fn routes_declared_side_effect_free_barrels(&self) -> bool {
-    self.options.experimental.is_lazy_barrel_enabled() && !self.options.code_splitting.is_disabled()
+    crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+      && self.options.experimental.is_lazy_barrel_enabled()
+      && !self.options.code_splitting.is_disabled()
   }
 
   /// Returns whether the chunk topology changed.
@@ -782,15 +784,16 @@ impl GenerateStage<'_> {
 
     let mut output =
       OrderLoweringOutput { symbols: &mut self.link_output.symbol_db, state: order_state };
+    let async_helpers = Some([
+      self.link_output.runtime.resolve_symbol("__startAsync"),
+      self.link_output.runtime.resolve_symbol("__finishAsync"),
+      self.link_output.runtime.resolve_symbol("__esmAsync"),
+    ]);
     lower_order_state(
       &input,
       &mut output,
       runtime_helper,
-      [
-        self.link_output.runtime.resolve_symbol("__startAsync"),
-        self.link_output.runtime.resolve_symbol("__finishAsync"),
-        self.link_output.runtime.resolve_symbol("__esmAsync"),
-      ],
+      async_helpers,
       code_splitting_disabled,
       &consumer_local_plan,
     );
@@ -1196,9 +1199,8 @@ impl GenerateStage<'_> {
           if let Some(flag) =
             self.link_output.metas[canonical_ref.owner].temporal_symbols.get(&canonical_ref)
           {
-            let native_owner = self.link_output.module_table[canonical_ref.owner]
-              .as_normal()
-              .filter(|owner| {
+            let native_owner =
+              self.link_output.module_table[canonical_ref.owner].as_normal().filter(|owner| {
                 owner.idx != entry_module_idx
                   && crate::utils::native_records::has_native_namespace(
                     self.options,
@@ -1664,7 +1666,7 @@ fn lower_order_state(
   input: &OrderLoweringInput<'_>,
   output: &mut OrderLoweringOutput<'_>,
   runtime_helper: RuntimeHelper,
-  async_helpers: [SymbolRef; 3],
+  async_helpers: Option<[SymbolRef; 3]>,
   code_splitting_disabled: bool,
   consumer_local_plan: &ConsumerLocalReexportPlan,
 ) {
@@ -1679,10 +1681,11 @@ fn lower_order_state(
     let wrapper_ref = output
       .symbols
       .create_facade_root_symbol_ref(module_idx, &concat_string!("init_", module.repr_name));
-    let referenced_symbols = if input.linking[module_idx].is_tla_or_contains_tla_dependency {
-      async_helpers.to_vec()
-    } else {
-      vec![]
+    let referenced_symbols = match async_helpers {
+      Some(helpers) if input.linking[module_idx].is_tla_or_contains_tla_dependency => {
+        helpers.to_vec()
+      }
+      _ => vec![],
     };
     output.state.insert_order_wrapper(module_idx, wrapper_ref, runtime_helper, referenced_symbols);
     if order_wrapper_is_reexport_transparent(

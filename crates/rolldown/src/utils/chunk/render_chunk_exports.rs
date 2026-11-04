@@ -23,7 +23,7 @@ use crate::{stages::link_stage::LinkStageOutput, types::generator::GenerateConte
 
 /// Whether a static `import` or dynamic `import()` of a module that the graph reaches imports
 /// `module_idx` (#660, #821).
-pub(crate) fn is_imported_by_static_or_dynamic_import(
+pub fn is_imported_by_static_or_dynamic_import(
   link_output: &LinkStageOutput,
   module_idx: ModuleIdx,
 ) -> bool {
@@ -36,7 +36,7 @@ pub(crate) fn is_imported_by_static_or_dynamic_import(
 /// reaches as they evaluate, or leave it to its first `require`, as [`render_wrapped_entry_chunk`]
 /// renders its record, by the module's stable id. A page that loaded the output evaluated each
 /// such module then, which no patch repeats (#660).
-pub(crate) fn commonjs_evaluations(
+pub fn commonjs_evaluations(
   link_output: &LinkStageOutput,
   options: &NormalizedBundlerOptions,
 ) -> BTreeMap<String, bool> {

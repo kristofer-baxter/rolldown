@@ -7,8 +7,32 @@ source: crates/rolldown_testing/src/integration_test.rs
 
 ```js
 import assert from "node:assert";
+// HIDDEN [\0rolldown/runtime.js]
 // main.js
-import("./target.js").then((target) => {
+__withImportOptions({}, () => import("./target.js"), false).then((target) => {
+	assert.strictEqual(target.value, 42);
+});
+const marker = /* @__PURE__ */ new Error("with-getter");
+__withImportOptions({ get with() {
+	throw marker;
+} }, () => import("./target.js"), false).then(() => assert.fail("expected getter rejection"), (err) => assert.strictEqual(err, marker));
+const inheritedMarker = /* @__PURE__ */ new Error("inherited-with-getter");
+let inheritedRejection;
+let explicitEmptyWith;
+Object.defineProperty(Object.prototype, "with", {
+	configurable: true,
+	get() {
+		throw inheritedMarker;
+	}
+});
+try {
+	inheritedRejection = __withImportOptions({}, () => import("./target.js"), false);
+	explicitEmptyWith = import("./target.js");
+} finally {
+	delete Object.prototype.with;
+}
+inheritedRejection.then(() => assert.fail("expected inherited getter rejection"), (err) => assert.strictEqual(err, inheritedMarker));
+explicitEmptyWith.then((target) => {
 	assert.strictEqual(target.value, 42);
 });
 
@@ -34,7 +58,30 @@ export { value };
 let node_assert = require("node:assert");
 node_assert = __toESM(node_assert);
 // main.js
-Promise.resolve().then(() => require("./target.js")).then((target) => {
+__withImportOptions({}, () => Promise.resolve().then(() => require("./target.js")), false).then((target) => {
+	node_assert.default.strictEqual(target.value, 42);
+});
+const marker = /* @__PURE__ */ new Error("with-getter");
+__withImportOptions({ get with() {
+	throw marker;
+} }, () => Promise.resolve().then(() => require("./target.js")), false).then(() => node_assert.default.fail("expected getter rejection"), (err) => node_assert.default.strictEqual(err, marker));
+const inheritedMarker = /* @__PURE__ */ new Error("inherited-with-getter");
+let inheritedRejection;
+let explicitEmptyWith;
+Object.defineProperty(Object.prototype, "with", {
+	configurable: true,
+	get() {
+		throw inheritedMarker;
+	}
+});
+try {
+	inheritedRejection = __withImportOptions({}, () => Promise.resolve().then(() => require("./target.js")), false);
+	explicitEmptyWith = Promise.resolve().then(() => require("./target.js"));
+} finally {
+	delete Object.prototype.with;
+}
+inheritedRejection.then(() => node_assert.default.fail("expected inherited getter rejection"), (err) => node_assert.default.strictEqual(err, inheritedMarker));
+explicitEmptyWith.then((target) => {
 	node_assert.default.strictEqual(target.value, 42);
 });
 

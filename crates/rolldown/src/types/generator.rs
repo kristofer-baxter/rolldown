@@ -49,9 +49,7 @@ pub struct GenerateContext<'a> {
   pub resolved_paths: Option<&'a PathsOutputOption>,
   pub ast_table: Option<&'a crate::type_alias::IndexEcmaAst>,
   pub final_esm_init_metadata: Option<
-    &'a crate::stages::generate_stage::Sealed<
-      crate::stages::generate_stage::FinalEsmInitMetadata,
-    >,
+    &'a crate::stages::generate_stage::Sealed<crate::stages::generate_stage::FinalEsmInitMetadata>,
   >,
   /// `experimentalInlineCommonChunks` decisions: which chunks are records, who carries and reads
   /// them, and the bridge names.

@@ -238,7 +238,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       fs,
       plugin_driver,
       meta,
-      deferred_parse_errors: Default::default(),
+      deferred_parse_errors: std::sync::Mutex::default(),
       deferred_resolution_targets,
       compact_module_arenas,
     });
@@ -612,7 +612,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
               .filter(|r| r.kind == ImportKind::NewUrl)
               .filter_map(|rec| {
                 let dep_idx = rec.resolved_module?;
-                let dep_mod = self.cache.get_snapshot().module_table.modules.get(dep_idx)?.as_normal()?;
+                let dep_mod =
+                  self.cache.get_snapshot().module_table.modules.get(dep_idx)?.as_normal()?;
                 Some((dep_mod.id.clone(), dep_idx))
               })
               .collect()
@@ -1021,7 +1022,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       && errors.len() == module_task_errors
       && self.unreached(self.failed_tasks(), &user_defined_entry_ids);
 
-    if errors.is_empty() {
+    if errors.is_empty()
+      && crate::utils::native_records::runtime_module_semantics_enabled(
+        &self.shared_context.options,
+      )
+    {
       // Keep the recovery scanner's large future out of every caller's build future.
       match Box::pin(self.isolate_dynamic_parse_errors(&user_defined_entry_ids)).await {
         Ok(replaced) => {
@@ -1302,15 +1307,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           }
         }
       };
-      if !self.cache.barrel_state.resolved_barrel_modules.contains_key(&module.idx) {
-        for rec in module
-          .import_records
-          .iter()
-          .filter(|rec| rec.meta.contains(ImportRecordMeta::IsExportStar))
-        {
-          visit_target(rec.resolved_module);
-        }
-      } else {
+      if self.cache.barrel_state.resolved_barrel_modules.contains_key(&module.idx) {
         let targets = self.star_targets(module);
         let star_count = module
           .import_records
@@ -1322,6 +1319,14 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         }
         for target in targets {
           visit_target(Some(target));
+        }
+      } else {
+        for rec in module
+          .import_records
+          .iter()
+          .filter(|rec| rec.meta.contains(ImportRecordMeta::IsExportStar))
+        {
+          visit_target(rec.resolved_module);
         }
       }
       if unknown {
@@ -1463,13 +1468,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
                     }
                 })
               })
-              && self
-                .intermediate_normal_modules
-                .importers
-                .get(idx)
-                .is_none_or(|importers| {
-                  importers.iter().all(|imp| !self.cache.export_star_modules.contains(&imp.importer_idx))
-                })
+              && self.intermediate_normal_modules.importers.get(idx).is_none_or(|importers| {
+                importers
+                  .iter()
+                  .all(|imp| !self.cache.export_star_modules.contains(&imp.importer_idx))
+              })
           })
         });
       can_check_only_scanned.then(|| {
@@ -1546,12 +1549,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
                 .collect(),
             )
           }
-          ScannedExportResolution::Circular(owner, exported) => {
-            BuildDiagnostic::circular_reexport(
-              self.scanned_normal_module(owner).expect("circular export exists").id.to_string(),
-              exported,
-            )
-          }
+          ScannedExportResolution::Circular(owner, exported) => BuildDiagnostic::circular_reexport(
+            self.scanned_normal_module(owner).expect("circular export exists").id.to_string(),
+            exported,
+          ),
           ScannedExportResolution::Missing => {
             // Linking binds a missing export to `undefined` instead of failing the importer.
             if self.shared_context.options.shim_missing_exports {
@@ -1578,6 +1579,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
   /// A parse failure belongs to module loading, not evaluation. Replace the
   /// dynamic root's entire invalid static closure before linking, otherwise an
   /// earlier valid sibling could run before the failed leaf throws.
+  #[expect(clippy::too_many_lines)]
   async fn isolate_dynamic_parse_errors(
     &mut self,
     entries: &FxHashSet<ModuleIdx>,
@@ -1610,7 +1612,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       .map(|(&idx, diagnostics)| {
         // Messages become output bytes: stabilize paths against the build root,
         // never the compiling process's directory.
-        (idx, diagnostics[0].to_message_with(&DiagnosticOptions { cwd: self.shared_context.options.cwd.clone() }))
+        (
+          idx,
+          diagnostics[0]
+            .to_message_with(&DiagnosticOptions { cwd: self.shared_context.options.cwd.clone() }),
+        )
       })
       .collect::<FxHashMap<_, _>>();
     let loading: FxHashSet<_> = failures.keys().copied().collect();

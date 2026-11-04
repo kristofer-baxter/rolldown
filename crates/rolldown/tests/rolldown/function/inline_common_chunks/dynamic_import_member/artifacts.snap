@@ -6,7 +6,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## a.js
 
 ```js
-import { i as __share_require, n as __share, r as __share_export, t as __esmMin } from "./rolldown-runtime.js";
+import { a as __share_export, i as __share, n as __esmMin, o as __share_require, r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
 __share("shared-ZmCA4nrZ", ((exports) => {
 	// shared.js
 	var s, load;
@@ -26,10 +26,13 @@ var share_shared = __share_require("shared-ZmCA4nrZ");
 // a.js
 var m;
 function init_a() {
-	return (init_a = __esmMin((async () => {
+	return (init_a = __esmAsync((() => {
+		var __asyncDependencies0 = [];
 		share_shared.t();
-		m = await (0, share_shared.n)();
-		globalThis.events.push("A " + share_shared.r + m.l);
+		return __finishAsync(__asyncDependencies0, async () => {
+			m = await (0, share_shared.n)();
+			globalThis.events.push("A " + share_shared.r + m.l);
+		});
 	})))();
 }
 await init_a();
@@ -39,7 +42,7 @@ await init_a();
 ## b.js
 
 ```js
-import { i as __share_require, n as __share, r as __share_export, t as __esmMin } from "./rolldown-runtime.js";
+import { a as __share_export, i as __share, n as __esmMin, o as __share_require } from "./rolldown-runtime.js";
 __share("shared-ZmCA4nrZ", ((exports) => {
 	// shared.js
 	var s, load;
@@ -70,7 +73,7 @@ init_b();
 ## lazy.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { n as __esmMin } from "./rolldown-runtime.js";
 // lazy.js
 var l;
 function init_lazy() {
@@ -87,6 +90,6 @@ export { l };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __share_require as i, __share as n, __share_export as r, __esmMin as t };
+export { __share_export as a, __share as i, __esmMin as n, __share_require as o, __finishAsync as r, __startAsync as s, __esmAsync as t };
 
 ```

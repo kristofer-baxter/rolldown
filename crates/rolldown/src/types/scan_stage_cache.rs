@@ -62,8 +62,7 @@ pub struct CachedChunkSourcemap {
   pub pre_redacted: bool,
 }
 
-pub type SourcemapContentFilter =
-  Arc<dyn Fn(&str, &str) -> anyhow::Result<bool> + Send + Sync>;
+pub type SourcemapContentFilter = Arc<dyn Fn(&str, &str) -> anyhow::Result<bool> + Send + Sync>;
 
 #[derive(Clone)]
 pub struct SourcemapContentFilterHolder(pub SourcemapContentFilter);
@@ -211,14 +210,16 @@ impl RevisionScanCache {
       .map(|m| {
         m.filename.len()
           + m.json.len()
-          + m.post_minify_content.as_ref().map_or(0, |c| c.len())
-          + m.pre_minify_placeholders.iter().map(|s| s.len()).sum::<usize>()
-          + m.names.iter().map(|s| s.len()).sum::<usize>()
-          + m.original_file_names.iter().map(|s| s.len()).sum::<usize>()
+          + m.post_minify_content.as_ref().map_or(0, arcstr::ArcStr::len)
+          + m.pre_minify_placeholders.iter().map(String::len).sum::<usize>()
+          + m.names.iter().map(String::len).sum::<usize>()
+          + m.original_file_names.iter().map(String::len).sum::<usize>()
       })
       .sum();
-    let multi_module_bytes: usize =
-      self.0.cached_multi_module_chunks.values().map(multi_module_chunk_bytes).sum();
+    let mut multi_module_bytes: usize = 0;
+    for chunk in self.0.cached_multi_module_chunks.values() {
+      multi_module_bytes = multi_module_bytes.saturating_add(multi_module_chunk_bytes(chunk));
+    }
     finalized_bytes.saturating_add(sourcemap_bytes).saturating_add(multi_module_bytes)
   }
 
@@ -226,7 +227,11 @@ impl RevisionScanCache {
     self.modules_matching_filter(pattern, |_| true)
   }
 
-  pub fn modules_matching_filter(&self, pattern: &str, filter: impl Fn(&str) -> bool) -> Vec<ArcStr> {
+  pub fn modules_matching_filter(
+    &self,
+    pattern: &str,
+    filter: impl Fn(&str) -> bool,
+  ) -> Vec<ArcStr> {
     self
       .0
       .snapshot()
@@ -303,8 +308,15 @@ impl RevisionScanCache {
   }
 
   pub fn source_bytes(&self) -> usize {
-    self.0.snapshot().map_or(0, |snapshot| snapshot.module_table.modules.iter()
-      .filter_map(Module::as_normal).map(|module| module.ecma_view.source.len()).sum())
+    self.0.snapshot().map_or(0, |snapshot| {
+      snapshot
+        .module_table
+        .modules
+        .iter()
+        .filter_map(Module::as_normal)
+        .map(|module| module.ecma_view.source.len())
+        .sum()
+    })
   }
 
   pub fn module_count(&self) -> usize {
@@ -467,6 +479,7 @@ pub type CachedLazyChunk = (
   Option<String>,
 );
 
+#[expect(clippy::struct_excessive_bools, clippy::type_complexity)]
 #[derive(Default, Debug)]
 pub struct ScanStageCache {
   snapshot: Option<NormalizedScanStageOutput>,
@@ -591,10 +604,10 @@ impl ScanStageCache {
     // Pages that loaded an earlier revision's records keep them past a full scan.
     let late_records = self.late_records;
     *self = Self {
+      late_records,
+      sourcemap_content_filter,
       omit_reused_chunk_bytes,
       keep_unused_capacity,
-      sourcemap_content_filter,
-      late_records,
       ..Self::default()
     };
   }
@@ -707,12 +720,10 @@ impl ScanStageCache {
     }
     let records =
       module.import_records.iter().map(|r| (r.resolved_module, r.kind, r.meta.bits())).collect();
-    let mut named_imports: Vec<_> = module
-      .named_imports
-      .values()
-      .map(|ni| (ni.record_idx, ni.imported.clone()))
-      .collect();
-    named_imports.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1))));
+    let mut named_imports: Vec<_> =
+      module.named_imports.values().map(|ni| (ni.record_idx, ni.imported.clone())).collect();
+    named_imports
+      .sort_by(|a, b| a.0.cmp(&b.0).then_with(|| format!("{:?}", a.1).cmp(&format!("{:?}", b.1))));
     Some((records, named_imports))
   }
 
@@ -927,6 +938,7 @@ impl ScanStageCache {
     importers
   }
 
+  #[expect(clippy::too_many_lines, clippy::items_after_statements)]
   pub fn merge(
     &mut self,
     mut scan_stage_output: ScanStageOutput,
@@ -998,7 +1010,8 @@ impl ScanStageCache {
       || !appended_contiguously
       || modules.iter().any(|(new_idx, new_module)| {
         !new_module.is_normal()
-          || self.module_id_to_idx.get(new_module.id()).map(|v| v.idx()) != Some(*new_idx)
+          || self.module_id_to_idx.get(new_module.id()).copied().map(VisitState::idx)
+            != Some(*new_idx)
       })
       || cache.entry_points.iter().any(|ep| {
         ep.kind.is_dynamic_import()
@@ -1099,7 +1112,9 @@ impl ScanStageCache {
           self.export_star_modules.remove(&new_module_idx);
         }
         self.late_records |= module_loads_late_records(&new_module)
-          || defers_imports(scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref));
+          || defers_imports(
+            scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref),
+          );
         if module_has_revision_url(&new_module) {
           self.revision_url_modules.insert(new_module_idx);
         } else {
@@ -1157,7 +1172,9 @@ impl ScanStageCache {
         self.export_star_modules.remove(&idx);
       }
       self.late_records |= module_loads_late_records(&new_module)
-        || defers_imports(scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref));
+        || defers_imports(
+          scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref),
+        );
       if module_has_revision_url(&new_module) {
         self.revision_url_modules.insert(idx);
       } else {
@@ -1348,22 +1365,23 @@ impl ScanStageCache {
         }) {
           self.export_star_modules.insert(module_idx);
         }
-        self.late_records |= normal_module.import_records.iter().any(|rec| {
-          matches!(
-            rec.kind,
-            rolldown_common::ImportKind::HotAccept | rolldown_common::ImportKind::DynamicImport
-          )
-        }) || build_snapshot.index_ecma_ast.get(module_idx).and_then(Option::as_ref).is_some_and(
-          |ast| {
-            ast.program().body.iter().any(|statement| {
-              matches!(
-                statement,
-                oxc::ast::ast::Statement::ImportDeclaration(import)
-                  if import.phase == Some(oxc::ast::ast::ImportPhase::Defer)
-              )
-            })
-          },
-        );
+        self.late_records |=
+          normal_module.import_records.iter().any(|rec| {
+            matches!(
+              rec.kind,
+              rolldown_common::ImportKind::HotAccept | rolldown_common::ImportKind::DynamicImport
+            )
+          }) || build_snapshot.index_ecma_ast.get(module_idx).and_then(Option::as_ref).is_some_and(
+            |ast| {
+              ast.program().body.iter().any(|statement| {
+                matches!(
+                  statement,
+                  oxc::ast::ast::Statement::ImportDeclaration(import)
+                    if import.phase == Some(oxc::ast::ast::ImportPhase::Defer)
+                )
+              })
+            },
+          );
         {
           let mut rest = normal_module.ecma_view.source.as_str();
           while let Some(pos) = rest.find("/r/") {
@@ -1411,7 +1429,9 @@ impl ScanStageCache {
   /// # Panic
   /// the function will panic if cache is unset
   pub fn create_output(&mut self) -> NormalizedScanStageOutput {
-    use rolldown_utils::rayon::{IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator};
+    use rolldown_utils::rayon::{
+      IntoParallelRefIterator, IntoParallelRefMutIterator, ParallelIterator,
+    };
     self.invalidate_native_relink();
     let cache = self.snapshot.as_mut().unwrap();
     // Only clone the mutated part of symbol_ref_db

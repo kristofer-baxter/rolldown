@@ -26,16 +26,20 @@ export { foo };
 // lib.js
 var foo;
 function init_lib() {
-	return (init_lib = __esmMin((async () => {
-		try {
-			foo = await Promise.resolve("foo");
-		} catch (_e) {}
+	return (init_lib = __esmAsync((() => {
+		return __finishAsync([], async () => {
+			try {
+				foo = await Promise.resolve("foo");
+			} catch (_e) {}
+		});
 	})))();
 }
 // main.js
 function init_main() {
-	return (init_main = __esmMin((async () => {
-		await init_lib();
+	return (init_main = __esmAsync((() => {
+		var __asyncDependencies0 = [];
+		__startAsync(__asyncDependencies0, init_lib());
+		return __finishAsync(__asyncDependencies0, () => {});
 	})))();
 }
 await init_main();
