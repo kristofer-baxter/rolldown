@@ -1893,13 +1893,6 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       if !module.exports_kind.is_commonjs() {
         continue;
       }
-      for rec in &module.import_records {
-        if rec.kind == ImportKind::Require
-          && let Some(target) = rec.resolved_module
-        {
-          link_output.metas[target].required_by_other_module = true;
-        }
-      }
       let mut importers = module
         .ecma_view
         .importers_idx

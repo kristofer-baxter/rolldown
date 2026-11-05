@@ -477,9 +477,6 @@ fn multi_module_chunk_key(
   use std::hash::Hash;
   use xxhash_rust::xxh3::Xxh3;
 
-  if !ctx.chunk.module_groups.is_empty() {
-    return None;
-  }
   let mut normal_modules =
     ctx.chunk.modules.iter().copied().filter_map(|id| ctx.link_output.module_table[id].as_normal());
   // CJS hoists a leading runtime module above the imports, so it must not stand in for one.

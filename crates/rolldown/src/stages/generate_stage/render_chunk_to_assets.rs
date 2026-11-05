@@ -323,7 +323,7 @@ impl GenerateStage<'_> {
       {
         continue;
       }
-      if !chunk.module_groups.is_empty() || !chunk.entry_level_external_module_idx.is_empty() {
+      if !chunk.entry_level_external_module_idx.is_empty() {
         continue;
       }
       let kind_key = match &chunk.kind {

@@ -2,8 +2,8 @@ use std::sync::Arc;
 
 use oxc_index::IndexVec;
 use rolldown_common::{
-  ChunkIdx, ConcatenateWrappedModuleKind, ModuleIdx, ModuleRenderArgs, ModuleRenderOutput,
-  NormalModule, PrependRenderedImport, UsedSymbolRefs,
+  ChunkIdx, ModuleIdx, ModuleRenderArgs, ModuleRenderOutput, NormalModule, PrependRenderedImport,
+  UsedSymbolRefs,
 };
 use rolldown_ecmascript::{EcmaAst, EcmaCompiler, PrintCommentsOptions, PrintOptions};
 use rolldown_error::{BuildResult, Severity};
@@ -25,7 +25,7 @@ use super::{
 impl GenerateStage<'_> {
   pub fn render_normal_module_with(
     options: &rolldown_common::NormalizedBundlerOptions,
-    link_output: &crate::stages::link_stage::LinkStageOutput,
+    _link_output: &crate::stages::link_stage::LinkStageOutput,
     module: &NormalModule,
     ast: &EcmaAst,
   ) -> ModuleRenderOutput {
@@ -34,15 +34,7 @@ impl GenerateStage<'_> {
       rolldown_common::OutputFormat::Iife | rolldown_common::OutputFormat::Umd
     );
     #[expect(clippy::bool_to_int_with_if)]
-    let initial_indent = if needs_extra_indent
-      || !matches!(
-        link_output.metas[module.idx].concatenated_wrapped_module_kind,
-        ConcatenateWrappedModuleKind::None
-      ) {
-      1
-    } else {
-      0
-    };
+    let initial_indent = if needs_extra_indent { 1 } else { 0 };
     // `NormalModule::render` maps no virtual module, but a native cell's load map
     // points at its donor's authored file; print it as `render` would, mapped.
     if options.sourcemap.is_some()
@@ -212,13 +204,8 @@ impl GenerateStage<'_> {
               inline_state: &self.inline_state,
             };
 
-            let concatenated_wrapped_module_kind =
-              ctx.linking_info.concatenated_wrapped_module_kind;
-            let (
-              transferred_import_record,
-              rendered_concatenated_wrapped_module_parts,
-              mut module_diagnostics,
-            ) = ctx.finalize_normal_module(&mut ast, ast_scope);
+            let (transferred_import_record, mut module_diagnostics) =
+              ctx.finalize_normal_module(&mut ast, ast_scope);
             if let Some(callees) = bridge_callees.get(&chunk_idx) {
               module_diagnostics.extend(bare_bridge_callee(
                 ast.program(),
@@ -239,13 +226,8 @@ impl GenerateStage<'_> {
               (Some(rendered), None)
             };
 
-            let payload = (!transferred_import_record.is_empty()
-              || !matches!(concatenated_wrapped_module_kind, ConcatenateWrappedModuleKind::None))
-            .then_some((
-              idx,
-              transferred_import_record,
-              rendered_concatenated_wrapped_module_parts,
-            ));
+            let payload =
+              (!transferred_import_record.is_empty()).then_some((idx, transferred_import_record));
             Some((idx, payload, module_diagnostics, rendered, deferred_ast, None))
           })
           .collect::<Vec<_>>();
@@ -377,12 +359,8 @@ impl GenerateStage<'_> {
             inline_state: &self.inline_state,
           };
 
-          let concatenated_wrapped_module_kind = ctx.linking_info.concatenated_wrapped_module_kind;
-          let (
-            transferred_import_record,
-            rendered_concatenated_wrapped_module_parts,
-            mut module_diagnostics,
-          ) = ctx.finalize_normal_module(&mut ast, ast_scope);
+          let (transferred_import_record, mut module_diagnostics) =
+            ctx.finalize_normal_module(&mut ast, ast_scope);
           if let Some(callees) = bridge_callees.get(&chunk_idx) {
             module_diagnostics.extend(bare_bridge_callee(
               ast.program(),
@@ -393,9 +371,8 @@ impl GenerateStage<'_> {
 
           let has_module_error =
             module_diagnostics.iter().any(|diagnostic| diagnostic.severity() == Severity::Error);
-          let payload = (!transferred_import_record.is_empty()
-            || !matches!(concatenated_wrapped_module_kind, ConcatenateWrappedModuleKind::None))
-          .then_some((idx, transferred_import_record, rendered_concatenated_wrapped_module_parts));
+          let payload =
+            (!transferred_import_record.is_empty()).then_some((idx, transferred_import_record));
           if !has_module_error
             && !chunk.insert_map.contains_key(&idx)
             && payload.is_none()
@@ -476,18 +453,12 @@ impl GenerateStage<'_> {
       if let Some(ast) = deferred_ast {
         deferred_asts.push((idx, ast));
       }
-      let Some((idx, transferred_import_record, rendered_concatenated_module_parts)) = payload
-      else {
+      let Some((idx, transferred_import_record)) = payload else {
         continue;
       };
       for (rec_idx, rendered_string) in transferred_import_record {
         normalized_transfer_parts_rendered_maps.insert((idx, rec_idx), rendered_string);
       }
-      let chunk_idx = chunk_graph.module_to_chunk[idx].expect("should have chunk idx");
-      let chunk = &mut chunk_graph.chunk_table[chunk_idx];
-      chunk
-        .module_idx_to_render_concatenated_module
-        .insert(idx, rendered_concatenated_module_parts);
     }
 
     let has_error = diagnostics.iter().any(|diagnostic| diagnostic.severity() == Severity::Error);
@@ -656,7 +627,6 @@ impl GenerateStage<'_> {
       || chunk.remove_map.contains_key(&module_idx)
       || !meta.shimmed_missing_exports.is_empty()
       || !meta.deferred_imports.is_empty()
-      || !matches!(meta.concatenated_wrapped_module_kind, ConcatenateWrappedModuleKind::None)
       || !order_state.order_cjs_carriers_for_importee(module_idx).is_empty()
     {
       return None;

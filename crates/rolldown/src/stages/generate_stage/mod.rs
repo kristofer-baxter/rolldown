@@ -667,7 +667,7 @@ impl<'a> GenerateStage<'a> {
         unreachable_modules: &self.link_output.unreachable_modules,
         inline_state: &self.inline_state,
       };
-      let (_, _, module_diagnostics) = ctx.finalize_normal_module(&mut ast, ast_scope);
+      let (_, module_diagnostics) = ctx.finalize_normal_module(&mut ast, ast_scope);
       let has_module_error = module_diagnostics
         .iter()
         .any(|diagnostic| diagnostic.severity() == rolldown_error::Severity::Error);
@@ -1453,7 +1453,6 @@ impl<'a> GenerateStage<'a> {
     if chunk.modules.len() != 1
       || !chunk.insert_map.is_empty()
       || !chunk.remove_map.is_empty()
-      || !chunk.module_groups.is_empty()
       || chunk_graph.post_chunk_optimization_operations.contains_key(&chunk_idx)
     {
       return (None, false, Vec::new());
@@ -1648,7 +1647,6 @@ impl<'a> GenerateStage<'a> {
       meta.wrap_kind() as u8,
       meta.wrapper_ref.map(sym_id_key),
       meta.wrapper_stmt_info.map(rolldown_common::StmtInfoIdx::raw),
-      meta.concatenated_wrapped_module_kind as u8,
       meta.is_tla_or_contains_tla_dependency,
       meta.has_dynamic_exports,
       meta.module_namespace_included_reason.bits(),

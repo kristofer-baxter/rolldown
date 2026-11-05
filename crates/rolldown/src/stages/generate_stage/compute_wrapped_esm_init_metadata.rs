@@ -5,10 +5,9 @@ use std::ops::Deref;
 use oxc::ast::ast::{Declaration, Statement};
 use oxc_index::IndexVec;
 use rolldown_common::{
-  ChunkIdx, ConcatenateWrappedModuleKind, ConstExportMeta, ImportKind, ImportRecordIdx,
-  ImportRecordMeta, IndexModules, InlineConstMode, Module, ModuleIdx,
-  ModuleNamespaceIncludedReason, NormalModule, StmtInfoIdx, StmtInfos, SymbolRef, SymbolRefDb,
-  UsedSymbolRefsView, WrapKind,
+  ChunkIdx, ConstExportMeta, ImportKind, ImportRecordIdx, ImportRecordMeta, IndexModules,
+  InlineConstMode, Module, ModuleIdx, ModuleNamespaceIncludedReason, NormalModule, StmtInfoIdx,
+  StmtInfos, SymbolRef, SymbolRefDb, UsedSymbolRefsView, WrapKind,
 };
 use rolldown_ecmascript::EcmaAst;
 use rolldown_utils::{index_vec_ext::IndexVecRefExt, rayon::ParallelIterator as _};
@@ -240,12 +239,6 @@ impl EsmInitTargetContext<'_> {
 /// closure.
 fn init_is_noop(meta: &LinkingMetadata, ast: Option<&EcmaAst>, keep_names: bool) -> bool {
   if !meta.temporal_symbols.is_empty() {
-    return false;
-  }
-  // Restrict to standalone wrappers. In a concatenated group the shared `init_*` runs the
-  // whole group's closure, so this module's own empty body wouldn't prove the call is a
-  // no-op (a sibling could carry content).
-  if !matches!(meta.concatenated_wrapped_module_kind, ConcatenateWrappedModuleKind::None) {
     return false;
   }
   // Shimmed missing exports emit `<name> = void 0;` assignments *into* the closure

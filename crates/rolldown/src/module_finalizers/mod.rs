@@ -12,11 +12,10 @@ use oxc::{
   span::{GetSpan, GetSpanMut, SPAN, Span},
 };
 use rolldown_common::{
-  AstScopes, Chunk, ChunkIdx, ChunkKind, ConcatenateWrappedModuleKind, ExportsKind,
-  ImportRecordIdx, ImportRecordMeta, InlineConstMode, MemberExprProp, MemberExprRefResolution,
-  Module, ModuleIdx, ModuleNamespaceIncludedReason, ModuleType, NamespaceAlias, NormalModule,
-  OutputExports, OutputFormat, Platform, RenderedConcatenatedModuleParts, Specifier, SymbolRef,
-  WrapKind,
+  AstScopes, Chunk, ChunkIdx, ChunkKind, ExportsKind, ImportRecordIdx, ImportRecordMeta,
+  InlineConstMode, MemberExprProp, MemberExprRefResolution, Module, ModuleIdx,
+  ModuleNamespaceIncludedReason, ModuleType, NamespaceAlias, NormalModule, OutputExports,
+  OutputFormat, Platform, Specifier, SymbolRef, WrapKind,
 };
 use rolldown_ecmascript::ToSourceString;
 use rolldown_ecmascript_utils::{
@@ -118,7 +117,6 @@ pub struct ScopeHoistingFinalizer<'me, 'ast: 'me> {
   pub needs_hosted_top_level_binding: bool,
   pub module_namespace_included: bool,
   pub transferred_import_record: FxIndexMap<ImportRecordIdx, String>,
-  pub rendered_concatenated_wrapped_module_parts: RenderedConcatenatedModuleParts,
   pub json_module_inlined_prop: Option<Box<FxHashMap<SymbolId, ast::Expression<'ast>>>>,
   /// Reference ids of `import.meta.ROLLDOWN_FILE_URL_*` accesses that no emitted file matches.
   ///
@@ -770,11 +768,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       // Replace the import statement with `init_foo()` if `ImportDeclaration` is not a plain import
       // or the importee have side effects.
       WrapKind::Esm => {
-        if matches!(
-          importee_linking_info.concatenated_wrapped_module_kind,
-          ConcatenateWrappedModuleKind::Inner
-        ) || self.generated_init_esm_importee_ids.contains(&importee.idx)
-        {
+        if self.generated_init_esm_importee_ids.contains(&importee.idx) {
           return true;
         }
         self.generated_init_esm_importee_ids.insert(importee.idx);
@@ -2662,12 +2656,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                   }
 
                   if matches!(importee_linking_info.wrap_kind(), WrapKind::Esm)
-                  && !consumer_local_route
-                // If it is a inner concatenated module, we should not call its wrapper here
-                  && !matches!(
-                    importee_linking_info.concatenated_wrapped_module_kind,
-                    ConcatenateWrappedModuleKind::Inner
-                  ) {
+                    && !consumer_local_route
+                  {
                     let (wrapper_ref, _) = self.finalized_expr_for_symbol_ref(
                       importee_linking_info.wrapper_ref.unwrap(),
                       false,
@@ -2724,6 +2714,39 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                       // demand, we should skip generate related `__reExport` statements
                       // See: https://github.com/rolldown/rolldown/blob/60fc81ada3955ce84b38a5edbb33a169d1f89f15/crates/rolldown/src/stages/link_stage/reference_needed_symbols.rs?plain=1#L148-L150
                       if !self.module_namespace_included {
+                        // No name is used, but side effects must still run: `require_foo()`
+                        if importee.side_effects.has_side_effects() {
+                          let (importee_wrapper_ref_expr, hint) = self
+                            .finalized_expr_for_symbol_ref(
+                              importee_linking_info.wrapper_ref.unwrap(),
+                              false,
+                              false,
+                            );
+                          // For a CJS entry in another chunk, the expression is already its
+                          // `module.exports`, not the `require_foo` wrapper, so do not call it
+                          let require_expr =
+                            if hint.contains(FinalizedExprProcessHint::FromCjsWrapKindEntry) {
+                              importee_wrapper_ref_expr
+                            } else {
+                              ast::Expression::new_call_expression(
+                                SPAN,
+                                importee_wrapper_ref_expr,
+                                None,
+                                [],
+                                false,
+                                self,
+                              )
+                            };
+                          let stmt =
+                            ast::Statement::new_expression_statement(SPAN, require_expr, self);
+                          if self.transferred_import_record.contains_key(&rec_idx) {
+                            self
+                              .transferred_import_record
+                              .insert(rec_idx, stmt.to_source_string());
+                          } else {
+                            program.body.push(stmt);
+                          }
+                        }
                         return;
                       }
 
