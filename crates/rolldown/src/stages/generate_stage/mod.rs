@@ -439,7 +439,7 @@ impl<'a> GenerateStage<'a> {
     });
 
     let rendered_modules = self.finalize_modules(
-      &mut chunk_graph,
+      &chunk_graph,
       &resolved_file_urls,
       &used_symbol_refs,
       &order_state,

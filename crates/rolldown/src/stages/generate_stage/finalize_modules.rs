@@ -1,9 +1,7 @@
-use std::sync::Arc;
-
+use oxc::allocator::CloneIn as _;
 use oxc_index::IndexVec;
 use rolldown_common::{
-  ChunkIdx, ModuleIdx, ModuleRenderArgs, ModuleRenderOutput, NormalModule, PrependRenderedImport,
-  UsedSymbolRefs,
+  ChunkIdx, ModuleIdx, ModuleRenderArgs, ModuleRenderOutput, NormalModule, UsedSymbolRefs,
 };
 use rolldown_ecmascript::{EcmaAst, EcmaCompiler, PrintCommentsOptions, PrintOptions};
 use rolldown_error::{BuildResult, Severity};
@@ -120,7 +118,7 @@ impl GenerateStage<'_> {
   #[tracing::instrument(level = "debug", skip_all)]
   pub(super) fn finalize_modules(
     &mut self,
-    chunk_graph: &mut ChunkGraph,
+    chunk_graph: &ChunkGraph,
     resolved_file_urls: &ResolvedFileUrls,
     used_symbol_refs: &UsedSymbolRefs,
     order_state: &super::order_wrap_state::OrderWrapState,
@@ -417,7 +415,7 @@ impl GenerateStage<'_> {
       cache.current_module_finalize_digests.clear();
       cache.current_module_was_hit.clear();
     }
-    let mut normalized_transfer_parts_rendered_maps = FxHashMap::default();
+    let mut transferred_imports = FxHashMap::default();
     let mut diagnostics = vec![];
     let mut rendered_modules: IndexVec<ModuleIdx, Option<ModuleRenderOutput>> =
       IndexVec::from_vec((0..self.link_output.module_table.modules.len()).map(|_| None).collect());
@@ -456,9 +454,9 @@ impl GenerateStage<'_> {
       let Some((idx, transferred_import_record)) = payload else {
         continue;
       };
-      for (rec_idx, rendered_string) in transferred_import_record {
-        normalized_transfer_parts_rendered_maps.insert((idx, rec_idx), rendered_string);
-      }
+      transferred_imports.extend(
+        transferred_import_record.into_iter().map(|(rec_idx, fragment)| ((idx, rec_idx), fragment)),
+      );
     }
 
     let has_error = diagnostics.iter().any(|diagnostic| diagnostic.severity() == Severity::Error);
@@ -483,27 +481,26 @@ impl GenerateStage<'_> {
       crate::utils::defer_drop::spawn_drop(dead_ast);
     }
 
-    if !normalized_transfer_parts_rendered_maps.is_empty() {
-      for chunk in chunk_graph.chunk_table.iter_mut() {
-        for (module_idx, recs) in &chunk.insert_map {
-          let Some(module) = self.link_output.module_table[*module_idx].as_normal_mut() else {
-            continue;
-          };
-          for (importer_idx, rec_idx) in recs {
-            if let Some(rendered_string) =
-              normalized_transfer_parts_rendered_maps.get(&(*importer_idx, *rec_idx))
-            {
-              module
-                .ecma_view
-                .mutations
-                .push(Arc::new(PrependRenderedImport { intro: rendered_string.clone() }));
-            }
-          }
-        }
+    // Runs after every finalizer (including `finalize_inline_copies` above): the fragments
+    // already carry canonical names, so the recipients are never re-finalized, and donor IDs
+    // never meet recipient side tables. See internal-docs/ast-mutation/implementation.md.
+    for (idx, mut ast) in deferred_asts {
+      if !transferred_imports.is_empty()
+        && let Some(chunk_idx) = chunk_graph.module_to_chunk[idx]
+        && let Some(recs) = chunk_graph.chunk_table[chunk_idx].insert_map.get(&idx)
+      {
+        // Prepend in `insert_map` order.
+        ast.program.with_mut(|fields| {
+          fields.program.body.splice(
+            0..0,
+            recs
+              .iter()
+              .filter_map(|key| transferred_imports.get(key))
+              .flat_map(|fragment| fragment.program().body.iter())
+              .map(|stmt| stmt.clone_in(fields.allocator)),
+          );
+        });
       }
-    }
-
-    for (idx, ast) in deferred_asts {
       if let Some(module) = self.link_output.module_table[idx].as_normal() {
         rendered_modules[idx] = Some(self.render_normal_module(module, &ast));
       }

@@ -5,8 +5,8 @@ use rolldown_common::{
 };
 
 pub type FinalizerMutableFields = (
-  FxIndexMap<ImportRecordIdx, String>, // transferred_import_record
-  Vec<BuildDiagnostic>,                // diagnostics
+  Vec<(ImportRecordIdx, EcmaAst)>, // transferred_import_record
+  Vec<BuildDiagnostic>,            // diagnostics
 );
 
 use oxc::ast::builder::AstBuilder;
@@ -134,14 +134,6 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
 
       let need_inline_json_prop = self.linking_info.inlines_json_keys(self.module);
 
-      let transferred_import_record = self
-        .chunk
-        .remove_map
-        .get(&self.idx)
-        .cloned()
-        .map(|idxs| idxs.into_iter().map(|idx| (idx, String::new())).collect::<FxIndexMap<_, _>>())
-        .unwrap_or_default();
-
       let temporal_bindings: FxHashMap<_, _> = self
         .linking_info
         .temporal_symbols
@@ -162,6 +154,7 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
           )
         })
         .collect();
+
       let mut finalizer = ScopeHoistingFinalizer {
         temporal_bindings,
         temporal_declarations,
@@ -179,7 +172,7 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
         top_level_function_names: oxc::allocator::Vec::new_in(&alloc),
         needs_hosted_top_level_binding: false,
         module_namespace_included,
-        transferred_import_record,
+        transferred_import_record: Vec::new(),
         json_module_inlined_prop: need_inline_json_prop.then(|| Box::new(FxHashMap::default())),
         missing_file_reference_ids: FxIndexMap::default(),
         native_enclosing_classes: Vec::new(),
