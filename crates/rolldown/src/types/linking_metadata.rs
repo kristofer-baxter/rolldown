@@ -126,6 +126,9 @@ pub struct LinkingMetadata {
   pub is_included: bool,
   /// Cached result of `reexports_commonjs_property`: 0 = uncomputed, 1 = false, 2 = true.
   pub reexports_commonjs_property_cache: std::sync::atomic::AtomicU8,
+  /// Import targets whose bindings this module observes, shared by bundled HMR finalizers.
+  /// Generation resets the index before any module is finalized.
+  pub bundled_observed_imports: std::sync::OnceLock<FxHashSet<ModuleIdx>>,
   /// Lazy reverse index from `canonical_ref_resolving_namespace(export.symbol_ref)` to the
   /// ordered `(name, export.symbol_ref)` pairs in `sorted_and_non_ambiguous_resolved_exports`
   /// with `!export.came_from_commonjs`.

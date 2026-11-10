@@ -159,6 +159,7 @@ pub fn shrink_link_tables(link_output: &mut LinkStageOutput) {
     meta.load_dependencies = Default::default();
     meta.execution_dependencies = Default::default();
     meta.native_reexport_by_canonical = std::sync::OnceLock::new();
+    meta.bundled_observed_imports = std::sync::OnceLock::new();
     meta.resolved_exports.shrink_to_fit();
     meta.sorted_and_non_ambiguous_resolved_exports.shrink_to_fit();
     meta.referenced_symbols_by_entry_point_chunk.shrink_to_fit();

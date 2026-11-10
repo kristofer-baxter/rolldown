@@ -4,11 +4,12 @@ use oxc::{
   ast::ast,
   span::{GetSpan, SPAN},
 };
-use rolldown_common::{IndexModules, NormalModule};
+use rolldown_common::{IndexModules, ModuleIdx, NormalModule};
 use rolldown_ecmascript::CJS_MODULE_REF;
 #[cfg(feature = "experimental")]
 use rolldown_ecmascript::CJS_ROLLDOWN_MODULE_REF;
 use rolldown_ecmascript_utils::ExpressionExt;
+use rustc_hash::FxHashSet;
 
 #[cfg(feature = "experimental")]
 use crate::hmr::hmr_ast_finalizer::HmrAstFinalizer;
@@ -509,12 +510,112 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for HmrAstFinalizer<'any, 'ast> {
   }
 }
 
+fn bundled_observed_imports(
+  importer: &NormalModule,
+  scoping: &oxc::semantic::Scoping,
+) -> FxHashSet<ModuleIdx> {
+  use rolldown_common::{ImportKind, ImportRecordMeta};
+
+  let mut observed = FxHashSet::default();
+  for record in &importer.import_records {
+    if (record.meta.intersects(ImportRecordMeta::IsReExportOnly | ImportRecordMeta::IsExportStar)
+      || (matches!(record.kind, ImportKind::Require | ImportKind::DynamicImport)
+        && !record
+          .meta
+          .intersects(ImportRecordMeta::IsRequireUnused | ImportRecordMeta::DeadDynamicImport)))
+      && let Some(target) = record.resolved_module
+    {
+      observed.insert(target);
+    }
+  }
+  if importer.named_imports.is_empty() {
+    return observed;
+  }
+  let reexports: FxHashSet<_> =
+    importer.named_exports.values().map(|export| export.referenced).collect();
+  for (binding, import) in &importer.named_imports {
+    if (scoping.get_resolved_references(binding.symbol).next().is_some()
+      || reexports.contains(binding))
+      && let Some(target) = importer.import_records[import.record_idx].resolved_module
+    {
+      observed.insert(target);
+    }
+  }
+  observed
+}
+
+impl<'any, 'ast> ScopeHoistingFinalizer<'any, 'ast> {
+  fn bundled_exports_need_initial_bindings(&self) -> bool {
+    let scoping = self.scope.scoping();
+    let root = scoping.root_scope_id();
+    let mut has_own_export = false;
+    for export in self.ctx.linking_info.resolved_exports.values() {
+      let canonical = self.ctx.symbol_db.canonical_ref_for(export.symbol_ref);
+      if canonical.owner != self.ctx.idx {
+        continue;
+      }
+      has_own_export = true;
+      if self.ctx.module.meta.has_eval() {
+        return true;
+      }
+      let flags = scoping.symbol_flags(canonical.symbol);
+      if !self.ctx.symbol_db.is_facade_symbol(canonical)
+        && scoping.symbol_scope_id(canonical.symbol) == root
+        && (flags.is_import()
+          || (flags.is_const_variable() && !self.native_let_symbols.contains(&canonical.symbol))
+          || scoping.get_resolved_references(canonical.symbol).next().is_some())
+      {
+        return true;
+      }
+    }
+    if !has_own_export {
+      return false;
+    }
+    if self.ctx.chunk.entry_module_idx() == Some(self.ctx.idx)
+      || !self.ctx.linking_info.referenced_symbols_by_entry_point_chunk.is_empty()
+    {
+      return true;
+    }
+    for &importer_idx in &self.ctx.module.importers_idx {
+      let Some(importer_info) =
+        self.ctx.linking_infos.get(importer_idx).filter(|info| info.is_included)
+      else {
+        continue;
+      };
+      let Some(importer) = self.ctx.modules.get(importer_idx).and_then(|m| m.as_normal()) else {
+        continue;
+      };
+      if importer.meta.has_eval() {
+        return true;
+      }
+      let Some(scoping) = self
+        .ctx
+        .symbol_db
+        .inner()
+        .get(importer_idx)
+        .and_then(Option::as_ref)
+        .map(|db| db.ast_scopes.scoping())
+      else {
+        return true;
+      };
+      let observed = importer_info
+        .bundled_observed_imports
+        .get_or_init(|| bundled_observed_imports(importer, scoping));
+      if observed.contains(&self.ctx.idx) {
+        return true;
+      }
+    }
+    false
+  }
+}
+
 impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast> {
   fn owns_initial_bindings(&self) -> bool {
     self.native_record()
       || (self.ctx.options.is_dev_mode_enabled()
         && !crate::utils::native_records::enabled(self.ctx.options)
-        && self.exports_kind() == rolldown_common::ExportsKind::Esm)
+        && self.exports_kind() == rolldown_common::ExportsKind::Esm
+        && self.bundled_exports_need_initial_bindings())
   }
 
   fn native_commonjs_record(&self) -> bool {
@@ -599,7 +700,11 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
   /// adding a key to this namespace, so it asks the runtime with this namespace instead; before
   /// this registration runs the record has not started and the binding is uninitialized.
   fn native_temporal(&self) -> Option<ast::Expression<'ast>> {
-    if !self.owns_initial_bindings() {
+    // Wrapped bundled records track completion through their evaluator. Unwrapped records
+    // still need these flags to reject pending or failed initialization.
+    if !self.native_record()
+      && self.ctx.order_wrap_state.esm_init_target(self.ctx.idx, self.ctx.linking_info).is_some()
+    {
       return None;
     }
     // Ordered by each name's JSON string, the key order the registration has always used.

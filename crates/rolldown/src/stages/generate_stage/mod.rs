@@ -288,6 +288,11 @@ impl<'a> GenerateStage<'a> {
     plugin_driver: &'a SharedPluginDriver,
     cache: Option<&'a mut ScanStageCache>,
   ) -> Self {
+    if options.is_dev_mode_enabled() && !crate::utils::native_records::enabled(options) {
+      for meta in link_output.metas.iter_mut() {
+        meta.bundled_observed_imports = std::sync::OnceLock::new();
+      }
+    }
     Self {
       link_output,
       ast_table,

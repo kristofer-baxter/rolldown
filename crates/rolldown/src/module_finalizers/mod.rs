@@ -1897,9 +1897,11 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// declaration whose every binding is unassigned prints as `let`: an authored assignment to a
   /// constant keeps its TypeError, and direct `eval` could assign any binding.
   fn collect_native_let_symbols(&mut self, program: &ast::Program<'ast>) {
-    if !crate::hmr::utils::HmrAstBuilder::owns_initial_bindings(self)
-      || self.ctx.module.meta.has_eval()
-    {
+    let may_own_initial_bindings = crate::hmr::utils::HmrAstBuilder::native_record(self)
+      || (self.ctx.options.is_dev_mode_enabled()
+        && !crate::utils::native_records::enabled(self.ctx.options)
+        && self.ctx.module.exports_kind == rolldown_common::ExportsKind::Esm);
+    if !may_own_initial_bindings || self.ctx.module.meta.has_eval() {
       return;
     }
     let scoping = self.scope.scoping();
@@ -2539,6 +2541,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   fn remove_unused_top_level_stmt(&mut self, program: &mut ast::Program<'ast>) -> (usize, usize) {
     let mut last_import_stmt_idx = None;
     let mut module_decls_end = None;
+    let owns_initial_bindings = crate::hmr::utils::HmrAstBuilder::owns_initial_bindings(self);
 
     let old_body = program.body.take_in(self);
     // the first statement info is the namespace variable declaration
@@ -2940,9 +2943,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                   }
                 }
 
-                if self.ctx.linking_info.native_default_expression
-                  && crate::hmr::utils::HmrAstBuilder::owns_initial_bindings(self)
-                {
+                if self.ctx.linking_info.native_default_expression && owns_initial_bindings {
                   // `let local = ({ default: <expr> }).default;` keeps the engine's TDZ, names
                   // an anonymous function or class "default", and is a writable binding cell.
                   if init_expr.without_parentheses().is_anonymous_function_definition() {
@@ -3063,6 +3064,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
           if let Statement::VariableDeclaration(var_decl) = &mut top_stmt
             && var_decl.kind == ast::VariableDeclarationKind::Const
             && !self.native_let_symbols.is_empty()
+            && owns_initial_bindings
             && var_decl.declarations.iter().all(|declarator| {
               declarator.id.get_binding_identifiers().iter().all(|id| {
                 id.symbol_id.get().is_some_and(|symbol| self.native_let_symbols.contains(&symbol))

@@ -26,6 +26,9 @@ use rolldown_plugin::{
 };
 use tokio::{sync::Notify, task::JoinHandle};
 
+#[cfg(feature = "experimental")]
+mod bundled_hmr;
+
 struct Fixture(PathBuf);
 
 impl Fixture {

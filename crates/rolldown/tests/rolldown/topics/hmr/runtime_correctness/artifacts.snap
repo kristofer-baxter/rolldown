@@ -83,7 +83,7 @@ var init_trigger_dep = __esmMin((() => {
 var require_cjs_lib_assign_exports = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 	init_trigger_dep();
 	__rolldown_runtime__.createModuleHotContext("cases/require/cjs-lib-assign-exports.js");
-	__rolldown_runtime__.registerModule("cases/require/cjs-lib-assign-exports.js", module, 1);
+	__rolldown_runtime__.registerModule("cases/require/cjs-lib-assign-exports.js", module);
 	exports = "exports";
 }));
 // cases/require/cjs-lib-reassign-module-exports.js
@@ -161,8 +161,16 @@ var lib_exports$2 = /* @__PURE__ */ __exportAll({
 });
 init_trigger_dep();
 __rolldown_runtime__.createModuleHotContext("cases/manual_reexport/lib.js");
-__rolldown_runtime__.registerModule("cases/manual_reexport/lib.js", { exports: lib_exports$2 });
-const Globals = Object;
+__rolldown_runtime__.registerModule("cases/manual_reexport/lib.js", {
+	exports: lib_exports$2,
+	bindings: true,
+	cells: {
+		Globals: [() => Globals, (_) => Globals = _],
+		value: [() => value$1, (_) => value$1 = _]
+	}
+});
+let Globals = Object;
+let value$1 = "lib";
 // cases/manual_reexport/barrel.js
 var barrel_exports = /* @__PURE__ */ __exportAll({
 	Globals: () => Globals,
@@ -182,13 +190,22 @@ assert.strictEqual(Globals, Object);
 var foo_exports$1 = /* @__PURE__ */ __exportAll({ foo: () => "foo" });
 init_trigger_dep();
 __rolldown_runtime__.createModuleHotContext("cases/deconflict_import_bindings/foo.mjs");
-__rolldown_runtime__.registerModule("cases/deconflict_import_bindings/foo.mjs", { exports: foo_exports$1 });
+__rolldown_runtime__.registerModule("cases/deconflict_import_bindings/foo.mjs", {
+	exports: foo_exports$1,
+	bindings: true,
+	cells: { foo: [() => foo$1, (_) => foo$1 = _] }
+});
+let foo$1 = "foo";
 // cases/deconflict_import_bindings/foo/index.mjs
 var foo_exports = /* @__PURE__ */ __exportAll({ foo: () => foo });
 init_trigger_dep();
 __rolldown_runtime__.createModuleHotContext("cases/deconflict_import_bindings/foo/index.mjs");
-__rolldown_runtime__.registerModule("cases/deconflict_import_bindings/foo/index.mjs", { exports: foo_exports });
-const foo = "foo-index";
+__rolldown_runtime__.registerModule("cases/deconflict_import_bindings/foo/index.mjs", {
+	exports: foo_exports,
+	bindings: true,
+	cells: { foo: [() => foo, (_) => foo = _] }
+});
+let foo = "foo-index";
 // cases/deconflict_import_bindings/index.js
 var deconflict_import_bindings_exports = /* @__PURE__ */ __exportAll({});
 init_trigger_dep();
@@ -200,7 +217,12 @@ assert.strictEqual(foo, "foo-index");
 var lib_exports$1 = /* @__PURE__ */ __exportAll({ "a-b": () => "lib" });
 init_trigger_dep();
 __rolldown_runtime__.createModuleHotContext("cases/string_import_name/lib.js");
-__rolldown_runtime__.registerModule("cases/string_import_name/lib.js", { exports: lib_exports$1 });
+__rolldown_runtime__.registerModule("cases/string_import_name/lib.js", {
+	exports: lib_exports$1,
+	bindings: true,
+	cells: { "a-b": [() => value, (_) => value = _] }
+});
+let value = "lib";
 // cases/string_import_name/reexport.js
 var reexport_exports = /* @__PURE__ */ __exportAll({ value: () => "lib" });
 init_trigger_dep();
@@ -221,7 +243,15 @@ var lib_exports = /* @__PURE__ */ __exportAll({
 });
 init_trigger_dep();
 __rolldown_runtime__.createModuleHotContext("cases/imported_callee_this/lib.js");
-__rolldown_runtime__.registerModule("cases/imported_callee_this/lib.js", { exports: lib_exports });
+__rolldown_runtime__.registerModule("cases/imported_callee_this/lib.js", {
+	exports: lib_exports,
+	bindings: true,
+	cells: {
+		default: [() => getThisDefault, (_) => getThisDefault = _],
+		"get-this": [() => getThis, (_) => getThis = _],
+		getThis: [() => getThis, (_) => getThis = _]
+	}
+});
 function getThis() {
 	return this;
 }
@@ -255,7 +285,7 @@ __rolldown_runtime__.registerGraph({ids:["cases/deconflict_import_bindings/foo.m
 //#region cases/deconflict_import_bindings/foo.mjs
 __rolldown_runtime__.registerFactory("cases/deconflict_import_bindings/foo.mjs", (function(__rolldown_module_id__) {
 	try {
-		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ foo: () => foo });
+		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ foo: (() => foo) });
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("trigger-dep.js");
 		var import_trigger_dep_00 = __rolldown_runtime__.loadExports("trigger-dep.js");
@@ -268,7 +298,7 @@ __rolldown_runtime__.registerFactory("cases/deconflict_import_bindings/foo.mjs",
 //#region cases/deconflict_import_bindings/foo/index.mjs
 __rolldown_runtime__.registerFactory("cases/deconflict_import_bindings/foo/index.mjs", (function(__rolldown_module_id__) {
 	try {
-		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ foo: () => foo });
+		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ foo: (() => foo) });
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("trigger-dep.js");
 		var import_trigger_dep_10 = __rolldown_runtime__.loadExports("trigger-dep.js");
@@ -321,9 +351,9 @@ __rolldown_runtime__.registerFactory("cases/imported_callee_this/index.js", (fun
 __rolldown_runtime__.registerFactory("cases/imported_callee_this/lib.js", (function(__rolldown_module_id__) {
 	try {
 		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({
-			getThis: () => getThis,
-			default: () => getThisDefault,
-			["get-this"]: () => getThis
+			getThis: (() => getThis),
+			default: (() => getThisDefault),
+			["get-this"]: (() => getThis)
 		});
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("trigger-dep.js");
@@ -343,8 +373,8 @@ __rolldown_runtime__.registerFactory("cases/imported_callee_this/lib.js", (funct
 __rolldown_runtime__.registerFactory("cases/manual_reexport/barrel.js", (function(__rolldown_module_id__) {
 	try {
 		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({
-			Globals: () => import_lib_50.Globals,
-			value: () => import_lib_50.value
+			Globals: (() => import_lib_50.Globals),
+			value: (() => import_lib_50.value)
 		});
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("cases/manual_reexport/lib.js");
@@ -377,8 +407,8 @@ __rolldown_runtime__.registerFactory("cases/manual_reexport/index.js", (function
 __rolldown_runtime__.registerFactory("cases/manual_reexport/lib.js", (function(__rolldown_module_id__) {
 	try {
 		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({
-			Globals: () => Globals,
-			value: () => value
+			Globals: (() => Globals),
+			value: (() => value)
 		});
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("trigger-dep.js");
@@ -395,7 +425,7 @@ __rolldown_runtime__.registerFactory("cases/require/cjs-lib-assign-exports.js", 
 	try {
 		var __rolldown_module__ = { exports: {} };
 		var __rolldown_exports__ = __rolldown_module__.exports;
-		__rolldown_runtime__.registerModule(__rolldown_module_id__, __rolldown_module__, 1);
+		__rolldown_runtime__.registerModule(__rolldown_module_id__, __rolldown_module__);
 		__rolldown_runtime__.initModule("trigger-dep.js");
 		var import_trigger_dep_80 = __rolldown_runtime__.loadExports("trigger-dep.js");
 		const hot_cjs_lib_assign_exports = __rolldown_runtime__.createModuleHotContext(__rolldown_module_id__);
@@ -530,7 +560,7 @@ __rolldown_runtime__.registerFactory("cases/string_import_name/index.js", (funct
 //#region cases/string_import_name/lib.js
 __rolldown_runtime__.registerFactory("cases/string_import_name/lib.js", (function(__rolldown_module_id__) {
 	try {
-		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ ["a-b"]: () => value });
+		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ ["a-b"]: (() => value) });
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("trigger-dep.js");
 		var import_trigger_dep_140 = __rolldown_runtime__.loadExports("trigger-dep.js");
@@ -543,7 +573,7 @@ __rolldown_runtime__.registerFactory("cases/string_import_name/lib.js", (functio
 //#region cases/string_import_name/reexport.js
 __rolldown_runtime__.registerFactory("cases/string_import_name/reexport.js", (function(__rolldown_module_id__) {
 	try {
-		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ value: () => import_lib_150["a-b"] });
+		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ value: (() => import_lib_150["a-b"]) });
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		__rolldown_runtime__.initModule("cases/string_import_name/lib.js");
 		var import_lib_150 = __rolldown_runtime__.loadExports("cases/string_import_name/lib.js");

@@ -3942,6 +3942,7 @@ pub(super) fn apply_native_renames(
   rename_keys(&mut meta.named_import_to_cjs_module, idx, &rename);
   rename_keys(&mut meta.import_record_ns_to_cjs_module, idx, &rename);
   meta.native_reexport_by_canonical = std::sync::OnceLock::new();
+  meta.bundled_observed_imports = std::sync::OnceLock::new();
   meta.reexports_commonjs_property_cache.store(0, std::sync::atomic::Ordering::Relaxed);
   let retained = renamed
     .iter()
