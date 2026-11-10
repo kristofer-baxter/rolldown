@@ -1008,6 +1008,96 @@ async fn defines_preserve_shorthand_proto_own_properties_and_destructured_prefix
 }
 
 #[tokio::test]
+async fn defines_merge_dotted_children_without_changing_prototype_setters() -> Result<()> {
+  for (parent, target, child, own_proto, null_proto, proto_value, inherited) in [
+    ("({__proto__:null})", "process.env", "process.env.MODE", false, true, 0, 0),
+    (r#"({"__proto__":null})"#, "process.env", "process.env.MODE", false, true, 0, 0),
+    ("({__proto__:{inherited:1}})", "process.env", "process.env.MODE", false, false, 0, 1),
+    (r#"({["__proto__"]:7})"#, "process.env", "process.env.MODE", true, false, 7, 0),
+    ("({__proto__})", "process.env", "process.env.MODE", true, false, 7, 0),
+    (r#"({__proto__:null,["__proto__"]:7})"#, "process.env", "process.env.MODE", true, true, 7, 0),
+    (r#"({["__proto__"]:7,__proto__:null})"#, "process.env", "process.env.MODE", true, true, 7, 0),
+    (
+      "({nested:{__proto__:null}})",
+      "process.env.nested",
+      "process.env.nested.MODE",
+      false,
+      true,
+      0,
+      0,
+    ),
+  ] {
+    let fixture = Fixture::new(&[(
+      "main.js",
+      &format!(
+        "const value={target};\
+         events.push(Object.getPrototypeOf(value)===null,Object.hasOwn(value,'__proto__'),\
+         Object.hasOwn(value,'__proto__')?value.__proto__:0,value.MODE,\
+         Object.hasOwn(value,'MODE'),Object.getPrototypeOf(value)?.inherited??0);"
+      ),
+    )])?;
+    fixture.write(
+      "run.js",
+      "Object.defineProperty(globalThis,'__proto__',{value:7,configurable:true});\
+       await import('./dist/main.js');",
+    )?;
+    for minify in [false, true] {
+      let mut options = fixture.options();
+      options.define = Some(
+        [
+          ("process.env".to_owned(), parent.to_owned()),
+          (child.to_owned(), "'configured'".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+      );
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      bundler.close().await?;
+      assert_eq!(
+        fixture.execute("./run.js")?,
+        serde_json::json!([null_proto, own_proto, proto_value, "configured", true, inherited]),
+        "parent={parent}, minify={minify}"
+      );
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn defines_keep_dotted_proto_children_distinct_from_prototype_setters() -> Result<()> {
+  let fixture = Fixture::new(&[(
+    "main.js",
+    "const value=process.env;\
+     events.push(Object.getPrototypeOf(value)===null,Object.hasOwn(value,'__proto__'),\
+     value.__proto__?.MODE,value.__proto__?.EXTRA);",
+  )])?;
+  for minify in [false, true] {
+    let mut options = fixture.options();
+    options.define = Some(
+      [
+        ("process.env".to_owned(), "({__proto__:null})".to_owned()),
+        ("process.env.__proto__".to_owned(), "({MODE:'configured'})".to_owned()),
+        ("process.env.__proto__.EXTRA".to_owned(), "'extra'".to_owned()),
+      ]
+      .into_iter()
+      .collect(),
+    );
+    options.minify = Some(RawMinifyOptions::Bool(minify));
+    let mut bundler = Bundler::new(options)?;
+    fixture.output(&bundler.generate().await?)?;
+    bundler.close().await?;
+    assert_eq!(
+      fixture.execute("./dist/main.js")?,
+      serde_json::json!([true, true, "configured", "extra"]),
+      "minify={minify}"
+    );
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn defines_match_cooked_template_keys_without_decoding_literal_backslashes() -> Result<()> {
   let fixture = Fixture::new(&[(
     "main.js",

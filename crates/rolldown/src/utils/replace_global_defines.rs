@@ -107,7 +107,13 @@ enum IdentifierType {
 
 enum ObjectTreeNode {
   Leaf(String),
-  Nested(Vec<(String, ObjectTreeNode)>),
+  Nested(Vec<(ObjectTreeKey, ObjectTreeNode)>),
+}
+
+#[derive(PartialEq, Eq)]
+enum ObjectTreeKey {
+  OwnProperty(String),
+  PrototypeSetter,
 }
 
 fn to_property_key(key: &str) -> String {
@@ -118,13 +124,16 @@ fn to_property_key(key: &str) -> String {
   }
 }
 
-fn serialize_object_tree(entries: &[(String, ObjectTreeNode)]) -> String {
+fn serialize_object_tree(entries: &[(ObjectTreeKey, ObjectTreeNode)]) -> String {
   let mut out = String::from("{");
   for (idx, (key, node)) in entries.iter().enumerate() {
     if idx > 0 {
       out.push(',');
     }
-    out.push_str(&to_property_key(key));
+    match key {
+      ObjectTreeKey::OwnProperty(key) => out.push_str(&to_property_key(key)),
+      ObjectTreeKey::PrototypeSetter => out.push_str("\"__proto__\""),
+    }
     out.push(':');
     match node {
       ObjectTreeNode::Leaf(code) => out.push_str(code),
@@ -138,7 +147,7 @@ fn serialize_object_tree(entries: &[(String, ObjectTreeNode)]) -> String {
 fn parse_static_object_tree<'a>(
   expr: &'a Expression<'a>,
   source: &str,
-) -> Option<Vec<(String, ObjectTreeNode)>> {
+) -> Option<Vec<(ObjectTreeKey, ObjectTreeNode)>> {
   let Expression::ObjectExpression(obj) = expr.without_parentheses() else {
     return None;
   };
@@ -152,6 +161,11 @@ fn parse_static_object_tree<'a>(
     }
     let key =
       ReplaceGlobalDefines::static_property_key_name(&prop.key, prop.computed)?.into_string();
+    let key = if key == "__proto__" && !prop.computed && !prop.shorthand {
+      ObjectTreeKey::PrototypeSetter
+    } else {
+      ObjectTreeKey::OwnProperty(key)
+    };
     let node = if let Some(nested) = parse_static_object_tree(&prop.value, source) {
       ObjectTreeNode::Nested(nested)
     } else {
@@ -168,7 +182,7 @@ fn parse_static_object_tree<'a>(
 }
 
 fn insert_object_tree_path(
-  entries: &mut Vec<(String, ObjectTreeNode)>,
+  entries: &mut Vec<(ObjectTreeKey, ObjectTreeNode)>,
   parts: &[&str],
   value: &str,
   allocator: &Allocator,
@@ -177,7 +191,9 @@ fn insert_object_tree_path(
     return;
   };
   if rest.is_empty() {
-    if let Some((_, existing)) = entries.iter_mut().find(|(k, _)| k == first) {
+    if let Some((_, existing)) =
+      entries.iter_mut().find(|(k, _)| matches!(k, ObjectTreeKey::OwnProperty(key) if key == first))
+    {
       if matches!(existing, ObjectTreeNode::Nested(_))
         && let Ok(parsed) = Parser::new(allocator, value, SourceType::default()).parse_expression()
         && let Some(sub_entries) = parse_static_object_tree(&parsed, value)
@@ -199,10 +215,12 @@ fn insert_object_tree_path(
     } else {
       ObjectTreeNode::Leaf(value.to_owned())
     };
-    entries.push((first.to_owned(), node));
+    entries.push((ObjectTreeKey::OwnProperty(first.to_owned()), node));
     return;
   }
-  if let Some((_, existing)) = entries.iter_mut().find(|(k, _)| k == first) {
+  if let Some((_, existing)) =
+    entries.iter_mut().find(|(k, _)| matches!(k, ObjectTreeKey::OwnProperty(key) if key == first))
+  {
     if let ObjectTreeNode::Nested(children) = existing {
       insert_object_tree_path(children, rest, value, allocator);
     }
@@ -210,7 +228,7 @@ fn insert_object_tree_path(
   }
   let mut children = Vec::new();
   insert_object_tree_path(&mut children, rest, value, allocator);
-  entries.push((first.to_owned(), ObjectTreeNode::Nested(children)));
+  entries.push((ObjectTreeKey::OwnProperty(first.to_owned()), ObjectTreeNode::Nested(children)));
 }
 
 #[inline(never)]
