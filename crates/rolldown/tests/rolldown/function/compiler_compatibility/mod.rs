@@ -1098,6 +1098,134 @@ async fn defines_keep_dotted_proto_children_distinct_from_prototype_setters() ->
 }
 
 #[tokio::test]
+async fn defines_preserve_duplicate_property_evaluations_when_merging_children() -> Result<()> {
+  for (parent, child, expected) in [
+    (
+      "({x:(events.push('first'),1),x:2})",
+      "globalThis.CONFIG.MODE",
+      serde_json::json!(["first", {"x":2,"MODE":"added"}]),
+    ),
+    (
+      "({nested:{x:(events.push('first'),1),x:2}})",
+      "globalThis.CONFIG.MODE",
+      serde_json::json!(["first", {"nested":{"x":2},"MODE":"added"}]),
+    ),
+    (
+      "({branch:{old:(events.push('first'),1)},branch:{current:2}})",
+      "globalThis.CONFIG.branch.ADDED",
+      serde_json::json!(["first", {"branch":{"current":2,"ADDED":"added"}}]),
+    ),
+    (
+      "({branch:{old:(events.push('first'),1)},branch:2})",
+      "globalThis.CONFIG.branch.ADDED",
+      serde_json::json!(["first", {"branch":2}]),
+    ),
+    (
+      "({branch:(events.push('first'),1),branch:{current:2}})",
+      "globalThis.CONFIG.branch.ADDED",
+      serde_json::json!(["first", {"branch":{"current":2,"ADDED":"added"}}]),
+    ),
+    (
+      "({['__proto__']:(events.push('first'),1),['__proto__']:2})",
+      "globalThis.CONFIG.MODE",
+      serde_json::json!(["first", {"__proto__":2,"MODE":"added"}]),
+    ),
+  ] {
+    let fixture =
+      Fixture::new(&[("main.js", "const value=globalThis.CONFIG;events.push(value);")])?;
+    for minify in [false, true] {
+      let mut options = fixture.options();
+      options.define = Some(
+        [
+          ("globalThis.CONFIG".to_owned(), parent.to_owned()),
+          (child.to_owned(), "'added'".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+      );
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      bundler.close().await?;
+      assert_eq!(
+        fixture.execute("./dist/main.js")?,
+        expected,
+        "parent={parent}, child={child}, minify={minify}"
+      );
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn defines_preserve_duplicate_evaluations_from_merged_child_objects() -> Result<()> {
+  let fixture = Fixture::new(&[("main.js", "const value=globalThis.CONFIG;events.push(value);")])?;
+  for (parent, expected) in [
+    (
+      "({branch:{kept:1}})",
+      serde_json::json!(["first", "second", {"branch":{"kept":1,"x":2,"y":3}}]),
+    ),
+    (
+      "({branch:{old:(events.push('earlier'),0)},branch:{kept:1}})",
+      serde_json::json!(["earlier", "first", "second", {"branch":{"kept":1,"x":2,"y":3}}]),
+    ),
+  ] {
+    for minify in [false, true] {
+      let mut options = fixture.options();
+      options.define = Some(
+        [
+          ("globalThis.CONFIG".to_owned(), parent.to_owned()),
+          (
+            "globalThis.CONFIG.branch".to_owned(),
+            "({x:(events.push('first'),1),x:2,y:(events.push('second'),3)})".to_owned(),
+          ),
+        ]
+        .into_iter()
+        .collect(),
+      );
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      bundler.close().await?;
+      assert_eq!(fixture.execute("./dist/main.js")?, expected, "parent={parent}, minify={minify}");
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn defines_preserve_throwing_duplicate_property_evaluations() -> Result<()> {
+  let fixture = Fixture::new(&[(
+    "main.js",
+    "try{const value=globalThis.CONFIG;events.push(value)}catch(error){events.push(error.message)}",
+  )])?;
+  for minify in [false, true] {
+    let mut options = fixture.options();
+    options.define = Some(
+      [
+        (
+          "globalThis.CONFIG".to_owned(),
+          "({x:(()=>{events.push('before');throw Error('parent')})(),x:2})".to_owned(),
+        ),
+        ("globalThis.CONFIG.MODE".to_owned(), "'added'".to_owned()),
+      ]
+      .into_iter()
+      .collect(),
+    );
+    options.minify = Some(RawMinifyOptions::Bool(minify));
+    let mut bundler = Bundler::new(options)?;
+    fixture.output(&bundler.generate().await?)?;
+    bundler.close().await?;
+    assert_eq!(
+      fixture.execute("./dist/main.js")?,
+      serde_json::json!(["before", "parent"]),
+      "minify={minify}"
+    );
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn defines_match_cooked_template_keys_without_decoding_literal_backslashes() -> Result<()> {
   let fixture = Fixture::new(&[(
     "main.js",

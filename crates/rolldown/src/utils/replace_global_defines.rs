@@ -172,11 +172,8 @@ fn parse_static_object_tree<'a>(
       let span = prop.value.span();
       ObjectTreeNode::Leaf(source.get(span.start as usize..span.end as usize)?.to_owned())
     };
-    if let Some((_, existing)) = entries.iter_mut().find(|(k, _)| *k == key) {
-      *existing = node;
-    } else {
-      entries.push((key, node));
-    }
+    // Earlier duplicate values still evaluate even though the last property wins.
+    entries.push((key, node));
   }
   Some(entries)
 }
@@ -191,19 +188,21 @@ fn insert_object_tree_path(
     return;
   };
   if rest.is_empty() {
-    if let Some((_, existing)) =
-      entries.iter_mut().find(|(k, _)| matches!(k, ObjectTreeKey::OwnProperty(key) if key == first))
+    if let Some((_, existing)) = entries
+      .iter_mut()
+      .rev()
+      .find(|(k, _)| matches!(k, ObjectTreeKey::OwnProperty(key) if key == first))
     {
       if matches!(existing, ObjectTreeNode::Nested(_))
         && let Ok(parsed) = Parser::new(allocator, value, SourceType::default()).parse_expression()
         && let Some(sub_entries) = parse_static_object_tree(&parsed, value)
         && let ObjectTreeNode::Nested(existing_children) = existing
       {
-        for (k, v) in sub_entries {
-          if !existing_children.iter().any(|(ek, _)| *ek == k) {
-            existing_children.push((k, v));
-          }
-        }
+        let additions = sub_entries
+          .into_iter()
+          .filter(|(k, _)| !existing_children.iter().any(|(ek, _)| ek == k))
+          .collect::<Vec<_>>();
+        existing_children.extend(additions);
       }
       return;
     }
@@ -218,8 +217,10 @@ fn insert_object_tree_path(
     entries.push((ObjectTreeKey::OwnProperty(first.to_owned()), node));
     return;
   }
-  if let Some((_, existing)) =
-    entries.iter_mut().find(|(k, _)| matches!(k, ObjectTreeKey::OwnProperty(key) if key == first))
+  if let Some((_, existing)) = entries
+    .iter_mut()
+    .rev()
+    .find(|(k, _)| matches!(k, ObjectTreeKey::OwnProperty(key) if key == first))
   {
     if let ObjectTreeNode::Nested(children) = existing {
       insert_object_tree_path(children, rest, value, allocator);
