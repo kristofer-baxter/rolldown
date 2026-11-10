@@ -1,4 +1,4 @@
-use std::sync::Arc;
+use std::{path::Path, sync::Arc};
 
 use arcstr::ArcStr;
 use itertools::Itertools;
@@ -507,6 +507,9 @@ pub struct ScanStageCache {
   /// than report the failure (#690).
   pub last_scan_failures_unreached: bool,
   pub user_defined_entry: FxHashSet<ModuleId>,
+  /// Common directory of the entries of the last full scan, configured and emitted. A partial scan
+  /// does not see every entry, so the path externals it adds render relative to this directory.
+  pub user_defined_entry_common_dir: Option<Arc<Path>>,
   // Usage: Map file path emitted by watcher to corresponding module index
   pub module_idx_by_abs_path: FxHashMap<ArcStr, ModuleIdx>,
   // Usage: Map module stable id injected to client code to corresponding module index

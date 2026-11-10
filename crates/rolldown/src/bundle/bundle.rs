@@ -17,7 +17,7 @@ use rolldown_common::{
   GetLocalDb, GetLocalDbMut, Module, ScanMode, SharedFileEmitter, SymbolRefDb,
 };
 use rolldown_devtools::{action, trace_action, trace_action_enabled};
-use rolldown_error::{BuildDiagnostic, BuildResult, Severity};
+use rolldown_error::{BatchedBuildDiagnostic, BuildDiagnostic, BuildResult, Severity};
 use rolldown_fs::{FileSystem, OsFileSystem};
 use rolldown_plugin::{
   HookBuildEndArgs, HookCloseBundleArgs, HookRenderErrorArgs, SharedPluginDriver,
@@ -585,16 +585,13 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       crate::utils::defer_drop::spawn_drop((link_stage_output, ast_table));
     }
 
-    if let Err(errors) = &bundle_output {
-      self.cache.invalidate_native_relink();
-      debug_assert!(errors.iter().all(|e| e.severity() == Severity::Error));
-      self
-        .plugin_driver
-        .render_error(&HookRenderErrorArgs { errors, cwd: &self.options.cwd })
-        .await?;
-    }
-
-    let mut output = bundle_output?;
+    let mut output = match bundle_output {
+      Ok(output) => output,
+      Err(errors) => {
+        self.cache.invalidate_native_relink();
+        return Err(self.handle_render_error(errors).await);
+      }
+    };
     let pre_emit_assets_len = output.assets.len();
 
     // Add additional files from build plugins.
@@ -617,11 +614,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       GenerateStage::validate_mangle_properties_output(&self.options, &output.assets)
     {
       self.cache.invalidate_native_relink();
-      self
-        .plugin_driver
-        .render_error(&HookRenderErrorArgs { errors: &errors, cwd: &self.options.cwd })
-        .await?;
-      return Err(errors);
+      return Err(self.handle_render_error(errors).await);
     }
 
     for asset in &output.assets {
@@ -640,7 +633,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     Ok(output)
   }
 
-  #[expect(clippy::too_many_lines)]
+    #[expect(clippy::too_many_lines)]
   async fn try_bundle_up_fast_native_relink(
     &mut self,
     is_write: bool,
@@ -930,22 +923,12 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     });
 
-    if let Err(errors) = &bundle_output {
-      self.cache.invalidate_native_relink();
-      debug_assert!(errors.iter().all(|e| e.severity() == Severity::Error));
-      if let Err(hook_err) = self
-        .plugin_driver
-        .render_error(&HookRenderErrorArgs { errors, cwd: &self.options.cwd })
-        .await
-      {
-        return Some(Err(hook_err.into()));
-      }
-      return Some(bundle_output);
-    }
-
     let mut output = match bundle_output {
       Ok(v) => v,
-      Err(errs) => return Some(Err(errs)),
+      Err(errors) => {
+        self.cache.invalidate_native_relink();
+        return Some(Err(self.handle_render_error(errors).await));
+      }
     };
     self.cache.inlined_commonjs_constants = self
       .cache
@@ -994,14 +977,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       GenerateStage::validate_mangle_properties_output(&self.options, &output.assets)
     {
       self.cache.invalidate_native_relink();
-      if let Err(hook_err) = self
-        .plugin_driver
-        .render_error(&HookRenderErrorArgs { errors: &errors, cwd: &self.options.cwd })
-        .await
-      {
-        return Some(Err(hook_err.into()));
-      }
-      return Some(Err(errors));
+      return Some(Err(self.handle_render_error(errors).await));
     }
 
     for asset in &output.assets {
@@ -1020,6 +996,22 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     self.cache.last_fast_native_relink = output.assets.len() == pre_emit_assets_len;
     self.cache.last_native_graph_change = native_graph_change;
     Some(Ok(output))
+  }
+
+  async fn handle_render_error(
+    &self,
+    mut errors: BatchedBuildDiagnostic,
+  ) -> BatchedBuildDiagnostic {
+    debug_assert!(errors.iter().all(|e| e.severity() == Severity::Error));
+    if let Err(error) = self
+      .plugin_driver
+      .render_error(&HookRenderErrorArgs { errors: &errors, cwd: &self.options.cwd })
+      .await
+    {
+      // Report the handler failure alongside the original rendering diagnostics.
+      errors.extend(BatchedBuildDiagnostic::from(error).into_vec());
+    }
+    errors
   }
 
   pub fn restore_cache_from_scan(&mut self, mut scan_stage_output: NormalizedScanStageOutput) {

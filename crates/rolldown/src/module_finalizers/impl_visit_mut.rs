@@ -1164,6 +1164,25 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     }
   }
 
+  fn visit_for_statement_left(&mut self, it: &mut ast::ForStatementLeft<'ast>) {
+    walk_js_mut::walk_for_statement_left(self, it);
+    // transform top level `for (var x of xs)` to `for (x of xs)` and hoist `x`
+    if self.state.contains(TraverseState::TopLevel)
+      && self.needs_hosted_top_level_binding
+      && let ast::ForStatementLeft::VariableDeclaration(decl) = it
+      && decl.kind.is_var()
+      && let Some(declarator) = decl.declarations.pop()
+    {
+      self
+        .top_level_var_bindings
+        .extend(declarator.id.get_binding_identifiers().iter().map(|id| id.name));
+      *it = ast::ForStatementLeft::from(super::binding_pattern_into_assignment_target(
+        declarator.id,
+        self,
+      ));
+    }
+  }
+
   fn visit_declaration(&mut self, it: &mut ast::Declaration<'ast>) {
     // keep_name transformation
     match it {

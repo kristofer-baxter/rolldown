@@ -1,5 +1,6 @@
 use std::collections::VecDeque;
 use std::collections::hash_map::Entry;
+use std::path::Path;
 use std::sync::Arc;
 
 use arcstr::ArcStr;
@@ -26,10 +27,12 @@ use rolldown_error::{
 };
 use rolldown_fs::FileSystem;
 use rolldown_plugin::SharedPluginDriver;
+use rolldown_utils::commondir;
 use rolldown_utils::indexmap::FxIndexSet;
 use rolldown_utils::rayon::{IntoParallelIterator, ParallelIterator};
 use rolldown_utils::rustc_hash::FxHashSetExt;
 use rustc_hash::{FxHashMap, FxHashSet};
+use sugar_path::SugarPath;
 use tracing::Instrument;
 
 use crate::module_loader::module_task::ModuleTaskOwner;
@@ -121,6 +124,7 @@ pub struct ModuleLoader<'a, Fs: FileSystem + Clone + 'static> {
   tasks: tokio::task::JoinSet<()>,
   /// The module that each unfinished task loads, to name it if the task fails.
   task_modules: FxHashMap<tokio::task::Id, ModuleId>,
+  external_module_idxs: FxHashSet<ModuleIdx>,
   pub shared_context: Arc<TaskContext<Fs>>,
   rx: tokio::sync::mpsc::UnboundedReceiver<ModuleLoaderMsg>,
   remaining: u32,
@@ -249,6 +253,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     Ok(Self {
       tasks: tokio::task::JoinSet::new(),
       task_modules: FxHashMap::default(),
+      external_module_idxs: FxHashSet::default(),
       rx,
       cache,
       remaining: 0,
@@ -457,7 +462,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     let ctx = Arc::clone(&self.shared_context);
     let module_id = resolved_id.id.clone();
     let spawned = if resolved_id.external.is_external() {
-      let task = ExternalModuleTask::new(ctx, idx, resolved_id, Arc::clone(user_defined_entries));
+      self.external_module_idxs.insert(idx);
+      let task = ExternalModuleTask::new(ctx, idx, resolved_id);
       self.tasks.spawn(task.run().instrument(tracing::info_span!("external_module_task")))
     } else {
       let task = ModuleTask::new(
@@ -479,10 +485,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
 
   /// The build error for a task that ended without sending its result.
   fn task_failure(&mut self, error: tokio::task::JoinError) -> BuildDiagnostic {
-    let module = self
-      .task_modules
-      .remove(&error.id())
-      .map_or_else(|| "an unknown module".to_string(), |id| format!("{:?}", id.as_str()));
+    let module = self.task_modules.remove(&error.id()).map_or_else(
+      || "an unknown module".to_string(),
+      |id| format!("`{}`", id.stabilize(&self.shared_context.options.cwd)),
+    );
     let failure = match error.try_into_panic() {
       Ok(payload) => {
         let message = payload
@@ -490,9 +496,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           .copied()
           .or_else(|| payload.downcast_ref::<String>().map(String::as_str))
           .unwrap_or("Box<dyn Any>");
-        format!("module task panicked while loading {module}: {message}")
+        format!("the task that loads {module} panicked: {message}")
       }
-      Err(_) => format!("module task was cancelled while loading {module}"),
+      Err(_) => format!("the task that loads {module} was cancelled"),
     };
     BuildDiagnostic::unhandleable_error(anyhow::anyhow!(failure))
   }
@@ -1017,6 +1023,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         }
       }
     }
+
+    self.render_new_external_paths(&user_defined_entries, &extra_entry_points);
 
     self.cache.last_scan_failures_unreached = !errors.is_empty()
       && errors.len() == module_task_errors
@@ -1825,6 +1833,39 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     Ok(affected)
   }
 
+  /// Renders each path external this scan added relative to the common directory of the entries.
+  /// A full scan computes that directory here, after the scan, because emitted chunks join the
+  /// entries during it.
+  fn render_new_external_paths(
+    &mut self,
+    user_defined_entries: &[(Option<ArcStr>, ResolvedId)],
+    extra_entry_points: &[EntryPoint],
+  ) {
+    if self.is_full_scan {
+      let modules = &self.intermediate_normal_modules.modules;
+      let emitted_entry_ids = extra_entry_points.iter().filter_map(|entry| {
+        let id = modules.try_get(entry.idx)?.as_ref()?.id();
+        id.is_path().then(|| id.as_str())
+      });
+      let common_dir = commondir::common_dir(
+        user_defined_entries
+          .iter()
+          .map(|(_, resolved_id)| resolved_id.id.as_str())
+          .chain(emitted_entry_ids),
+      );
+      self.cache.user_defined_entry_common_dir = common_dir.map(Arc::from);
+    }
+    let cwd = self.shared_context.options.cwd.as_path();
+    let common_dir = self.cache.user_defined_entry_common_dir.as_deref().unwrap_or(cwd);
+    for &idx in &self.external_module_idxs {
+      if let Some(Module::External(module)) = self.intermediate_normal_modules.modules.get_mut(idx)
+        && module.need_renormalize_render_path
+      {
+        module.name = Path::new(module.id.as_str()).relative(common_dir).to_slash().into();
+      }
+    }
+  }
+
   #[tracing::instrument(target = "devtool", level = "debug", skip_all)]
   pub async fn resolve_user_defined_entries(
     &self,
@@ -2318,6 +2359,6 @@ mod tests {
 
     let external =
       ResolvedId { id: ModuleId::new("external"), external: true.into(), ..Default::default() };
-    ExternalModuleTask::new(Arc::clone(&ctx), 1.into(), external, Arc::new(vec![])).run().await;
+    ExternalModuleTask::new(Arc::clone(&ctx), 1.into(), external).run().await;
   }
 }

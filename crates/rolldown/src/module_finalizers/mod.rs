@@ -19,9 +19,9 @@ use rolldown_common::{
 };
 use rolldown_ecmascript::EcmaAst;
 use rolldown_ecmascript_utils::{
-  BindingIdentifierFactoryExt as _, BindingPatternExt, CallExpressionExt,
-  CallExpressionFactoryExt as _, ClassElementFactoryExt as _, ExpressionExt,
-  ExpressionFactoryExt as _, IdentifierNameFactoryExt as _, StatementExt, StatementFactoryExt as _,
+  BindingIdentifierFactoryExt as _, CallExpressionExt, CallExpressionFactoryExt as _,
+  ClassElementFactoryExt as _, ExpressionExt, ExpressionFactoryExt as _,
+  IdentifierNameFactoryExt as _, StatementExt, StatementFactoryExt as _,
   parse_injected_expression,
 };
 use rolldown_error::EmptyImportMetaKind;
@@ -1267,7 +1267,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         None if temporal => ast::Expression::new_void_0(SPAN, self),
         None => return None,
       };
-      let mut left = var_decl.id.into_assignment_target(self);
+      let mut left = binding_pattern_into_assignment_target(var_decl.id, self);
       let simple_flag = if let ast::AssignmentTarget::AssignmentTargetIdentifier(binding) = &left {
         self
           .temporal_declarations
@@ -3937,5 +3937,115 @@ struct SpanRewriter(Span);
 impl oxc::ast_visit::VisitJsMut<'_> for SpanRewriter {
   fn visit_span(&mut self, span: &mut Span) {
     *span = self.0;
+  }
+}
+
+pub(super) fn binding_pattern_into_assignment_target<
+  'ast,
+  B: GetAstBuilder<'ast> + GetAllocator<'ast>,
+>(
+  pattern: ast::BindingPattern<'ast>,
+  builder: &B,
+) -> ast::AssignmentTarget<'ast> {
+  match pattern {
+    ast::BindingPattern::BindingIdentifier(id) => {
+      ast::AssignmentTarget::new_assignment_target_identifier(id.span, id.name, builder)
+    }
+    ast::BindingPattern::ObjectPattern(mut obj_pat) => {
+      let rest = obj_pat.rest.take().map(|rest| {
+        ast::AssignmentTargetRest::boxed(
+          rest.span,
+          binding_pattern_into_assignment_target(rest.unbox().argument, builder),
+          builder,
+        )
+      });
+      let mut properties =
+        oxc::allocator::Vec::with_capacity_in(obj_pat.properties.len(), builder);
+      obj_pat.properties.take_in(&builder.allocator()).into_iter().for_each(|binding_prop| {
+        properties.push(binding_property_into_assignment_target_property(binding_prop, builder));
+      });
+      ast::AssignmentTarget::new_object_assignment_target(obj_pat.span, properties, rest, builder)
+    }
+    ast::BindingPattern::ArrayPattern(mut arr_pat) => {
+      let rest = arr_pat.rest.take().map(|rest| {
+        ast::AssignmentTargetRest::boxed(
+          rest.span,
+          binding_pattern_into_assignment_target(rest.unbox().argument, builder),
+          builder,
+        )
+      });
+      let mut elements = oxc::allocator::Vec::with_capacity_in(arr_pat.elements.len(), builder);
+      arr_pat.elements.take_in(&builder.allocator()).into_iter().for_each(|binding_pat| {
+        elements.push(binding_pat.map(|pat| {
+          binding_pattern_into_assignment_target_maybe_default(pat, builder)
+        }));
+      });
+      ast::AssignmentTarget::new_array_assignment_target(arr_pat.span, elements, rest, builder)
+    }
+    ast::BindingPattern::AssignmentPattern(_) => {
+      unreachable!(
+        "`AssignmentTarget` cannot hold a default. Convert array elements and property values with `binding_pattern_into_assignment_target_maybe_default`"
+      )
+    }
+  }
+}
+
+fn binding_pattern_into_assignment_target_maybe_default<
+  'ast,
+  B: GetAstBuilder<'ast> + GetAllocator<'ast>,
+>(
+  pattern: ast::BindingPattern<'ast>,
+  builder: &B,
+) -> ast::AssignmentTargetMaybeDefault<'ast> {
+  match pattern {
+    ast::BindingPattern::AssignmentPattern(assign_pat) => {
+      let assign_pat = assign_pat.unbox();
+      ast::AssignmentTargetMaybeDefault::new_assignment_target_with_default(
+        assign_pat.span,
+        binding_pattern_into_assignment_target(assign_pat.left, builder),
+        assign_pat.right,
+        builder,
+      )
+    }
+    pattern => ast::AssignmentTargetMaybeDefault::from(binding_pattern_into_assignment_target(
+      pattern, builder,
+    )),
+  }
+}
+
+fn binding_property_into_assignment_target_property<
+  'ast,
+  B: GetAstBuilder<'ast> + GetAllocator<'ast>,
+>(
+  prop: ast::BindingProperty<'ast>,
+  builder: &B,
+) -> ast::AssignmentTargetProperty<'ast> {
+  match prop.value {
+    ast::BindingPattern::AssignmentPattern(assign_pat) if prop.shorthand => {
+      let assign_pat = assign_pat.unbox();
+      let binding_id = assign_pat.left.get_binding_identifier().unwrap();
+      ast::AssignmentTargetProperty::new_assignment_target_property_identifier(
+        prop.span,
+        IdentifierReference::new(binding_id.span, binding_id.name, builder),
+        Some(assign_pat.right),
+        builder,
+      )
+    }
+    ast::BindingPattern::BindingIdentifier(id) if prop.shorthand => {
+      ast::AssignmentTargetProperty::new_assignment_target_property_identifier(
+        prop.span,
+        IdentifierReference::new(id.span, id.name, builder),
+        None,
+        builder,
+      )
+    }
+    value => ast::AssignmentTargetProperty::new_assignment_target_property_property(
+      prop.span,
+      prop.key,
+      binding_pattern_into_assignment_target_maybe_default(value, builder),
+      prop.computed,
+      builder,
+    )
+    .into_in(builder.allocator()),
   }
 }
