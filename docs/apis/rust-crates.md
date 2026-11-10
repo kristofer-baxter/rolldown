@@ -20,9 +20,20 @@ The upstream policy above still describes upstream support. This maintained fork
 
 Pin dependencies to a full commit in `https://github.com/kristofer-baxter/rolldown`. Crates that exchange Rust types must resolve from the same commit, notably `rolldown`, `rolldown_plugin`, `rolldown_common`, `rolldown_fs`, `rolldown_error`, and `rolldown_resolver`. A consumer's root `[patch.crates-io]` must also cover any other workspace crates that cross its API boundaries, such as `rolldown_ecmascript`, `rolldown_sourcemap`, or `rolldown_utils`. Path dependencies within the Git workspace resolve together; explicit registry dependencies elsewhere need the root patches.
 
-The current compiler/plugin/common/fs/error/resolver package versions are all `1.2.16`. The compiler uses the Oxc `0.158.0` AST, allocator, semantic, transformer, and minifier family. Consumers that also use Oxc or React compiler integrations must align those dependencies to one compatible source and revision; registry and Git packages with the same version are still different Rust type identities. Verify the complete graph with `cargo metadata --locked` and duplicate dependencies with `cargo tree -d`. Workspace-level patches in this repository are not inherited by a consumer's root workspace, including the source-map vendor patch. Pin the maintained source-map implementation too if using its fork extensions.
+The current compiler/plugin/common/fs/error/resolver package versions are all `1.2.16`. The compiler uses the Oxc `0.158.0` AST, allocator, semantic, transformer, and minifier family from `https://github.com/kristofer-baxter/oxc`. Every direct compiler-family dependency in `Cargo.toml`, including `oxc_napi`, `oxc_minify_napi`, `oxc_parser_napi`, and `oxc_transform_napi`, pins the same full Git revision. The remaining coupled compiler crates resolve through that Git workspace's internal dependencies; standalone Rolldown must not resolve a registry copy of any of them.
 
-The companion `rolldown_ecmascript`, `rolldown_sourcemap`, and `rolldown_utils` packages are also `1.2.16`. The separate Oxc resolver family is `11.24.3`, and `oxc_sourcemap` is `9.0.0` with this repository's vendor patch; these are not part of the `0.158.0` AST family.
+Cargo honors `[patch]` only in the top-level consuming workspace. A Git dependency's root patches and lockfile do not control the consumer's resolution. This fork therefore uses direct Git dependencies for Oxc rather than relying on a root Oxc patch: those dependency declarations still apply when another workspace consumes Rolldown. Consumers that also use Oxc or React compiler integrations must use the exact same canonical Git URL and revision. Their own root `[patch.crates-io]` entries may be needed to redirect third-party registry dependencies to that revision; such registry patches do not replace Rolldown's explicit Git pin. Registry and Git packages with the same version are still different Rust type identities.
+
+Verify the full standalone graph, including the bindings' NAPI dependencies, from this fork root:
+
+```sh
+cargo metadata --locked --format-version 1 | node .github/scripts/check-oxc-sources.mjs
+node --test .github/scripts/check-oxc-sources.test.mjs
+```
+
+The check rejects duplicate compiler identities, registry/path sources, differing revisions or versions, a missing NAPI compiler package, and workspace declarations that rely only on root patches. Use `cargo tree -d` to inspect unrelated duplicate dependencies. Consumers should separately verify their complete graph with `cargo metadata --locked`, because this standalone check cannot establish their crate identity.
+
+The companion `rolldown_ecmascript`, `rolldown_sourcemap`, and `rolldown_utils` packages are also `1.2.16`. The independent `oxc_index` family is `5`, the separate resolver and resolver-NAPI family is `11.24.3`, and `oxc_sourcemap` is `9.0.0` with this repository's existing vendor patch. These are not part of the `0.158.0` compiler Git family. The source-map root patch is also not inherited downstream; pin the maintained source-map implementation in the consumer root if using its fork extensions.
 
 No source synchronization script, independent compiler patch inventory, or regenerated vendor tree is part of this contract. Fixes and their standalone core/plugin regressions belong here first; consumer changes should select the qualified commit and adapt to the public API.
 
