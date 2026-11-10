@@ -643,14 +643,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     };
     let pre_emit_assets_len = output.assets.len();
-    let pre_emit_chunk_filenames: rustc_hash::FxHashSet<ArcStr> = output
-      .assets
-      .iter()
-      .filter_map(|a| match a {
-        rolldown_common::Output::Chunk(c) => Some(c.filename.clone()),
-        rolldown_common::Output::Asset(_) => None,
-      })
-      .collect();
+    let pre_emit_chunks =
+      GenerateStage::snapshot_mangled_chunks(&self.options, has_mangle_override, &output.assets);
 
     // Add additional files from build plugins.
     self.file_emitter.add_additional_files(&mut output.assets, &mut output.warnings);
@@ -668,12 +662,9 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       self.cache.invalidate_native_relink();
     }
 
-    if let Err(errors) = GenerateStage::validate_mangle_properties_output(
-      &self.options,
-      has_mangle_override,
-      &pre_emit_chunk_filenames,
-      &output.assets,
-    ) {
+    if let Err(errors) =
+      GenerateStage::validate_mangle_properties_output(&pre_emit_chunks, &output.assets)
+    {
       self.cache.invalidate_native_relink();
       return Err(self.handle_render_error(errors).await);
     }
@@ -1040,14 +1031,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       output.warnings = combined;
     }
     let pre_emit_assets_len = output.assets.len();
-    let pre_emit_chunk_filenames: rustc_hash::FxHashSet<ArcStr> = output
-      .assets
-      .iter()
-      .filter_map(|a| match a {
-        rolldown_common::Output::Chunk(c) => Some(c.filename.clone()),
-        rolldown_common::Output::Asset(_) => None,
-      })
-      .collect();
+    let pre_emit_chunks = GenerateStage::snapshot_mangled_chunks(
+      &self.options,
+      self.cache.mangle_properties_override.is_some(),
+      &output.assets,
+    );
 
     self.file_emitter.add_additional_files(&mut output.assets, &mut output.warnings);
 
@@ -1064,12 +1052,9 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       self.cache.invalidate_native_relink();
     }
 
-    if let Err(errors) = GenerateStage::validate_mangle_properties_output(
-      &self.options,
-      self.cache.mangle_properties_override.is_some(),
-      &pre_emit_chunk_filenames,
-      &output.assets,
-    ) {
+    if let Err(errors) =
+      GenerateStage::validate_mangle_properties_output(&pre_emit_chunks, &output.assets)
+    {
       self.cache.invalidate_native_relink();
       return Some(Err(self.handle_render_error(errors).await));
     }

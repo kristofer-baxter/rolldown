@@ -13,8 +13,10 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use rolldown::{BundleOutput, Bundler, BundlerOptions};
 use rolldown_common::{
-  BundleMode, CommentsOptions, ExperimentalOptions, InlineConstOption, InputItem, ModuleDefFormat,
-  OptimizationOption, Output, OutputFormat, RawMinifyOptions, RawMinifyOptionsDetailed, ScanMode,
+  BundleMode, ChunkOptimizationOption, CommentsOptions, ExperimentalOptions, InlineConstOption,
+  InputItem, ManglePropertiesPattern, ManglePropertiesPatterns, ModuleDefFormat,
+  OptimizationOption, Output, OutputFormat, PreserveEntrySignatures, RawManglePropertiesOptions,
+  RawMinifyOptions, RawMinifyOptionsDetailed, ScanMode,
 };
 use rolldown_plugin::{
   HookGenerateBundleArgs, HookLoadArgs, HookLoadOutput, HookLoadReturn, HookNoopReturn,
@@ -97,7 +99,607 @@ impl Drop for Fixture {
   }
 }
 
+fn partial_scan(fixture: &Fixture, name: &str) -> ScanMode<arcstr::ArcStr> {
+  ScanMode::Partial(vec![fixture.0.join(name).to_string_lossy().as_ref().into()])
+}
+
+#[derive(Debug)]
+struct DeferredMissing;
+
+impl Plugin for DeferredMissing {
+  fn name(&self) -> Cow<'static, str> {
+    "deferred-missing".into()
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::ResolveId
+  }
+
+  async fn resolve_id(
+    &self,
+    _ctx: &PluginContext,
+    args: &HookResolveIdArgs<'_>,
+  ) -> HookResolveIdReturn {
+    if args.specifier.ends_with("missing.js") {
+      return Err(rolldown::DeferredResolutionError::new("missing dependency".into()).into());
+    }
+    Ok(None)
+  }
+}
+
+#[tokio::test]
+async fn static_resolution_failures_fail_closed_with_and_without_native_semantics() -> Result<()> {
+  for native in [false, true] {
+    for deferred in [false, true] {
+      let fixture = Fixture::new(&[("main.js", "import './missing.js';")])?;
+      if !native {
+        let mut ordinary = Bundler::with_plugins(
+          fixture.options(),
+          if deferred { vec![Plugin::new_shared(DeferredMissing)] } else { vec![] },
+        )?;
+        ensure!(ordinary.generate().await.is_err(), "ordinary static failure must not publish");
+        ordinary.close().await?;
+      }
+      let mut options = fixture.options();
+      options.experimental = Some(ExperimentalOptions {
+        incremental_build: Some(true),
+        resolve_new_url_to_asset: Some(native),
+        ..Default::default()
+      });
+      let mut bundler = Bundler::with_plugins(
+        options,
+        if deferred { vec![Plugin::new_shared(DeferredMissing)] } else { vec![] },
+      )?;
+      ensure!(
+        bundler.incremental_generate(ScanMode::Full).await.is_err(),
+        "a full static failure published: native={native}, deferred={deferred}"
+      );
+      fixture.write("main.js", "events.push('ready');")?;
+      bundler.incremental_generate(ScanMode::Full).await?;
+      fixture.write("main.js", "import './missing.js';")?;
+      ensure!(
+        bundler.incremental_generate(partial_scan(&fixture, "main.js")).await.is_err(),
+        "a partial static failure published: native={native}, deferred={deferred}"
+      );
+      fixture.write("main.js", "events.push('recovered');")?;
+      fixture.output(&bundler.incremental_generate(partial_scan(&fixture, "main.js")).await?)?;
+      assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!(["recovered"]));
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn deferred_dynamic_resolution_remains_lazy_without_native_semantics() -> Result<()> {
+  let fixture = Fixture::new(&[("main.js", "export const load=()=>import('./missing.js');")])?;
+  let mut bundler =
+    Bundler::with_plugins(fixture.options(), vec![Plugin::new_shared(DeferredMissing)])?;
+  fixture.output(&bundler.generate().await?)?;
+  fixture.write(
+    "run.js",
+    "const m=await import('./dist/main.js');\
+     try{await m.load()}catch(e){events.push(e.name)}",
+  )?;
+  assert_eq!(fixture.execute("./run.js")?, serde_json::json!(["TypeError"]));
+  bundler.close().await?;
+  Ok(())
+}
+
+#[tokio::test]
+async fn cached_deferred_dynamic_failure_becomes_terminal_when_imported_statically() -> Result<()> {
+  for native in [false, true] {
+    let fixture = Fixture::new(&[("main.js", "export const load=()=>import('./missing.js');")])?;
+    let mut options = fixture.options();
+    options.experimental = Some(ExperimentalOptions {
+      incremental_build: Some(true),
+      resolve_new_url_to_asset: Some(native),
+      ..Default::default()
+    });
+    let mut bundler =
+      Bundler::with_plugins(options.clone(), vec![Plugin::new_shared(DeferredMissing)])?;
+    bundler.incremental_generate(ScanMode::Full).await?;
+    fixture.write("main.js", "import './missing.js';")?;
+    ensure!(
+      bundler.incremental_generate(partial_scan(&fixture, "main.js")).await.is_err(),
+      "a cached dynamic failure became statically reachable: native={native}"
+    );
+    let mut fresh = Bundler::with_plugins(options, vec![Plugin::new_shared(DeferredMissing)])?;
+    ensure!(fresh.generate().await.is_err());
+    fresh.close().await?;
+    fixture.write("main.js", "events.push('recovered');")?;
+    fixture.output(&bundler.incremental_generate(partial_scan(&fixture, "main.js")).await?)?;
+    assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!(["recovered"]));
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn ordinary_dynamic_parse_and_link_failures_do_not_enable_native_isolation() -> Result<()> {
+  for (dependency, route) in [
+    ("export const broken = ;", "export const load=()=>import('./dependency.js');"),
+    ("export const present = 1;", "export const load=()=>import('./route.js');"),
+  ] {
+    let fixture = Fixture::new(&[
+      ("dependency.js", dependency),
+      ("route.js", "export {missing} from './dependency.js';"),
+      ("main.js", route),
+    ])?;
+    let mut bundler = Bundler::new(fixture.options())?;
+    ensure!(bundler.generate().await.is_err(), "ordinary failure must not become native output");
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn native_partial_scans_recheck_cached_barrel_failures_after_rollback_and_route_changes()
+-> Result<()> {
+  for cached_link in [false, true] {
+    let fixture = Fixture::new(if cached_link {
+      &[
+        ("lib/package.json", r#"{"sideEffects":false}"#),
+        ("lib/catalog.js", "export {value} from './a.js';export {missing} from './b.js';"),
+        ("lib/a.js", "export const value='ready';"),
+        ("lib/b.js", "export const present='present';"),
+        ("route.js", "import{value}from'./lib/catalog.js';export{value};"),
+        (
+          "main.js",
+          "import{present}from'./lib/b.js';events.push(present);export const load=()=>import('./route.js').then(m=>m.value);",
+        ),
+      ]
+    } else {
+      &[
+        ("lib/package.json", r#"{"sideEffects":false}"#),
+        ("lib/catalog.js", "import './missing.js';export * from './extra.js';"),
+        ("lib/extra.js", "export const value=1;"),
+        ("route.js", "import{value}from'./lib/catalog.js';export{value};"),
+        ("main.js", "export const load=()=>import('./route.js').then(m=>m.value);"),
+      ]
+    })?;
+    fixture.write(
+      "run.js",
+      "const m=await import('./dist/main.js');try{events.push(await m.load())}catch(e){events.push(e.name)}",
+    )?;
+    let mut options = fixture.options();
+    options.experimental = Some(ExperimentalOptions {
+      incremental_build: Some(true),
+      resolve_new_url_to_asset: Some(true),
+      lazy_barrel: Some(true),
+      ..Default::default()
+    });
+    let plugins = || vec![Plugin::new_shared(DeferredMissing)];
+    let mut bundler = Bundler::with_plugins(options.clone(), plugins())?;
+    let first = bundler.incremental_generate(ScanMode::Full).await?;
+    ensure!(
+      first.assets.iter().all(|asset| {
+        let code = String::from_utf8_lossy(asset.content_as_bytes());
+        !code.contains("missing dependency") && !code.contains("__moduleLinkError")
+      }),
+      "unread barrel routes must not fail the first build"
+    );
+    fixture.output(&first)?;
+    let expected_first =
+      if cached_link { serde_json::json!(["present", "ready"]) } else { serde_json::json!([1]) };
+    assert_eq!(fixture.execute("./run.js")?, expected_first);
+    let updated = if cached_link {
+      fixture
+        .write("route.js", "import{missing}from'./lib/catalog.js';export const value=missing;")?;
+      bundler.incremental_generate(partial_scan(&fixture, "route.js")).await?
+    } else {
+      fixture.write("lib/extra.js", "module.exports={value:2};")?;
+      fixture.write(
+        "main.js",
+        "import './missing.js';export const load=()=>import('./route.js').then(m=>m.value);",
+      )?;
+      let changed = ["lib/extra.js", "main.js"]
+        .map(|name| fixture.0.join(name).to_string_lossy().as_ref().into());
+      ensure!(
+        bundler.incremental_generate(ScanMode::Partial(changed.into())).await.is_err(),
+        "the static failure must abort while the lazy barrel failure is staged"
+      );
+      fixture.write("main.js", "export const load=()=>import('./route.js').then(m=>m.value);")?;
+      bundler.incremental_generate(partial_scan(&fixture, "main.js")).await?
+    };
+    fixture.output(&updated)?;
+    let expected = if cached_link {
+      serde_json::json!(["present", "SyntaxError"])
+    } else {
+      serde_json::json!(["TypeError"])
+    };
+    assert_eq!(fixture.execute("./run.js")?, expected);
+    bundler.close().await?;
+    let mut fresh = Bundler::with_plugins(options, plugins())?;
+    fixture.output(&fresh.generate().await?)?;
+    assert_eq!(fixture.execute("./run.js")?, expected);
+    fresh.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn incremental_plain_object_pruning_discovers_new_importer_reads() -> Result<()> {
+  let fixture = Fixture::new(&[
+    ("owner.js", "export const tokens={live:'LIVE',dead:'NEWLY_READ_VALUE'};"),
+    ("reader.js", "import{tokens}from'./owner.js';events.push(tokens.live);"),
+    ("changed.js", "events.push('before');"),
+    ("main.js", "import './reader.js';import './changed.js';"),
+  ])?;
+  let mut options = fixture.options();
+  options.preserve_modules = Some(true);
+  options.experimental = Some(ExperimentalOptions {
+    incremental_build: Some(true),
+    resolve_new_url_to_asset: Some(false),
+    on_demand_wrapping: Some(true),
+    ..Default::default()
+  });
+  let mut bundler = Bundler::new(options.clone())?;
+  bundler.set_omit_reused_chunk_bytes(true);
+  let first = bundler.incremental_generate(ScanMode::Full).await?;
+  bundler.incremental_generate(ScanMode::Partial(vec![])).await?;
+  ensure!(
+    first.assets.iter().all(|asset| {
+      !String::from_utf8_lossy(asset.content_as_bytes()).contains("NEWLY_READ_VALUE")
+    }),
+    "the initial link must prune the unread property"
+  );
+  fixture.write("changed.js", "import{tokens}from'./owner.js';events.push(tokens.dead);")?;
+  let mut updated = bundler.incremental_generate(partial_scan(&fixture, "changed.js")).await?;
+  for asset in &mut updated.assets {
+    if let Output::Chunk(chunk) = asset
+      && chunk.code.is_empty()
+    {
+      let original = first
+        .assets
+        .iter()
+        .find_map(|asset| {
+          let Output::Chunk(original) = asset else { return None };
+          (original.filename == chunk.filename).then_some(original)
+        })
+        .context("omitted chunk existed in the first output")?;
+      Arc::make_mut(chunk).code.clone_from(&original.code);
+    }
+  }
+  fixture.output(&updated)?;
+  assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!(["LIVE", "NEWLY_READ_VALUE"]));
+  ensure!(!bundler.last_fast_native_relink(), "the cached read analysis must not be reused");
+  ensure!(
+    matches!(
+      bundler.last_native_relink_fallback(),
+      Some("plain_object_reads" | "structural" | "no_cached_link")
+    ),
+    "new reads require a fresh link: {:?}",
+    bundler.last_native_relink_fallback()
+  );
+  let mut fresh = Bundler::new(options)?;
+  fixture.output(&fresh.incremental_generate(ScanMode::Full).await?)?;
+  assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!(["LIVE", "NEWLY_READ_VALUE"]));
+  fresh.close().await?;
+  bundler.close().await?;
+  Ok(())
+}
+
+#[derive(Debug)]
+struct ReplaceMangledChunk(Arc<AtomicBool>);
+
+impl Plugin for ReplaceMangledChunk {
+  fn name(&self) -> Cow<'static, str> {
+    "replace-mangled-chunk".into()
+  }
+
+  fn register_hook_usage(&self) -> HookUsage {
+    HookUsage::GenerateBundle
+  }
+
+  async fn generate_bundle(
+    &self,
+    _ctx: &PluginContext,
+    args: &mut HookGenerateBundleArgs<'_>,
+  ) -> HookNoopReturn {
+    if !self.0.load(Ordering::SeqCst) {
+      for output in args.bundle.iter_mut() {
+        if let Output::Chunk(chunk) = output {
+          Arc::make_mut(chunk).name = "hook-metadata".into();
+        }
+      }
+      args.bundle.push(Output::Asset(Arc::new(rolldown_common::OutputAsset {
+        filename: "hook.txt".into(),
+        source: "asset".to_string().into(),
+        names: vec![],
+        original_file_names: vec![],
+      })));
+      return Ok(());
+    }
+    let read = regex::Regex::new(r"events\.push\(([\w$]+)\.([\w$]+)")?;
+    for output in args.bundle.iter_mut() {
+      let Output::Chunk(chunk) = output else { continue };
+      if chunk.filename.as_str() != "main.js" {
+        continue;
+      }
+      let captures = read.captures(&chunk.code).context("entry reads a shared object")?;
+      let rewritten = chunk.code.replacen(
+        &format!("events.push({}.{}", &captures[1], &captures[2]),
+        &format!("events.push({}.shared_", &captures[1]),
+        1,
+      );
+      Arc::make_mut(chunk).code = format!("{rewritten}\n/* hook replacement */").into();
+    }
+    Ok(())
+  }
+}
+
+#[tokio::test]
+async fn shared_property_mangling_rejects_same_filename_code_replacements() -> Result<()> {
+  for override_options in [false, true] {
+    for active in [false, true] {
+      let fixture = Fixture::new(&[
+        ("main.js", "import{value}from'./owner.js';events.push(value.shared_,value['occupied_']);"),
+        ("other.js", "import{value}from'./owner.js';events.push(value.shared_,value.occupied_);"),
+        ("owner.js", "export const value={shared_:7,occupied_:8};"),
+      ])?;
+      let mut options = fixture.options();
+      options
+        .input
+        .as_mut()
+        .expect("entries")
+        .push(InputItem { name: Some("other".into()), import: "./other.js".into() });
+      let mangle = active
+        .then(|| oxc::minifier::ManglePropertiesOptions::from_pattern("_$").expect("pattern"));
+      options.minify = Some(RawMinifyOptions::Object(RawMinifyOptionsDetailed {
+        mangle: None,
+        mangle_properties: if override_options {
+          None
+        } else {
+          mangle.clone().map(|options| {
+            Box::new(RawManglePropertiesOptions {
+              options,
+              patterns: ManglePropertiesPatterns {
+                include: ManglePropertiesPattern { source: "_$".into(), flags: String::new() },
+                exclude: None,
+              },
+            })
+          })
+        },
+        compress: Some(Default::default()),
+        remove_whitespace: true,
+        ascii_only: false,
+      }));
+      options.experimental =
+        Some(ExperimentalOptions { incremental_build: Some(true), ..Default::default() });
+      let replace = Arc::new(AtomicBool::new(true));
+      let mut bundler = Bundler::with_plugins(
+        options,
+        vec![Plugin::new_shared(ReplaceMangledChunk(Arc::clone(&replace)))],
+      )?;
+      let result = bundler
+        .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
+          if override_options {
+            bundle.set_mangle_properties(mangle.clone());
+          }
+          let scanned = bundle.scan_modules(ScanMode::Full).await?;
+          bundle.bundle_generate(scanned).await
+        })
+        .await;
+      if active {
+        match result {
+          Ok(output) => {
+            fixture.output(&output)?;
+            anyhow::bail!(
+              "same-name replacement escaped shared mapping: {:?}",
+              fixture.execute("./dist/main.js")?
+            );
+          }
+          Err(errors) => {
+            let message = format!("{errors:?}");
+            ensure!(
+              message.contains("main.js") && message.contains("generateBundle"),
+              "the diagnostic must identify the late code change: {message}"
+            );
+          }
+        }
+      } else {
+        fixture.output(&result?)?;
+        assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!([7, 8]));
+      }
+      replace.store(false, Ordering::SeqCst);
+      let recovered = bundler
+        .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
+          if override_options {
+            bundle.set_mangle_properties(mangle.clone());
+          }
+          let scanned = bundle.scan_modules(ScanMode::Full).await?;
+          bundle.bundle_generate(scanned).await
+        })
+        .await?;
+      fixture.output(&recovered)?;
+      assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!([7, 8]));
+      ensure!(recovered.assets.iter().any(|asset| asset.filename() == "hook.txt"));
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
+
 type Waiters = Arc<Mutex<Vec<JoinHandle<Result<()>>>>>;
+
+#[tokio::test]
+async fn strict_native_destructuring_preserves_getters_across_a_shared_runtime() -> Result<()> {
+  for declaration in [
+    "const { unused } = globalThis.input;",
+    "const { unused: renamed } = globalThis.input;",
+    "const { missing = globalThis.input.unused } = globalThis.input;",
+    "const { nested: { unused } } = { nested: globalThis.input };",
+    "const [unused] = [globalThis.input.unused];",
+  ] {
+    let fixture = Fixture::new(&[
+      ("main.js", "import './destructure.js';export function read(){return 42}"),
+      ("other.js", "export function read(){return 24}"),
+      ("destructure.js", declaration),
+    ])?;
+    for (name, entry) in [("native.js", "./main.js"), ("bundled.js", "./dist/main.cjs")] {
+      fixture.write(
+        name,
+        &format!(
+          "const observed=[];globalThis.input={{get unused(){{observed.push('get');return 1}}}};\
+         const main=await import({entry:?});events.push([main.read(),observed]);"
+        ),
+      )?;
+    }
+    let expected = fixture.execute("./native.js")?;
+    assert_eq!(expected, serde_json::json!([[42, ["get"]]]));
+    for native in [false, true] {
+      for on_demand in [false, true] {
+        let mut options = fixture.options();
+        options.strict_execution_order = Some(true);
+        options.format = Some(OutputFormat::Cjs);
+        options.entry_filenames = Some("[name].cjs".to_string().into());
+        options.chunk_filenames = Some("[name]-[hash].cjs".to_string().into());
+        options.preserve_entry_signatures = Some(PreserveEntrySignatures::Strict);
+        options
+          .input
+          .as_mut()
+          .expect("entries")
+          .push(InputItem { name: Some("other".into()), import: "./other.js".into() });
+        options.experimental = Some(ExperimentalOptions {
+          resolve_new_url_to_asset: Some(native),
+          on_demand_wrapping: Some(on_demand),
+          ..Default::default()
+        });
+        let mut bundler = Bundler::new(options)?;
+        let output = bundler.generate().await?;
+        let chunks = output.assets.iter().filter(|asset| matches!(asset, Output::Chunk(_))).count();
+        if native {
+          ensure!(chunks > 2, "native mode must exercise a shared runtime chunk");
+        }
+        fixture.output(&output)?;
+        assert_eq!(fixture.execute("./bundled.js")?, expected, "{declaration}, native={native}");
+        bundler.close().await?;
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn strict_native_cycle_folds_inlined_constant_owners_into_the_eager_entry() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import{shared,tagged}from'./shared.js';globalThis.order=['main'];\
+      globalThis.value=`${shared}:${tagged()}`;\
+      globalThis.lazy=import('./lazy-a.js').then(a=>import('./lazy-b.js')\
+      .then(b=>import('./lazy-c.js').then(c=>[a.value,b.value,c.value])));",
+    ),
+    (
+      "shared.js",
+      "import{tag}from'./tag.js';export const shared='shared';export function tagged(){return tag}",
+    ),
+    (
+      "tag.js",
+      "import{shared}from'./shared.js';export const tag='tag';export function loop(){return shared}",
+    ),
+    (
+      "lazy-a.js",
+      "import{tag}from'./tag.js';globalThis.order.push('lazy-a');export const value=`a:${tag}`;",
+    ),
+    (
+      "lazy-b.js",
+      "import{tag}from'./tag.js';globalThis.order.push('lazy-b');export const value=`b:${tag}`;",
+    ),
+    ("lazy-c.js", "globalThis.order.push('lazy-c');export const value='c';"),
+  ])?;
+  for (name, entry) in [("native.js", "./main.js"), ("bundled.js", "./dist/main.js")] {
+    fixture.write(
+      name,
+      &format!(
+        "await import({entry:?});const lazy=await globalThis.lazy;\
+       events.push({{value:globalThis.value,lazy,order:globalThis.order}});"
+      ),
+    )?;
+  }
+  let expected = fixture.execute("./native.js")?;
+  assert_eq!(
+    expected,
+    serde_json::json!([{
+      "value":"shared:tag","lazy":["a:tag","b:tag","c"],"order":["main","lazy-a","lazy-b","lazy-c"]
+    }])
+  );
+  for native in [false, true] {
+    for on_demand in [false, true] {
+      let mut options = fixture.options();
+      options.strict_execution_order = Some(true);
+      options.experimental = Some(ExperimentalOptions {
+        resolve_new_url_to_asset: Some(native),
+        on_demand_wrapping: Some(on_demand),
+        chunk_optimization: Some(ChunkOptimizationOption::Bool(true)),
+        ..Default::default()
+      });
+      let mut bundler = Bundler::new(options)?;
+      let output = bundler.generate().await?;
+      let host = |name: &str| {
+        output.assets.iter().position(|asset| {
+          let Output::Chunk(chunk) = asset else { return false };
+          chunk.module_ids.iter().any(|id| id.ends_with(name))
+        })
+      };
+      if native {
+        ensure!(host("/tag.js").is_some(), "native mode retains the constant owner");
+        assert_eq!(host("/tag.js"), host("/shared.js"));
+        assert_eq!(host("/tag.js"), host("/main.js"));
+      } else {
+        ensure!(host("/tag.js").is_none(), "ordinary mode may eliminate the inlined owner");
+      }
+      fixture.output(&output)?;
+      assert_eq!(
+        fixture.execute("./bundled.js")?,
+        expected,
+        "native={native}, wrapping={on_demand}"
+      );
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn native_partial_scan_marks_a_dropped_require_dependency_failure_unreached() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import owner from'./owner.cjs';import{leaf}from'./leaf.js';events.push(owner,leaf);",
+    ),
+    ("owner.cjs", "module.exports=require('./dep.js');"),
+    ("dep.js", "export const dep='dep';"),
+    ("leaf.js", "export const leaf='leaf';"),
+  ])?;
+  let mut options = fixture.options();
+  options.experimental = Some(ExperimentalOptions {
+    incremental_build: Some(true),
+    resolve_new_url_to_asset: Some(true),
+    ..Default::default()
+  });
+  let mut bundler = Bundler::new(options.clone())?;
+  bundler.incremental_generate(ScanMode::Full).await?;
+  fixture.write("main.js", "import{leaf}from'./leaf.js';events.push(leaf);")?;
+  fixture.write("dep.js", "import{absent}from'./leaf.js';export const dep=absent;")?;
+  let changed = ScanMode::Partial(vec![
+    fixture.0.join("main.js").to_string_lossy().as_ref().into(),
+    fixture.0.join("dep.js").to_string_lossy().as_ref().into(),
+  ]);
+  let error = bundler.incremental_generate(changed).await.err().context("update must abort")?;
+  ensure!(format!("{error:?}").contains("absent"), "the missing export must be diagnosed");
+  ensure!(bundler.last_scan_failures_unreached(), "the entry dropped the require closure");
+  let full = bundler.incremental_generate(ScanMode::Full).await?;
+  fixture.output(&full)?;
+  assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!(["leaf"]));
+  let mut fresh = Bundler::new(options)?;
+  fixture.output(&fresh.incremental_generate(ScanMode::Full).await?)?;
+  assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!(["leaf"]));
+  fresh.close().await?;
+  bundler.close().await?;
+  Ok(())
+}
 
 #[derive(Debug)]
 struct ContextLoadPanic {

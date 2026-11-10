@@ -71,6 +71,8 @@ pub struct PlainObjectReads {
   /// Modules whose edit can change `objects` or `reads`: the declaring modules, the modules that
   /// reference a candidate and the modules that import from a module exporting one.
   pub guarded: FxHashSet<ModuleIdx>,
+  /// Exporters of candidates, including re-export routes a new importer could start reading.
+  exporters: FxHashSet<ModuleIdx>,
 }
 
 impl PlainObjectReads {
@@ -99,6 +101,11 @@ impl PlainObjectReads {
   /// Whether an edit of `module_idx` can change what this analysis found.
   pub fn guards(&self, module_idx: ModuleIdx) -> bool {
     self.guarded.contains(&module_idx)
+  }
+
+  /// Whether new import edges could introduce reads absent from the cached analysis.
+  pub fn guards_new_imports(&self, mut importees: impl Iterator<Item = ModuleIdx>) -> bool {
+    importees.any(|idx| self.exporters.contains(&idx))
   }
 
   fn compute_plan(
@@ -272,7 +279,7 @@ impl LinkStage<'_> {
         guarded.insert(module.idx);
       }
     }
-    self.plain_object_reads = PlainObjectReads { objects, reads, guarded };
+    self.plain_object_reads = PlainObjectReads { objects, reads, guarded, exporters };
   }
 
   /// Marks escaped the candidates that code outside the bundle's static imports can reach: through
@@ -499,5 +506,31 @@ impl<'a, F: Fn(&IdentifierReference<'_>) -> Option<SymbolId>> VisitJs<'a> for Re
     {
       self.escaped.insert(object);
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::PlainObjectReads;
+  use rolldown_common::ModuleIdx;
+
+  #[test]
+  fn new_imports_guard_previously_unrelated_and_appended_readers() {
+    let exporter = ModuleIdx::from_raw(1);
+    let previous_reader = ModuleIdx::from_raw(2);
+    let unrelated = ModuleIdx::from_raw(3);
+    let appended = ModuleIdx::from_raw(4);
+    let analysis = PlainObjectReads {
+      exporters: [exporter].into_iter().collect(),
+      guarded: [exporter, previous_reader].into_iter().collect(),
+      ..Default::default()
+    };
+    for reader in [unrelated, appended] {
+      assert!(!analysis.guards(reader), "the previous link did not see this reader");
+      assert!(!analysis.guards_new_imports(std::iter::empty()));
+      assert!(!analysis.guards_new_imports([unrelated].into_iter()));
+      assert!(analysis.guards_new_imports([unrelated, exporter].into_iter()));
+    }
+    assert!(analysis.guards(previous_reader));
   }
 }

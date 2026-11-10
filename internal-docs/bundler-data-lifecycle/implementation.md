@@ -189,6 +189,13 @@ valid graph any partial scan can build on.** `Bundler::incremental_bundle`
 picks the scan mode from that property alone (`has_snapshot`), and no other
 consumer needs to reason about failed builds.
 
+Typed deferred-resolution diagnostics are staged independently of native runtime
+options. Before publishing a scan, `ModuleLoader` checks those staged failures
+even in ordinary mode: an eager entry or host loading edge must fail closed,
+while a dynamic-import boundary can retain a lazy rejection. The same pass checks
+arbitrary parse/link failures only when native runtime-module semantics are
+enabled. Merely using incremental builds does not enable that native protocol.
+
 **Why keep a cache from a failed build at all?** Committing a _torn_ cache is
 worse than dropping it: an empty snapshot panics the next `get_snapshot()`, and
 torn scoping makes `oxc_semantic` index out of bounds during the next link. A

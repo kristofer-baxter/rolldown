@@ -12,7 +12,7 @@ use rolldown_ecmascript::EcmaCompiler;
 use rolldown_error::BuildResult;
 use rolldown_sourcemap::collapse_sourcemaps;
 use rolldown_utils::rayon::{IntoParallelRefMutIterator, ParallelIterator};
-use rustc_hash::FxHashSet;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::type_alias::IndexInstantiatedChunks;
 
@@ -283,30 +283,44 @@ impl GenerateStage<'_> {
     }))
   }
 
-  /// Checks the final output after `generateBundle` so late chunks added after
-  /// `minify_chunks` cannot bypass the shared property-mangling pass.
-  pub(crate) fn validate_mangle_properties_output(
+  /// Captures code identity before hooks, only when shared property mangling requires it.
+  pub(crate) fn snapshot_mangled_chunks(
     options: &NormalizedBundlerOptions,
     has_mangle_override: bool,
-    minified_chunk_filenames: &FxHashSet<arcstr::ArcStr>,
     outputs: &[Output],
-  ) -> BuildResult<()> {
+  ) -> Option<FxHashMap<arcstr::ArcStr, String>> {
     let mangle_active = has_mangle_override
       || chunk_minify_options(&options.minify)
         .is_some_and(|(_, minify_options, _, _)| minify_options.mangle_properties.is_some());
-    if mangle_active
-      && outputs.iter().any(|output| {
-        matches!(
-          output,
-          Output::Chunk(chunk)
-            if !test_d_ts_pattern(chunk.filename.as_str())
-              && !minified_chunk_filenames.contains(&chunk.filename)
-        )
+    mangle_active.then(|| {
+      outputs
+        .iter()
+        .filter_map(|output| match output {
+          Output::Chunk(chunk) => Some((chunk.filename.clone(), chunk.code.clone())),
+          Output::Asset(_) => None,
+        })
+        .collect()
+    })
+  }
+
+  /// Rejects added or rewritten JavaScript chunks that bypassed the shared property map.
+  pub(crate) fn validate_mangle_properties_output(
+    minified_chunks: &Option<FxHashMap<arcstr::ArcStr, String>>,
+    outputs: &[Output],
+  ) -> BuildResult<()> {
+    if let Some(minified_chunks) = minified_chunks
+      && let Some(changed) = outputs.iter().find_map(|output| {
+        let Output::Chunk(chunk) = output else { return None };
+        (!test_d_ts_pattern(chunk.filename.as_str())
+          && minified_chunks.get(&chunk.filename) != Some(&chunk.code))
+        .then_some(&chunk.filename)
       })
     {
       return Err(
         rolldown_error::BuildDiagnostic::invalid_option(
-          rolldown_error::InvalidOptionType::ManglePropertiesWithMultipleChunks,
+          rolldown_error::InvalidOptionType::ManglePropertiesWithLateChunkChanges(
+            changed.to_string(),
+          ),
         )
         .into(),
       );

@@ -1035,9 +1035,14 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       && self.unreached(self.failed_tasks(), &user_defined_entry_ids);
 
     if errors.is_empty()
-      && crate::utils::native_records::runtime_module_semantics_enabled(
+      && (crate::utils::native_records::runtime_module_semantics_enabled(
         &self.shared_context.options,
-      )
+      ) || !self
+        .shared_context
+        .deferred_resolution_targets
+        .lock()
+        .expect("resolution failure state poisoned")
+        .is_empty())
     {
       // Keep the recovery scanner's large future out of every caller's build future.
       match Box::pin(self.isolate_dynamic_parse_errors(&user_defined_entry_ids)).await {
@@ -1621,7 +1626,15 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         failures.entry(state.idx()).or_default().push(diagnostic.clone().into_diagnostic());
       }
     }
-    let link_failures = self.scanned_link_failures(&failures);
+    // Explicit deferred-resolution diagnostics must fail closed in ordinary builds too.
+    // Recovering arbitrary parse/link failures remains an opt-in native runtime protocol.
+    let link_failures = if crate::utils::native_records::runtime_module_semantics_enabled(
+      &self.shared_context.options,
+    ) {
+      self.scanned_link_failures(&failures)
+    } else {
+      FxHashMap::default()
+    };
     let link_messages = link_failures
       .iter()
       .map(|(&idx, diagnostics)| {

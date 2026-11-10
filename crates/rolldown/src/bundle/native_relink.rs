@@ -307,13 +307,20 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let mut dirty_modules: Vec<ModuleIdx> =
       self.cache.dirty_native_modules.iter().copied().filter(|idx| idx.index() < old_len).collect();
     dirty_modules.sort_unstable();
-    // Property pruning read every module that the analysis guards as linking found it.
-    if let Some(&idx) =
-      dirty_modules.iter().find(|&&idx| cached.link_output.plain_object_reads.guards(idx))
-    {
+    // Newly added edges can introduce readers that the previous link never guarded.
+    let plain_reads = &cached.link_output.plain_object_reads;
+    if let Some(&idx) = dirty_modules.iter().chain(&added).find(|&&idx| {
+      plain_reads.guards(idx)
+        || plain_reads.guards_new_imports(
+          snapshot.module_table.modules[idx]
+            .import_records()
+            .iter()
+            .filter_map(|record| record.resolved_module),
+        )
+    }) {
       reject_with!(
         "plain_object_reads",
-        cached.link_output.module_table.modules[idx].stable_id().to_string()
+        snapshot.module_table.modules[idx].stable_id().to_string()
       );
     }
     // A module that the graph reaches only through records that order no execution, an
