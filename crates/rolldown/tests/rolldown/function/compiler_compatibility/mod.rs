@@ -1152,6 +1152,54 @@ async fn defines_match_cooked_template_keys_without_decoding_literal_backslashes
 }
 
 #[tokio::test]
+async fn minify_keep_names_preserves_iife_and_inferred_property_stack_frames() -> Result<()> {
+  let fixture = Fixture::new(&[(
+    "main.js",
+    r"events.push((function descriptiveIife(){return new Error().stack;})().split('\n')[1]);
+      events.push(({descriptiveProperty:function(){return new Error().stack;}})
+        .descriptiveProperty().split('\n')[1]);
+      events.push(({descriptiveArrow:()=>new Error().stack})
+        ['descriptiveArrow']().split('\n')[1]);",
+  )])?;
+  let names = ["descriptiveIife", "descriptiveProperty", "descriptiveArrow"];
+  let reference = fixture.execute("./main.js")?;
+  for (frame, name) in reference.as_array().context("reference stack frames")?.iter().zip(names) {
+    ensure!(frame.as_str().context("stack frame")?.contains(name), "reference frame: {frame}");
+  }
+  for detailed in [false, true] {
+    for keep_names in [true, false] {
+      let mut options = fixture.options();
+      options.keep_names = Some(keep_names);
+      options.minify = Some(if detailed {
+        RawMinifyOptions::Object(RawMinifyOptionsDetailed {
+          mangle: Some(Default::default()),
+          mangle_properties: None,
+          compress: Some(Default::default()),
+          remove_whitespace: true,
+          ascii_only: false,
+        })
+      } else {
+        RawMinifyOptions::Bool(true)
+      });
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      bundler.close().await?;
+      let observed = fixture.execute("./dist/main.js")?;
+      let frames = observed.as_array().context("minified stack frames")?;
+      ensure!(frames.len() == names.len(), "all stack observations must survive: {observed}");
+      for (frame, name) in frames.iter().zip(names) {
+        assert_eq!(
+          frame.as_str().context("stack frame")?.contains(name),
+          keep_names,
+          "detailed={detailed}, keep_names={keep_names}, expected={name}, frame={frame}"
+        );
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn closed_plain_objects_prune_unused_properties_but_not_escaped_shapes() -> Result<()> {
   let fixture = Fixture::new(&[
     ("tokens.js", "export const tokens={live:'LIVE',dead:'UNUSED_TOKEN'};"),
