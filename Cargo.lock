@@ -1582,7 +1582,7 @@ checksum = "13c45bb4a6ae1280ec0803b1ef9d3455eb50f01efbbe1447ab020f1d54fba9d8"
 [[package]]
 name = "oxc"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -1620,7 +1620,7 @@ dependencies = [
 [[package]]
 name = "oxc_allocator"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "allocator-api2",
  "hashbrown 0.17.1",
@@ -1633,7 +1633,7 @@ dependencies = [
 [[package]]
 name = "oxc_ast"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bitflags",
  "oxc_allocator",
@@ -1650,7 +1650,7 @@ dependencies = [
 [[package]]
 name = "oxc_ast_macros"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "phf",
  "proc-macro2",
@@ -1661,7 +1661,7 @@ dependencies = [
 [[package]]
 name = "oxc_ast_visit"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "oxc_allocator",
  "oxc_ast",
@@ -1672,7 +1672,7 @@ dependencies = [
 [[package]]
 name = "oxc_codegen"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bitflags",
  "cow-utils",
@@ -1693,7 +1693,7 @@ dependencies = [
 [[package]]
 name = "oxc_compat"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "cow-utils",
  "oxc-browserslist",
@@ -1705,12 +1705,12 @@ dependencies = [
 [[package]]
 name = "oxc_data_structures"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 
 [[package]]
 name = "oxc_diagnostics"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bytecount",
  "cow-utils",
@@ -1727,7 +1727,7 @@ dependencies = [
 [[package]]
 name = "oxc_ecmascript"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "cow-utils",
  "itoa",
@@ -1749,7 +1749,7 @@ dependencies = [
 [[package]]
 name = "oxc_estree"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "itoa",
  "oxc_data_structures",
@@ -1770,7 +1770,7 @@ dependencies = [
 [[package]]
 name = "oxc_isolated_declarations"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bitflags",
  "oxc_allocator",
@@ -1787,7 +1787,7 @@ dependencies = [
 [[package]]
 name = "oxc_mangler"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "itertools",
  "oxc_allocator",
@@ -1805,7 +1805,7 @@ dependencies = [
 [[package]]
 name = "oxc_minifier"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "cow-utils",
  "itoa",
@@ -1830,7 +1830,7 @@ dependencies = [
 [[package]]
 name = "oxc_minify_napi"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "lazy-regex",
  "napi",
@@ -1852,7 +1852,7 @@ dependencies = [
 [[package]]
 name = "oxc_napi"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "napi",
  "napi-build",
@@ -1867,7 +1867,7 @@ dependencies = [
 [[package]]
 name = "oxc_parser"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bitflags",
  "cow-utils",
@@ -1890,7 +1890,7 @@ dependencies = [
 [[package]]
 name = "oxc_parser_napi"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "napi",
  "napi-build",
@@ -1906,7 +1906,7 @@ dependencies = [
 [[package]]
 name = "oxc_regular_expression"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bitflags",
  "oxc_allocator",
@@ -1963,7 +1963,7 @@ dependencies = [
 [[package]]
 name = "oxc_semantic"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "itertools",
  "memchr",
@@ -1999,7 +1999,7 @@ dependencies = [
 [[package]]
 name = "oxc_span"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "compact_str",
  "oxc_allocator",
@@ -2012,7 +2012,7 @@ dependencies = [
 [[package]]
 name = "oxc_str"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "compact_str",
  "hashbrown 0.17.1",
@@ -2025,7 +2025,7 @@ dependencies = [
 [[package]]
 name = "oxc_syntax"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "bitflags",
  "cow-utils",
@@ -2045,7 +2045,7 @@ dependencies = [
 [[package]]
 name = "oxc_transform_napi"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "napi",
  "napi-build",
@@ -2059,7 +2059,7 @@ dependencies = [
 [[package]]
 name = "oxc_transformer"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "base64",
  "compact_str",
@@ -2088,7 +2088,7 @@ dependencies = [
 [[package]]
 name = "oxc_transformer_plugins"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "cow-utils",
  "itoa",
@@ -2110,7 +2110,7 @@ dependencies = [
 [[package]]
 name = "oxc_traverse"
 version = "0.158.0"
-source = "git+https://github.com/kristofer-baxter/oxc?rev=f4d013423ceb7b888f171874e1ab9cb23af738cf#f4d013423ceb7b888f171874e1ab9cb23af738cf"
+source = "git+https://github.com/kristofer-baxter/oxc?rev=18c488df553263a8529423308ae248614895a70b#18c488df553263a8529423308ae248614895a70b"
 dependencies = [
  "itoa",
  "oxc_allocator",

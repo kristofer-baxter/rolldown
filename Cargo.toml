@@ -278,7 +278,7 @@ napi-derive = { version = "3", default-features = false, features = ["type-def",
 
 # The coupled compiler family, including NAPI, comes from one immutable maintained fork.
 # Direct Git dependencies also apply downstream, where this workspace's root patches do not.
-oxc = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf", features = [
+oxc = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b", features = [
   "ast_visit",
   "transformer",
   "minifier",
@@ -289,14 +289,14 @@ oxc = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", re
   "isolated_declarations",
   "regular_expression",
 ] }
-oxc_allocator = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf", features = ["pool"] }
-oxc_ecmascript = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
-oxc_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
-oxc_str = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
-oxc_minify_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
-oxc_parser_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
-oxc_transform_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
-oxc_traverse = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "f4d013423ceb7b888f171874e1ab9cb23af738cf" }
+oxc_allocator = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b", features = ["pool"] }
+oxc_ecmascript = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
+oxc_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
+oxc_str = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
+oxc_minify_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
+oxc_parser_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
+oxc_transform_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
+oxc_traverse = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "18c488df553263a8529423308ae248614895a70b" }
 
 # oxc crates in their own repos
 # Versions must be relaxed for usage in oxc.
