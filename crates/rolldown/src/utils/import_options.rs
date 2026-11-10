@@ -94,7 +94,12 @@ fn imports_as_javascript_auto(importer: &NormalModule, target: &NormalModule) ->
 
 pub fn is_text_module(module: &NormalModule) -> bool {
   module.module_type == rolldown_common::ModuleType::Text
-    || module.import_records.iter().any(|record| record.module_request == "\0rolldown/text-module")
+    || module.import_records.iter().any(|record| {
+      matches!(
+        record.module_request.as_str(),
+        "\0rolldown/text-module" | "\0rolldown/raw-text-module"
+      )
+    })
 }
 
 pub fn dynamic_import_is_text(
@@ -107,7 +112,13 @@ pub fn dynamic_import_is_text(
     .get(&import.node_id())
     .and_then(|record| owner.import_records[*record].resolved_module)
     .and_then(|target| modules[target].as_normal())
-    .is_some_and(is_text_module)
+    .is_some_and(|module| {
+      module.module_type == rolldown_common::ModuleType::Text
+        || module
+          .import_records
+          .iter()
+          .any(|record| record.module_request == "\0rolldown/text-module")
+    })
 }
 
 pub fn dynamic_import_is_json(

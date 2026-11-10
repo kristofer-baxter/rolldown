@@ -1,4 +1,4 @@
-use oxc::transformer_plugins::ReplaceGlobalDefinesConfig;
+use crate::utils::replace_global_defines::ReplaceGlobalDefinesConfig;
 use rolldown_common::{ModuleId, ModuleIdx, ModuleLoaderMsg};
 use rolldown_error::BuildDiagnostic;
 use rolldown_fs::FileSystem;

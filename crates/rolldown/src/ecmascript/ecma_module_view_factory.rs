@@ -28,7 +28,8 @@ pub async fn create_ecma_view(
   ctx: &mut CreateModuleContext<'_>,
   args: CreateModuleViewArgs,
 ) -> BuildResult<CreateEcmaViewReturn> {
-  let CreateModuleViewArgs { source, sourcemap_chain, hook_side_effects } = args;
+  let ctx = &mut *ctx;
+  let CreateModuleViewArgs { source, sourcemap_chain, hook_side_effects } = { args };
   let ParseToEcmaAstResult {
     mut ast,
     scoping,
@@ -45,7 +46,7 @@ pub async fn create_ecma_view(
   let repr_name = module_id.representative_name();
   let repr_name = legitimize_identifier_name(&repr_name);
 
-  let scan_result = ast.program.with_mut(|fields| {
+  let mut scan_result = ast.program.with_mut(|fields| {
     let program = &*fields.program;
     let scanner = AstScanner::new(
       ctx.module_idx,
@@ -62,6 +63,20 @@ pub async fn create_ecma_view(
     scanner.scan(program)
   })?;
 
+  if !scan_result.errors.is_empty() {
+    return Err(std::mem::take(&mut scan_result.errors).into());
+  }
+
+  ctx.warnings.extend(std::mem::take(&mut scan_result.warnings));
+
+  let side_effects = normalize_side_effects(
+    ctx.options,
+    ctx.resolved_id,
+    Some(&scan_result.stmt_infos),
+    hook_side_effects,
+  )
+  .await?;
+
   let ScanResult {
     commonjs_exports,
     named_imports,
@@ -72,8 +87,8 @@ pub async fn create_ecma_view(
     namespace_object_ref,
     imports,
     exports_kind,
-    warnings: scan_warnings,
-    errors,
+    warnings: _,
+    errors: _,
     ast_usage,
     tla_keyword_span,
     symbol_ref_db: symbols,
@@ -102,16 +117,6 @@ pub async fn create_ecma_view(
       named_exports.insert(k, v[0]);
     }
   }
-
-  if !errors.is_empty() {
-    return Err(errors.into());
-  }
-
-  ctx.warnings.extend(scan_warnings);
-
-  let side_effects =
-    normalize_side_effects(ctx.options, ctx.resolved_id, Some(&stmt_infos), hook_side_effects)
-      .await?;
 
   // TODO: Should we check if there are `check_side_effects_for` returns false but there are side effects in the module?
   let ecma_view = EcmaView {

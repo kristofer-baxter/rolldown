@@ -47,6 +47,9 @@ mod determine_module_exports_kind;
 pub use determine_module_exports_kind::commonjs_interop;
 mod generate_lazy_export;
 mod patch_module_dependencies;
+mod plain_object_reads;
+pub use plain_object_reads::PlainObjectReads;
+pub(crate) use plain_object_reads::static_read_key;
 mod reference_needed_symbols;
 mod refine_stmt_side_effects;
 mod sort_modules;
@@ -238,6 +241,9 @@ pub struct LinkStageOutput {
   pub has_enum_inlining: bool,
   pub pre_lazy_export_asts: FxHashMap<ModuleIdx, rolldown_ecmascript::EcmaAst>,
   pub pre_lazy_export_symbols: FxHashMap<ModuleIdx, rolldown_common::SymbolRefDbForModule>,
+  /// See [`PlainObjectReads`]. The generate stage turns it into each module's
+  /// `pruned_object_properties` once statement inclusion is final.
+  pub plain_object_reads: PlainObjectReads,
 }
 
 #[derive(Debug)]
@@ -296,6 +302,8 @@ pub struct LinkStage<'a> {
   pub scan_time_side_effects: IndexVec<ModuleIdx, ScanTimeSideEffects>,
   /// Modules in which a link pass relaxed statement flags after `determine_side_effects` ran.
   pub relaxed_side_effect_modules: FxHashSet<ModuleIdx>,
+  /// See [`PlainObjectReads`].
+  pub plain_object_reads: PlainObjectReads,
   /// Lazily computed static-import components for entry-independent constant lookups.
   import_cycles: refine_stmt_side_effects::ImportCycles,
 }
@@ -320,6 +328,50 @@ impl<'a> LinkStage<'a> {
     } else {
       FxHashMap::default()
     };
+
+    for item in &mut scan_stage_output.entry_points {
+      if matches!(item.kind, EntryPointKind::DynamicImport) && item.name.is_none() {
+        let target_id = scan_stage_output.module_table.modules[item.idx].id().as_str();
+        if let Some(route_name) = crate::utils::topology_config::route_split_chunk_name(target_id) {
+          item.name = Some(arcstr::ArcStr::from(route_name));
+          continue;
+        }
+        let mut magic_name: Option<String> = None;
+        let mut magic_conflict = false;
+        let mut devtools_label: Option<&'static str> = None;
+        for &(importer_idx, _, _, rec_idx) in &item.related_stmt_infos {
+          if let Some(importer) = scan_stage_output
+            .module_table
+            .modules
+            .get(importer_idx)
+            .and_then(rolldown_common::Module::as_normal)
+            && let Some(rec) = importer.import_records.get(rec_idx)
+          {
+            if let Some(found) = crate::utils::topology_config::extract_webpack_chunk_name(
+              importer.source.as_str(),
+              rec.state.importer_span,
+            ) {
+              match &magic_name {
+                None => magic_name = Some(found),
+                Some(prev) if prev == &found => {}
+                Some(_) => magic_conflict = true,
+              }
+            }
+            if devtools_label.is_none() {
+              devtools_label = crate::utils::topology_config::devtools_origin_label(
+                importer.id.as_str(),
+                rec.module_request.as_str(),
+              );
+            }
+          }
+        }
+        if !magic_conflict && let Some(name) = magic_name {
+          item.name = Some(arcstr::ArcStr::from(name));
+        } else if let Some(label) = devtools_label {
+          item.name = Some(arcstr::ArcStr::from(label));
+        }
+      }
+    }
 
     // We need to preserve the original order of user defined entry points.
     let mut rest = scan_stage_output
@@ -420,6 +472,7 @@ impl<'a> LinkStage<'a> {
       has_enum_inlining: false,
       pre_lazy_export_asts: FxHashMap::default(),
       pre_lazy_export_symbols: FxHashMap::default(),
+      plain_object_reads: PlainObjectReads::default(),
     }
   }
 
@@ -439,6 +492,7 @@ impl<'a> LinkStage<'a> {
     self.preserve_temporal_bindings();
     self.reference_async_evaluation_helpers();
     let unreachable_import_expression_node_ids = self.cross_module_optimization();
+    self.collect_plain_object_reads();
     self.refine_stmt_side_effects_with_imported_constants();
     // The passes above only relax statement flags. Module verdicts must follow before
     // `reference_needed_symbols` derives import flags from them.
@@ -483,6 +537,7 @@ impl<'a> LinkStage<'a> {
         has_enum_inlining: self.has_enum_inlining,
         pre_lazy_export_asts: self.pre_lazy_export_asts,
         pre_lazy_export_symbols: self.pre_lazy_export_symbols,
+        plain_object_reads: self.plain_object_reads,
       },
       self.ast_table,
       self.used_symbol_refs_builder,

@@ -842,23 +842,29 @@ impl GenerateStage<'_> {
       );
 
       let is_user_defined_entry = self.link_output.user_defined_entry_modules.contains(&module.idx);
-      let preserve_entry_signature = if is_user_defined_entry {
-        match finalized_preserve_entry_signatures {
+      let preserve_entry_signature = is_user_defined_entry.then(|| {
+        let signature = match finalized_preserve_entry_signatures {
           PreserveEntrySignatures::AllowExtension
           | PreserveEntrySignatures::Strict
-          | PreserveEntrySignatures::False => Some(finalized_preserve_entry_signatures),
+          | PreserveEntrySignatures::False => finalized_preserve_entry_signatures,
           PreserveEntrySignatures::ExportsOnly => {
             let meta = &self.link_output.metas[module.idx];
             if meta.is_canonical_exports_empty() && !meta.has_dynamic_exports {
-              Some(PreserveEntrySignatures::AllowExtension)
+              PreserveEntrySignatures::AllowExtension
             } else {
-              Some(PreserveEntrySignatures::Strict)
+              PreserveEntrySignatures::Strict
             }
           }
+        };
+        // `import()` of an entry from another chunk reads the entry chunk's own namespace, so an
+        // extended signature would show that import the exports that the chunk adds.
+        let is_dynamically_imported = !module.ecma_view.dynamic_importers.is_empty();
+        if matches!(signature, PreserveEntrySignatures::AllowExtension) && is_dynamically_imported {
+          PreserveEntrySignatures::Strict
+        } else {
+          signature
         }
-      } else {
-        None
-      };
+      });
       let mut chunk = Chunk::new(
         entry_point.name.clone(),
         entry_point.file_name.clone(),
@@ -1175,12 +1181,20 @@ impl GenerateStage<'_> {
     );
 
     // See internal-docs/code-splitting/implementation.md#runtime-module-placement.
-    let bits = &index_splitting_info[runtime_module_idx].bits;
+    let mut bits = index_splitting_info[runtime_module_idx].bits.clone();
+    let standalone_rt_name = crate::utils::topology_config::get(self.options)
+      .and_then(|cfg| cfg.standalone_runtime_chunk.clone());
+    if bits.is_empty() && standalone_rt_name.is_some() {
+      for chunk in &chunk_graph.chunk_table.chunks {
+        bits.union(&chunk.bits);
+      }
+    }
+    let rt_chunk_name = standalone_rt_name.as_deref().unwrap_or("rolldown-runtime").into();
     // Keep the `rolldown-runtime` name: downstream tooling (Vite / @vitejs/plugin-rsc)
     // identifies the runtime chunk by it. `None` emits a generic `chunk-[hash].js`
     // and silently breaks them. See rolldown/rolldown#9685.
     let mut runtime_chunk = Chunk::new(
-      Some("rolldown-runtime".into()),
+      Some(rt_chunk_name),
       None,
       bits.clone(),
       vec![],
@@ -1189,7 +1203,7 @@ impl GenerateStage<'_> {
       None,
     );
     runtime_chunk.add_creation_reason(
-      ChunkCreationReason::CommonChunk { bits, link_output: self.link_output },
+      ChunkCreationReason::CommonChunk { bits: &bits, link_output: self.link_output },
       self.options,
     );
     let runtime_chunk_idx = chunk_graph.add_chunk(runtime_chunk);

@@ -45,12 +45,26 @@ impl Bundler {
     (self.cache.ast_used_bytes(), self.cache.ast_capacity_bytes())
   }
 
+  /// The number of chunks whose `render_export_items_index_vec` map is still populated in the
+  /// cached native relink state after a build or relink.
+  pub fn retained_relink_export_item_maps(&self) -> usize {
+    self.cache.retained_relink_export_item_maps()
+  }
+
   pub fn last_reused_chunk_filenames(&self) -> &rustc_hash::FxHashSet<ArcStr> {
     &self.cache.last_reused_chunk_filenames
   }
 
   pub fn last_fast_native_relink(&self) -> bool {
     self.cache.last_fast_native_relink
+  }
+
+  pub fn last_link_decisions_unchanged(&self) -> bool {
+    self.cache.last_link_decisions_unchanged
+  }
+
+  pub fn link_decisions_generation(&self) -> u64 {
+    self.cache.link_decisions_generation
   }
 
   /// The constants that the last link inlined for the CommonJS exports of each module, by the
@@ -107,6 +121,12 @@ impl Bundler {
     self.cache.last_scan_failures_unreached
   }
 
+  /// The stable ids of the factories that the last HMR update's patches list for their clients to
+  /// hold aside until an update passes on to their modules.
+  pub fn last_standby(&self) -> &rustc_hash::FxHashSet<ArcStr> {
+    &self.cache.last_standby
+  }
+
   pub fn last_rebuilt_chunk_filenames(&self) -> &[ArcStr] {
     &self.cache.last_rebuilt_chunk_filenames
   }
@@ -127,10 +147,9 @@ impl Bundler {
   }
 
   /// Whether a scan of the compiler's graph held a module through whose records a page may load a
-  /// record that it never prunes, as a dependency that `import.meta.hot.accept()` names, the
-  /// target of an `import()` that a loader that the page saved still makes, or that of an
-  /// `import defer` whose namespace a saved read still runs, also once the graph's entries no
-  /// longer reach it (`ScanStageCache::late_records`, #732).
+  /// record that it never prunes, as the target of an `import()` that a loader that the page saved
+  /// still makes, or that of an `import defer` whose namespace a saved read still runs, also once
+  /// the graph's entries no longer reach it (`ScanStageCache::late_records`).
   pub fn late_records(&self) -> bool {
     self.cache.late_records
   }

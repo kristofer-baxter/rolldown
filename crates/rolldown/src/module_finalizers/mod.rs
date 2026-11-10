@@ -21,8 +21,7 @@ use rolldown_ecmascript::EcmaAst;
 use rolldown_ecmascript_utils::{
   BindingIdentifierFactoryExt as _, CallExpressionExt, CallExpressionFactoryExt as _,
   ClassElementFactoryExt as _, ExpressionExt, ExpressionFactoryExt as _,
-  IdentifierNameFactoryExt as _, StatementExt, StatementFactoryExt as _,
-  parse_injected_expression,
+  IdentifierNameFactoryExt as _, StatementExt, StatementFactoryExt as _, parse_injected_expression,
 };
 use rolldown_error::EmptyImportMetaKind;
 use std::borrow::Cow;
@@ -1439,57 +1438,57 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     // else construct `__exportAll({ prop_name: () => returned, ... })`. A namespace that star exports
     // complete at runtime is a namespace object even without names of its own.
     let fixed = !self.star_exports_complete_namespace();
-    let module_namespace_rhs =
-      if (!runtime_semantics || self.ctx.linking_info.is_canonical_exports_empty())
-        && fixed
-        && arg_obj_expr.properties.is_empty()
-        && !self.ctx.options.generated_code.symbols
-      {
-        Expression::ObjectExpression(oxc::allocator::Box::new_in(arg_obj_expr, self))
+    let module_namespace_rhs = if (!runtime_semantics
+      || self.ctx.linking_info.is_canonical_exports_empty())
+      && fixed
+      && arg_obj_expr.properties.is_empty()
+      && !self.ctx.options.generated_code.symbols
+    {
+      Expression::ObjectExpression(oxc::allocator::Box::new_in(arg_obj_expr, self))
+    } else {
+      let obj_expr = ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.allocator()));
+      let args = if runtime_semantics {
+        oxc::allocator::Vec::from_iter_in(
+          [
+            obj_expr,
+            ast::Argument::new_numeric_literal(
+              SPAN,
+              if self.ctx.options.generated_code.symbols { 0.0 } else { 1.0 },
+              None,
+              NumberBase::Decimal,
+              self,
+            ),
+            ast::Argument::new_numeric_literal(
+              SPAN,
+              if fixed { 1.0 } else { 0.0 },
+              None,
+              NumberBase::Decimal,
+              self,
+            ),
+          ],
+          self,
+        )
+      } else if self.ctx.options.generated_code.symbols {
+        oxc::allocator::Vec::from_iter_in([obj_expr], self)
       } else {
-        let obj_expr = ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.allocator()));
-        let args = if runtime_semantics {
-          oxc::allocator::Vec::from_iter_in(
-            [
-              obj_expr,
-              ast::Argument::new_numeric_literal(
-                SPAN,
-                if self.ctx.options.generated_code.symbols { 0.0 } else { 1.0 },
-                None,
-                NumberBase::Decimal,
-                self,
-              ),
-              ast::Argument::new_numeric_literal(
-                SPAN,
-                if fixed { 1.0 } else { 0.0 },
-                None,
-                NumberBase::Decimal,
-                self,
-              ),
-            ],
-            self,
-          )
-        } else if self.ctx.options.generated_code.symbols {
-          oxc::allocator::Vec::from_iter_in([obj_expr], self)
-        } else {
-          oxc::allocator::Vec::from_iter_in(
-            [
-              obj_expr,
-              ast::Argument::new_numeric_literal(SPAN, 1.0, None, NumberBase::Decimal, self),
-            ],
-            self,
-          )
-        };
-        ast::Expression::new_call_expression_with_pure(
-          SPAN,
-          self.finalized_expr_for_runtime_symbol("__exportAll"),
-          None,
-          args,
-          false,
-          true,
+        oxc::allocator::Vec::from_iter_in(
+          [
+            obj_expr,
+            ast::Argument::new_numeric_literal(SPAN, 1.0, None, NumberBase::Decimal, self),
+          ],
           self,
         )
       };
+      ast::Expression::new_call_expression_with_pure(
+        SPAN,
+        self.finalized_expr_for_runtime_symbol("__exportAll"),
+        None,
+        args,
+        false,
+        true,
+        self,
+      )
+    };
 
     // construct `var [binding_name_for_namespace_object_ref] = __exportAll(...)`
     let decl_stmt =
@@ -1894,11 +1893,13 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     ))
   }
 
-  /// Records the never-assigned top-level `const` declarations of a native record. Only a whole
+  /// Records the never-assigned top-level `const` declarations of initial HMR output. Only a whole
   /// declaration whose every binding is unassigned prints as `let`: an authored assignment to a
   /// constant keeps its TypeError, and direct `eval` could assign any binding.
   fn collect_native_let_symbols(&mut self, program: &ast::Program<'ast>) {
-    if !crate::hmr::utils::HmrAstBuilder::native_record(self) || self.ctx.module.meta.has_eval() {
+    if !crate::hmr::utils::HmrAstBuilder::owns_initial_bindings(self)
+      || self.ctx.module.meta.has_eval()
+    {
       return;
     }
     let scoping = self.scope.scoping();
@@ -2302,9 +2303,10 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                   let (namespace_object_ref_expr, _) =
                     self.finalized_expr_for_symbol_ref(importee.namespace_object_ref, false, false);
 
-                  // A JSON module that a plugin or the host loads as JavaScript has the same default.
+                  // A JSON or text module that a plugin or the host loads as JavaScript has the same default.
                   let is_json_module = rec.meta.contains(ImportRecordMeta::JsonModule)
-                    || crate::utils::import_options::is_json_module(importee);
+                    || crate::utils::import_options::is_json_module(importee)
+                    || crate::utils::import_options::is_text_module(importee);
 
                   // `__toCommonJS`
                   let to_commonjs_expr = self.finalized_expr_for_runtime_symbol("__toCommonJS");
@@ -2939,7 +2941,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                 }
 
                 if self.ctx.linking_info.native_default_expression
-                  && crate::hmr::utils::HmrAstBuilder::native_record(self)
+                  && crate::hmr::utils::HmrAstBuilder::owns_initial_bindings(self)
                 {
                   // `let local = ({ default: <expr> }).default;` keeps the engine's TDZ, names
                   // an anonymous function or class "default", and is a writable binding cell.
@@ -3740,12 +3742,6 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         needs_to_esm_helper = importee.exports_kind.is_commonjs();
       }
       Module::External(importee) => {
-        if expr.options.is_some() {
-          // Attributes are load-bearing for an external import: the host resolves the specifier
-          // and `with { type: 'json' }` picks the module type. Leave the call exactly as written —
-          // in particular do not lower it to `require()`, which cannot carry attributes.
-          return false;
-        }
         let import_path = importee.get_import_path(self.ctx.chunk, self.ctx.resolved_paths);
         if str != import_path.as_str() {
           expr.source = Expression::new_string_literal(
@@ -3754,6 +3750,12 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             None,
             self,
           );
+        }
+        if expr.options.is_some() {
+          // Attributes are load-bearing for an external import: the host resolves the specifier
+          // and `with { type: 'json' }` picks the module type. Leave the call as an `import()` —
+          // in particular do not lower it to `require()`, which cannot carry attributes.
+          return false;
         }
         // Convert `import("external")` to `Promise.resolve().then(() => __toESM(require("external")))`
         // when format is CJS and dynamicImportInCjs is false
@@ -3959,8 +3961,7 @@ pub(super) fn binding_pattern_into_assignment_target<
           builder,
         )
       });
-      let mut properties =
-        oxc::allocator::Vec::with_capacity_in(obj_pat.properties.len(), builder);
+      let mut properties = oxc::allocator::Vec::with_capacity_in(obj_pat.properties.len(), builder);
       obj_pat.properties.take_in(&builder.allocator()).into_iter().for_each(|binding_prop| {
         properties.push(binding_property_into_assignment_target_property(binding_prop, builder));
       });
@@ -3976,9 +3977,9 @@ pub(super) fn binding_pattern_into_assignment_target<
       });
       let mut elements = oxc::allocator::Vec::with_capacity_in(arr_pat.elements.len(), builder);
       arr_pat.elements.take_in(&builder.allocator()).into_iter().for_each(|binding_pat| {
-        elements.push(binding_pat.map(|pat| {
-          binding_pattern_into_assignment_target_maybe_default(pat, builder)
-        }));
+        elements.push(
+          binding_pat.map(|pat| binding_pattern_into_assignment_target_maybe_default(pat, builder)),
+        );
       });
       ast::AssignmentTarget::new_array_assignment_target(arr_pat.span, elements, rest, builder)
     }

@@ -131,7 +131,7 @@ permanently broken:
 | ---------- | ------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------- |
 | Ownership  | `with_cached_bundle` `mem::take`s `Bundler::cache`, leaving `default()` (`snapshot: None`)  | moves `Bundle::cache` back into `Bundler`                                 |
 | Scoping    | `create_output` / `make_copy` clone `symbol_ref_db` _without_ scoping (a perf optimization) | `merge_immutable_fields_for_cache` reinstates scoping from the link stage |
-| Defer-sync | `ScanStageCache::update_defer_sync_data` `take`s the snapshot out                           | `set_snapshot` puts it back                                               |
+| Defer-sync | `ScanStageCache::update_defer_sync_data` synchronizes module side effects                  | borrows the snapshot in place, keeping graph ownership even on error      |
 
 Each repair therefore runs **unconditionally**:
 
@@ -139,7 +139,7 @@ Each repair therefore runs **unconditionally**:
 - `bundle_up` runs `merge_immutable_fields_for_cache` right after the link
   stage, _before_ the fallible `generate_bundle` / filename-check /
   `invalidate_js_side_cache` steps.
-- `update_defer_sync_data` restores the snapshot before propagating an error.
+- `update_defer_sync_data` never takes ownership of the snapshot; it invalidates native cell-route certificates before changing side effects and advances the scan generation even when synchronization reports an error.
 
 A failed scan must also not leave the cache _out of sync_. Task results are
 applied as they arrive, so an aborted partial scan has already flipped

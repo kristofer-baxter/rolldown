@@ -1,4 +1,4 @@
-use oxc::transformer_plugins::ReplaceGlobalDefinesConfig;
+use crate::utils::replace_global_defines::ReplaceGlobalDefinesConfig;
 use rolldown_common::{
   FlatOptions, ModuleIdx, ModuleType, ResolvedId, SourcemapChainElement, StrOrBytes,
   side_effects::HookSideEffects,

@@ -158,6 +158,15 @@ fn literal_const_prefix(
       }
       _ => break,
     };
+    if matches!(declaration.kind, ast::VariableDeclarationKind::Let)
+      && allow_minified_compounds
+      && declaration
+        .declarations
+        .iter()
+        .all(|d| matches!(d.id, ast::BindingPattern::BindingIdentifier(_)) && d.init.is_none())
+    {
+      continue;
+    }
     if !declaration.kind.is_const() {
       break;
     }
@@ -180,6 +189,191 @@ fn literal_const_prefix(
     }
   }
   (primitive_bindings, compound_bindings)
+}
+
+struct RootSymbolRefCollector<'a> {
+  scopes: &'a oxc::semantic::Scoping,
+  root_scope_id: oxc::semantic::ScopeId,
+  refs: FxHashSet<oxc::semantic::SymbolId>,
+}
+
+impl<'ast> oxc::ast_visit::VisitJs<'ast> for RootSymbolRefCollector<'_> {
+  fn visit_identifier_reference(&mut self, ident: &ast::IdentifierReference<'ast>) {
+    if let Some(symbol_id) =
+      ident.reference_id.get().and_then(|ref_id| self.scopes.get_reference(ref_id).symbol_id())
+      && self.scopes.symbol_scope_id(symbol_id) == self.root_scope_id
+    {
+      self.refs.insert(symbol_id);
+    }
+  }
+}
+
+fn collect_root_symbol_refs(
+  scopes: &oxc::semantic::Scoping,
+  root_scope_id: oxc::semantic::ScopeId,
+  visit: impl FnOnce(&mut RootSymbolRefCollector<'_>),
+) -> FxHashSet<oxc::semantic::SymbolId> {
+  let mut collector = RootSymbolRefCollector { scopes, root_scope_id, refs: FxHashSet::default() };
+  visit(&mut collector);
+  collector.refs
+}
+
+fn top_level_function_declaration<'a, 'ast>(
+  mut statement: &'a Statement<'ast>,
+) -> Option<&'a ast::Function<'ast>> {
+  while let Statement::LabeledStatement(labeled) = statement {
+    statement = &labeled.body;
+  }
+  match statement {
+    Statement::FunctionDeclaration(func) => Some(func),
+    Statement::ExportDeclaration(export) => match &export.declaration {
+      Declaration::FunctionDeclaration(func) => Some(func),
+      _ => None,
+    },
+    Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+      ExportDefaultDeclarationKind::FunctionDeclaration(func) => Some(func),
+      _ => None,
+    },
+    _ => None,
+  }
+}
+
+/// Top-level `const`, `let`, and `class` bindings that cannot be observed in their TDZ or
+/// illegally reassigned: no statement at or before their declaration (nor any hoisted function
+/// reachable from those statements) references them, and `const`/`class` bindings have no writes.
+fn safe_non_temporal_bindings(
+  program: &ast::Program<'_>,
+  scopes: &oxc::semantic::Scoping,
+  default_export_symbol: oxc::semantic::SymbolId,
+) -> FxHashSet<oxc::semantic::SymbolId> {
+  use oxc::ast_visit::VisitJs as _;
+  let root_scope_id = scopes.root_scope_id();
+  let mut hoisted_fn_refs: rustc_hash::FxHashMap<
+    oxc::semantic::SymbolId,
+    FxHashSet<oxc::semantic::SymbolId>,
+  > = rustc_hash::FxHashMap::default();
+  for statement in &program.body {
+    if let Some(func) = top_level_function_declaration(statement)
+      && let Some(id) = &func.id
+    {
+      let refs = collect_root_symbol_refs(scopes, root_scope_id, |collector| {
+        collector.visit_function(func, oxc::semantic::ScopeFlags::Function);
+      });
+      hoisted_fn_refs.entry(id.symbol_id()).or_default().extend(refs);
+    }
+  }
+
+  let mut early_refs = FxHashSet::default();
+  let add_early_ref = |sym: oxc::semantic::SymbolId,
+                       early_refs: &mut FxHashSet<oxc::semantic::SymbolId>| {
+    let mut stack = vec![sym];
+    while let Some(curr) = stack.pop() {
+      if early_refs.insert(curr)
+        && let Some(callee_refs) = hoisted_fn_refs.get(&curr)
+      {
+        stack.extend(callee_refs.iter().copied());
+      }
+    }
+  };
+
+  let mut safe = FxHashSet::default();
+  for statement in &program.body {
+    if let Some(func) = top_level_function_declaration(statement)
+      && func.id.is_some()
+    {
+      continue;
+    }
+    let var_decl = match statement {
+      Statement::VariableDeclaration(decl) => Some(decl),
+      Statement::ExportDeclaration(export) => match &export.declaration {
+        Declaration::VariableDeclaration(decl) => Some(decl),
+        _ => None,
+      },
+      _ => None,
+    };
+    if let Some(decl) = var_decl {
+      if decl.kind.is_lexical() {
+        for declarator in &decl.declarations {
+          if let Some(init) = &declarator.init {
+            for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| c.visit_expression(init))
+            {
+              add_early_ref(sym, &mut early_refs);
+            }
+          }
+          if let ast::BindingPattern::BindingIdentifier(binding) = &declarator.id {
+            let sym = binding.symbol_id();
+            let writable_ok = !decl.kind.is_const()
+              || !scopes.get_resolved_references(sym).any(oxc::semantic::Reference::is_write);
+            if writable_ok && !early_refs.contains(&sym) {
+              safe.insert(sym);
+            }
+          } else {
+            for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| {
+              c.visit_binding_pattern(&declarator.id);
+            }) {
+              add_early_ref(sym, &mut early_refs);
+            }
+          }
+        }
+      } else {
+        for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| {
+          c.visit_variable_declaration(decl);
+        }) {
+          add_early_ref(sym, &mut early_refs);
+        }
+      }
+      continue;
+    }
+    let class_decl = match statement {
+      Statement::ClassDeclaration(class) => Some(class),
+      Statement::ExportDeclaration(export) => match &export.declaration {
+        Declaration::ClassDeclaration(class) => Some(class),
+        _ => None,
+      },
+      Statement::ExportDefaultDeclaration(export) => match &export.declaration {
+        ExportDefaultDeclarationKind::ClassDeclaration(class) => Some(class),
+        _ => None,
+      },
+      _ => None,
+    };
+    if let Some(class) = class_decl {
+      for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| c.visit_class(class)) {
+        add_early_ref(sym, &mut early_refs);
+      }
+      let sym = class.id.as_ref().map_or(default_export_symbol, |binding| binding.symbol_id());
+      if !early_refs.contains(&sym)
+        && !scopes.get_resolved_references(sym).any(oxc::semantic::Reference::is_write)
+      {
+        safe.insert(sym);
+      }
+      continue;
+    }
+    if let Statement::ExportDefaultDeclaration(export) = statement {
+      match &export.declaration {
+        ExportDefaultDeclarationKind::FunctionDeclaration(_) => continue,
+        decl @ ast::match_expression!(ExportDefaultDeclarationKind) => {
+          for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| {
+            c.visit_expression(decl.to_expression());
+          }) {
+            add_early_ref(sym, &mut early_refs);
+          }
+          if !early_refs.contains(&default_export_symbol)
+            && !scopes
+              .get_resolved_references(default_export_symbol)
+              .any(oxc::semantic::Reference::is_write)
+          {
+            safe.insert(default_export_symbol);
+          }
+          continue;
+        }
+        _ => {}
+      }
+    }
+    for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| c.visit_statement(statement)) {
+      add_early_ref(sym, &mut early_refs);
+    }
+  }
+  safe
 }
 
 impl LinkStage<'_> {
@@ -209,12 +403,15 @@ impl LinkStage<'_> {
     // traversal reaches the leaf. Every static edge must respect the completed DFS order.
     let acyclic_full_graph = !self.options.is_dev_mode_enabled()
       && self.module_table.iter().all(|module| {
-        module.as_normal().is_none_or(|module| !module.meta.has_eval())
-          && module.import_records().iter().filter(|record| record.kind.is_static()).all(|record| {
-            record.resolved_module.is_none_or(|dependency| {
-              self.module_table[dependency].exec_order() < module.exec_order()
-            })
-          })
+        module.exec_order() == u32::MAX
+          || (module.as_normal().is_none_or(|module| !module.meta.has_eval())
+            && module.import_records().iter().filter(|record| record.kind.is_static()).all(
+              |record| {
+                record.resolved_module.is_none_or(|dependency| {
+                  self.module_table[dependency].exec_order() < module.exec_order()
+                })
+              },
+            ))
       });
     for module in self.module_table.modules.iter().filter_map(Module::as_normal) {
       if module.idx == self.runtime.id() || module.exports_kind.is_commonjs() {
@@ -311,7 +508,7 @@ impl LinkStage<'_> {
             }
             ast::match_expression!(ExportDefaultDeclarationKind) => {
               bindings.push((module.default_export_ref.symbol, true));
-              if native_records {
+              if native_records || self.options.is_dev_mode_enabled() {
                 self.metas[module.idx].native_default_expression = true;
               }
             }
@@ -324,6 +521,16 @@ impl LinkStage<'_> {
       // `await using` turns the remaining top-level declarations into `var`s inside a `try`).
       let authored_lexical: FxHashSet<_> =
         bindings[scope_bindings..].iter().map(|(symbol, _)| *symbol).collect();
+      let safe_non_temporal = if acyclic_full_graph
+        && !native_records
+        && !module.meta.has_eval()
+        && !self.metas[module.idx].is_tla_or_contains_tla_dependency
+        && allow_minified_compounds
+      {
+        safe_non_temporal_bindings(ast.program(), scopes, module.default_export_ref.symbol)
+      } else {
+        FxHashSet::default()
+      };
       bindings.sort_unstable_by_key(|(symbol, _)| *symbol);
       bindings.dedup_by_key(|(symbol, _)| *symbol);
       for (symbol, constant) in bindings {
@@ -333,7 +540,9 @@ impl LinkStage<'_> {
           self.global_constant_symbol_map.remove(&(module.idx, symbol).into());
           continue;
         }
-        if safe_literals.contains(&symbol) {
+        if safe_literals.contains(&symbol)
+          || (authored_lexical.contains(&symbol) && safe_non_temporal.contains(&symbol))
+        {
           continue;
         }
         let reference: SymbolRef = (module.idx, symbol).into();

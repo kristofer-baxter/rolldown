@@ -2,7 +2,6 @@ use crate::bundle::bundle_handle::BundleHandle;
 
 use super::super::{
   SharedOptions, SharedResolver,
-  module_loader::deferred_scan_data::defer_sync_scan_data,
   stages::{
     generate_stage::GenerateStage,
     link_stage::LinkStage,
@@ -136,6 +135,21 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     std::mem::take(&mut self.cache.pre_redacted_maps)
   }
 
+  pub fn set_mangle_properties(
+    &mut self,
+    mangle_properties: Option<oxc::minifier::ManglePropertiesOptions>,
+  ) {
+    let had_override = self.cache.mangle_properties_override.is_some();
+    let has_override = mangle_properties.is_some();
+    self.cache.mangle_properties_override = mangle_properties;
+    if had_override || has_override {
+      self.cache.cached_native_chunks.clear();
+      self.cache.cached_multi_module_chunks.clear();
+      self.cache.cached_chunk_sourcemaps.clear();
+      self.cache.invalidate_native_relink();
+    }
+  }
+
   #[tracing::instrument(level = "debug", skip_all, parent = &self.bundle_span)]
   pub async fn scan_modules_for_cache(
     &mut self,
@@ -183,8 +197,12 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         .try_into()
         .expect("Should be able to convert to NormalizedScanStageOutput");
       let warnings = std::mem::take(&mut output.warnings);
-      let result =
-        defer_sync_scan_data(&self.options, &self.cache.module_id_to_idx, &mut output).await;
+      let result = ScanStageCache::defer_sync_scan_data(
+        &self.options,
+        &self.cache.module_id_to_idx,
+        &mut output,
+      )
+      .await;
       if self.options.experimental.is_incremental_build_enabled() {
         self.cache.set_snapshot(output);
       }
@@ -413,8 +431,12 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       // invalidate `output`. Commit it rather than fall back to the stale prior
       // snapshot.
       // See internal-docs/bundler-data-lifecycle/implementation.md ("Cache integrity on a failed build").
-      let result =
-        defer_sync_scan_data(&self.options, &self.cache.module_id_to_idx, &mut output).await;
+      let result = ScanStageCache::defer_sync_scan_data(
+        &self.options,
+        &self.cache.module_id_to_idx,
+        &mut output,
+      )
+      .await;
       if is_incremental {
         self.cache.set_snapshot(output.make_copy());
       }
@@ -456,11 +478,22 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     }
     self.cache.last_fast_native_relink = false;
+    self.cache.last_link_decisions_unchanged = false;
     self.cache.last_native_relink_fallback = None;
     self.cache.last_native_relink_fallback_detail = None;
     self.cache.last_rebuilt_chunk_filenames.clear();
     self.cache.last_rebuilt_chunk_outputs.clear();
-    if self.cache.has_valid_native_relink() && !trace_action_enabled!() {
+    let mangle_props_enabled = self.cache.mangle_properties_override.is_some()
+      || matches!(
+        &self.options.minify,
+        rolldown_common::MinifyOptions::Enabled(m) if m.options.mangle_properties.is_some()
+      );
+    if mangle_props_enabled {
+      self.cache.cached_native_chunks.clear();
+      self.cache.cached_multi_module_chunks.clear();
+      self.cache.cached_chunk_sourcemaps.clear();
+    }
+    if self.cache.has_valid_native_relink() && !mangle_props_enabled && !trace_action_enabled!() {
       if let Some(fast_result) =
         Box::pin(self.try_bundle_up_fast_native_relink(is_write, &mut scan_stage_output.warnings))
           .await
@@ -468,11 +501,9 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         return fast_result;
       }
       self.cache.invalidate_native_relink();
-      if scan_stage_output.module_table.modules.is_empty() {
-        let warnings = std::mem::take(&mut scan_stage_output.warnings);
-        scan_stage_output = self.cache.create_output();
-        scan_stage_output.warnings = warnings;
-      }
+    } else if mangle_props_enabled && self.cache.has_valid_native_relink() {
+      self.cache.invalidate_native_relink();
+      self.cache.last_native_relink_fallback = Some("mangle_properties");
     } else {
       self.cache.last_native_relink_fallback = Some(if !self.cache.has_snapshot() {
         "no_snapshot"
@@ -481,6 +512,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       } else {
         "trace_action"
       });
+    }
+    if scan_stage_output.module_table.modules.is_empty() && self.cache.has_snapshot() {
+      let warnings = std::mem::take(&mut scan_stage_output.warnings);
+      scan_stage_output = self.cache.create_output();
+      scan_stage_output.warnings = warnings;
     }
     if scan_stage_output.index_ecma_ast.is_empty() && self.cache.has_snapshot() {
       scan_stage_output.index_ecma_ast =
@@ -498,17 +534,26 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
 
     let is_incremental =
       self.options.experimental.is_incremental_build_enabled() && self.cache.has_snapshot();
+    let has_mangle_override = self.cache.mangle_properties_override.is_some();
+    let pass_cache =
+      is_incremental || self.cache.sourcemap_content_filter.is_some() || has_mangle_override;
     let mut generate_stage = GenerateStage::new_with_cache(
       &mut link_stage_output,
       ast_table,
       &self.options,
       &self.plugin_driver,
-      is_incremental.then_some(&mut self.cache),
+      pass_cache.then_some(&mut self.cache),
     );
     let bundle_output = Box::pin(generate_stage.generate(used_symbol_refs_builder)).await; // Notice we don't use `?` to break the control flow here.
     let ast_table = generate_stage.take_restored_ast_table();
     let pending_native_relink = generate_stage.pending_native_relink.take();
     drop(generate_stage);
+    if mangle_props_enabled {
+      self.cache.cached_native_chunks.clear();
+      self.cache.cached_multi_module_chunks.clear();
+      self.cache.cached_chunk_sourcemaps.clear();
+      self.cache.mangle_properties_override = None;
+    }
     if bundle_output.is_ok() {
       self.cache.inlined_commonjs_constants =
         Some(crate::stages::link_stage::inlined_commonjs_constants(&link_stage_output));
@@ -521,10 +566,15 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         ));
       self.cache.commonjs_interop =
         Some(crate::stages::link_stage::commonjs_interop(&link_stage_output));
+      static NEXT_LINK_DECISIONS_GENERATION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
+      self.cache.link_decisions_generation =
+        NEXT_LINK_DECISIONS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
 
     if bundle_output.is_ok()
       && is_incremental
+      && !mangle_props_enabled
       && let Some(pending) = pending_native_relink
     {
       let snapshot = self.cache.get_snapshot_mut();
@@ -593,6 +643,14 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     };
     let pre_emit_assets_len = output.assets.len();
+    let pre_emit_chunk_filenames: rustc_hash::FxHashSet<ArcStr> = output
+      .assets
+      .iter()
+      .filter_map(|a| match a {
+        rolldown_common::Output::Chunk(c) => Some(c.filename.clone()),
+        rolldown_common::Output::Asset(_) => None,
+      })
+      .collect();
 
     // Add additional files from build plugins.
     self.file_emitter.add_additional_files(&mut output.assets, &mut output.warnings);
@@ -610,9 +668,12 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       self.cache.invalidate_native_relink();
     }
 
-    if let Err(errors) =
-      GenerateStage::validate_mangle_properties_output(&self.options, &output.assets)
-    {
+    if let Err(errors) = GenerateStage::validate_mangle_properties_output(
+      &self.options,
+      has_mangle_override,
+      &pre_emit_chunk_filenames,
+      &output.assets,
+    ) {
       self.cache.invalidate_native_relink();
       return Err(self.handle_render_error(errors).await);
     }
@@ -633,7 +694,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     Ok(output)
   }
 
-    #[expect(clippy::too_many_lines)]
+  #[expect(clippy::too_many_lines)]
   async fn try_bundle_up_fast_native_relink(
     &mut self,
     is_write: bool,
@@ -686,6 +747,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let mut renames = Vec::new();
     let mut cjs_interops = Vec::new();
     let mut edges_changed = Vec::new();
+    let mut any_dirty_cjs_or_json = !unreachable.is_empty();
     {
       let snapshot = self.cache.get_snapshot_mut();
       // The relink links the scans of the changed and appended modules from now on.
@@ -696,6 +758,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       for item in prepared {
         let idx = item.idx;
         let chunk_idx = item.chunk_idx;
+        any_dirty_cjs_or_json |= item.post_link_exports_kind.is_commonjs()
+          || snapshot.module_table.modules.get(idx).and_then(Module::as_normal).is_some_and(|m| {
+            m.exports_kind.is_commonjs()
+              || matches!(m.module_type, rolldown_common::ModuleType::Json)
+          });
         cached_relink.scanned_side_effects[idx] = *snapshot.module_table[idx].side_effects();
         let mut local_db_without_scoping = rolldown_common::SymbolRefDbForModule::new(
           oxc::semantic::Scoping::default(),
@@ -825,6 +892,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       self.cache.last_native_relink_fallback = Some("no_snapshot");
       return None;
     };
+    let had_edges_changed = !edges_changed.is_empty();
+    let had_cjs_interops = !cjs_interops.is_empty();
     let mut graph_change = None;
     let retired: rustc_hash::FxHashSet<rolldown_common::ModuleIdx> =
       graph.as_ref().map(|plan| plan.retired.iter().copied().collect()).unwrap_or_default();
@@ -930,33 +999,55 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         return Some(Err(self.handle_render_error(errors).await));
       }
     };
-    self.cache.inlined_commonjs_constants = self
-      .cache
-      .cached_native_relink
-      .as_ref()
-      .map(|cached| crate::stages::link_stage::inlined_commonjs_constants(&cached.link_output));
-    self.cache.split_json_defaults = self
-      .cache
-      .cached_native_relink
-      .as_ref()
-      .map(|cached| crate::stages::link_stage::split_json_defaults(&cached.link_output));
-    self.cache.commonjs_evaluations = self.cache.cached_native_relink.as_ref().map(|cached| {
-      crate::utils::chunk::render_chunk_exports::commonjs_evaluations(
-        &cached.link_output,
-        &self.options,
-      )
-    });
-    self.cache.commonjs_interop = self
-      .cache
-      .cached_native_relink
-      .as_ref()
-      .map(|cached| crate::stages::link_stage::commonjs_interop(&cached.link_output));
+    let decisions_unchanged = native_graph_change.is_none()
+      && !had_edges_changed
+      && !had_cjs_interops
+      && !any_dirty_cjs_or_json
+      && self.cache.inlined_commonjs_constants.is_some()
+      && self.cache.split_json_defaults.is_some()
+      && self.cache.commonjs_evaluations.is_some()
+      && self.cache.commonjs_interop.is_some();
+    if !decisions_unchanged {
+      self.cache.inlined_commonjs_constants = self
+        .cache
+        .cached_native_relink
+        .as_ref()
+        .map(|cached| crate::stages::link_stage::inlined_commonjs_constants(&cached.link_output));
+      self.cache.split_json_defaults = self
+        .cache
+        .cached_native_relink
+        .as_ref()
+        .map(|cached| crate::stages::link_stage::split_json_defaults(&cached.link_output));
+      self.cache.commonjs_evaluations = self.cache.cached_native_relink.as_ref().map(|cached| {
+        crate::utils::chunk::render_chunk_exports::commonjs_evaluations(
+          &cached.link_output,
+          &self.options,
+        )
+      });
+      self.cache.commonjs_interop = self
+        .cache
+        .cached_native_relink
+        .as_ref()
+        .map(|cached| crate::stages::link_stage::commonjs_interop(&cached.link_output));
+      static NEXT_FAST_LINK_DECISIONS_GENERATION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1_000_000_000);
+      self.cache.link_decisions_generation =
+        NEXT_FAST_LINK_DECISIONS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
     if !scan_warnings.is_empty() {
       let mut combined = std::mem::take(scan_warnings);
       combined.append(&mut output.warnings);
       output.warnings = combined;
     }
     let pre_emit_assets_len = output.assets.len();
+    let pre_emit_chunk_filenames: rustc_hash::FxHashSet<ArcStr> = output
+      .assets
+      .iter()
+      .filter_map(|a| match a {
+        rolldown_common::Output::Chunk(c) => Some(c.filename.clone()),
+        rolldown_common::Output::Asset(_) => None,
+      })
+      .collect();
 
     self.file_emitter.add_additional_files(&mut output.assets, &mut output.warnings);
 
@@ -973,9 +1064,12 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       self.cache.invalidate_native_relink();
     }
 
-    if let Err(errors) =
-      GenerateStage::validate_mangle_properties_output(&self.options, &output.assets)
-    {
+    if let Err(errors) = GenerateStage::validate_mangle_properties_output(
+      &self.options,
+      self.cache.mangle_properties_override.is_some(),
+      &pre_emit_chunk_filenames,
+      &output.assets,
+    ) {
       self.cache.invalidate_native_relink();
       return Some(Err(self.handle_render_error(errors).await));
     }
@@ -994,6 +1088,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     }
 
     self.cache.last_fast_native_relink = output.assets.len() == pre_emit_assets_len;
+    self.cache.last_link_decisions_unchanged =
+      self.cache.last_fast_native_relink && decisions_unchanged;
     self.cache.last_native_graph_change = native_graph_change;
     Some(Ok(output))
   }

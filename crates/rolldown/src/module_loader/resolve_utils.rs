@@ -35,6 +35,7 @@ pub async fn resolve_id<Fs: FileSystem>(
       | "\0rolldown/import-meta-url"
       | "\0rolldown/json-module"
       | "\0rolldown/text-module"
+      | "\0rolldown/raw-text-module"
   ) {
     return Ok(Ok(ResolvedId {
       id: ModuleId::new(RUNTIME_MODULE_KEY),

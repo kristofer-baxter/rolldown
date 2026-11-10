@@ -180,7 +180,7 @@ impl GenerateStage<'_> {
       &atom_dependencies.cycle,
       &host_atom_by_entry_bit,
     );
-    let mut changed = false;
+    let mut pending = Vec::new();
     for (atom_idx, atom) in atoms.iter_mut().enumerate() {
       let original_dependent_entries = atom.dependent_entries.clone();
       let dependent_entries = atom.dependent_entries.index_of_one().collect::<Vec<_>>();
@@ -201,19 +201,39 @@ impl GenerateStage<'_> {
           &dynamic_entry_modules_by_entry,
         )
       };
-      if !matches!(action, ReducedEntriesAction::Avoid)
-        && (!keep_acyclic || reduced_chunk_graph.try_move(atom_idx, &atom.dependent_entries))
-      {
-        changed = true;
+      let reduced_dependent_entries =
+        std::mem::replace(&mut atom.dependent_entries, original_dependent_entries);
+      if !matches!(action, ReducedEntriesAction::Avoid) {
+        pending.push((atom_idx, reduced_dependent_entries, action));
+      }
+    }
+
+    // A move can be refused only because it would close a chunk cycle, and a later move can
+    // remove the edge that closed it: the runtime, or a module that the entry and its lazy chunks
+    // share, can move into the entry chunk only once each shared module that imports it has moved
+    // there too. So the moves repeat until a pass moves nothing, which leaves no shared chunk that
+    // the entry must load before it runs.
+    let mut changed = false;
+    loop {
+      let mut moved_in_pass = false;
+      pending.retain(|(atom_idx, reduced_dependent_entries, action)| {
+        if keep_acyclic && !reduced_chunk_graph.try_move(*atom_idx, reduced_dependent_entries) {
+          return true;
+        }
+        atoms[*atom_idx].dependent_entries = reduced_dependent_entries.clone();
         if let ReducedEntriesAction::ApplyWithNamespaceExtraction {
           entry_chunk_idx,
           entry_module_idx,
-        } = action
+        } = *action
         {
           namespace_extractions.insert((entry_chunk_idx, entry_module_idx));
         }
-      } else {
-        atom.dependent_entries = original_dependent_entries;
+        moved_in_pass = true;
+        false
+      });
+      changed |= moved_in_pass;
+      if !moved_in_pass || pending.is_empty() {
+        break;
       }
     }
 

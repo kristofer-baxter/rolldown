@@ -138,7 +138,7 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         // Loader-owned type metadata has no runtime dependency in a closed patch.
         if matches!(
           import_decl.source.value.as_str(),
-          Some("\0rolldown/json-module" | "\0rolldown/text-module")
+          Some("\0rolldown/json-module" | "\0rolldown/text-module" | "\0rolldown/raw-text-module")
         ) && import_decl.specifiers.is_none()
           && importee.id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
         {
@@ -723,6 +723,15 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
         },
       ),
     );
+    // An update reads every getter once, right after its factory runs, so V8 compiles them with the factory: a
+    // parenthesized getter skips the separate lazy compile that each first call would otherwise pay.
+    for property in &mut arg_obj_expr.properties {
+      if let ObjectPropertyKind::ObjectProperty(property) = property
+        && let Expression::ArrowFunctionExpression(getter) = &mut property.value
+      {
+        getter.pife = true;
+      }
+    }
 
     // construct `__export(ns_name, { prop_name: () => returned, ... })`
     let mut export_args = oxc::allocator::Vec::with_capacity_in(3, self);
@@ -1085,10 +1094,12 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
       // CommonJS lowering; JSON can instead be ESM data even while it has a lazy export.
       load_exports_call
     } else if rec.meta.contains(ImportRecordMeta::JsonModule)
-      || (self.runtime_module_semantics && crate::utils::import_options::is_json_module(importee))
+      || (self.runtime_module_semantics
+        && (crate::utils::import_options::is_json_module(importee)
+          || crate::utils::import_options::is_text_module(importee)))
     {
-      // Vite-mode JSON, or a JSON module loaded as JavaScript: ESM-wrapped at runtime, unwrap to
-      // the JSON value.
+      // Vite-mode JSON, or a JSON or text module loaded as JavaScript: ESM-wrapped at runtime,
+      // unwrap to the default value.
       let to_commonjs_call = Expression::new_call_with_arg(
         Expression::new_member_access_expr("__rolldown_runtime__", "__toCommonJS", self),
         load_exports_call,

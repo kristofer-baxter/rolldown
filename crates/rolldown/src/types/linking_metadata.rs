@@ -4,8 +4,8 @@ use oxc_index::IndexVec;
 use oxc_str::CompactStr;
 use rolldown_common::{
   EntryPointKind, ImportRecordIdx, ImportRecordMeta, IndexModules, MemberExprRefResolutionMap,
-  ModuleIdx, ModuleNamespaceIncludedReason, ModuleType, NormalModule, OutputFormat, ResolvedExport,
-  RuntimeHelper, StmtInfoIdx, SymbolRef, SymbolRefDb, WrapKind,
+  ModuleIdx, ModuleNamespaceIncludedReason, ModuleType, NormalModule, OutputFormat,
+  RUNTIME_MODULE_ID, ResolvedExport, RuntimeHelper, StmtInfoIdx, SymbolRef, SymbolRefDb, WrapKind,
   dynamic_import_usage::DynamicImportExportsUsage,
 };
 use rolldown_utils::IndexBitSet;
@@ -16,6 +16,10 @@ use rustc_hash::{FxHashMap, FxHashSet};
 #[derive(Debug, Default)]
 #[expect(clippy::struct_excessive_bools)]
 pub struct LinkingMetadata {
+  /// Own properties to drop from this module's top-level `const` object literals, keyed by the
+  /// binding. No included statement reads them and the object never escapes; see
+  /// `link_stage::plain_object_reads`.
+  pub pruned_object_properties: FxHashMap<oxc::semantic::SymbolId, FxHashSet<CompactStr>>,
   /// Importer-local bindings for native `import defer * as` records.
   pub deferred_imports: FxHashMap<ImportRecordIdx, SymbolRef>,
   /// Initialization flags are real symbols so cross-chunk reads retain their state.
@@ -130,12 +134,14 @@ pub struct LinkingMetadata {
 }
 
 impl LinkingMetadata {
-  /// Whether a dependency of the module, including an external one, has side effects.
+  /// Whether a dependency other than the synthetic runtime has side effects. Patching dependencies
+  /// adds runtime helpers after inclusion; their effects do not make a pure owner's body observable.
   pub fn has_side_effectful_dependency(&self, modules: &IndexModules) -> bool {
-    self
-      .dependencies
-      .iter()
-      .any(|&dependency_idx| modules[dependency_idx].side_effects().has_side_effects())
+    self.dependencies.iter().any(|&dependency_idx| {
+      let dependency = &modules[dependency_idx];
+      dependency.side_effects().has_side_effects()
+        && !dependency.as_normal().is_some_and(|module| module.id == RUNTIME_MODULE_ID)
+    })
   }
 
   pub fn canonical_exports(

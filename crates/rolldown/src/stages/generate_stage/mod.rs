@@ -365,7 +365,7 @@ impl<'a> GenerateStage<'a> {
     if !warnings.is_empty() {
       self.link_output.diagnostics.extend(warnings);
     }
-    let (index_chunk_id_to_name, inline_record_ids) =
+    let (mut index_chunk_id_to_name, inline_record_ids) =
       self.generate_chunk_name_and_preliminary_filenames(&mut chunk_graph).await?;
     for (chunk_idx, id) in inline_record_ids {
       self.inline_state.set_record_id(chunk_idx, id);
@@ -384,6 +384,9 @@ impl<'a> GenerateStage<'a> {
       self.resolved_paths = Some(paths.resolve_all(ids).await);
     }
 
+    // Statement inclusion is final here. Chunk reuse and finalization both read the plan.
+    let link_output = &mut *self.link_output;
+    link_output.plain_object_reads.plan_pruning(&mut link_output.metas);
     let resolved_file_urls = self.resolve_file_urls(&chunk_graph).await?;
     let (chunk_decisions, reused_chunks, relink_digest_state) = self
       .compute_native_chunk_decisions(
@@ -463,8 +466,8 @@ impl<'a> GenerateStage<'a> {
       runtime_chunk_sig,
       module_has_native_ns,
       module_owner_digest,
-      protected_modules,
-      decision_dependencies,
+      mut protected_modules,
+      mut decision_dependencies,
     )) = relink_digest_state
       && let Some(cache) = self.cache.as_ref()
       && self.options.preserve_modules
@@ -512,6 +515,33 @@ impl<'a> GenerateStage<'a> {
       let render_export_items_index_vec =
         oxc_index::index_vec![rolldown_utils::indexmap::FxIndexMap::default(); chunks_len];
       let index_chunk_to_instances = oxc_index::index_vec![FxIndexSet::default(); chunks_len];
+      for chunk in chunk_graph.chunk_table.iter_mut() {
+        chunk.bits = Default::default();
+        chunk.pre_rendered_chunk = None;
+        chunk.canonical_names = FxHashMap::default();
+        chunk.require_binding_names_for_other_chunks = FxHashMap::default();
+        chunk.node_mode_external_ns_names = FxHashMap::default();
+        chunk.insert_map = FxHashMap::default();
+        chunk.remove_map = FxHashMap::default();
+        chunk.module_idx_to_render_concatenated_module = FxHashMap::default();
+        chunk.modules.shrink_to_fit();
+        for items in chunk.imports_from_other_chunks.values_mut() {
+          items.shrink_to_fit();
+        }
+        chunk.imports_from_other_chunks.shrink_to_fit();
+        for names in chunk.exports_to_other_chunks.values_mut() {
+          names.shrink_to_fit();
+        }
+        chunk.exports_to_other_chunks.shrink_to_fit();
+        chunk.cross_chunk_imports.shrink_to_fit();
+        chunk.cross_chunk_dynamic_imports.shrink_to_fit();
+        chunk.direct_imports_from_external_modules.shrink_to_fit();
+        chunk.entry_level_external_module_idx.shrink_to_fit();
+        chunk.import_symbol_from_external_modules.shrink_to_fit();
+      }
+      index_chunk_id_to_name.shrink_to_fit();
+      protected_modules.shrink_to_fit();
+      decision_dependencies.shrink_to_fit();
       self.pending_native_relink = Some(Box::new(PendingNativeRelinkState {
         chunk_graph,
         used_symbol_refs,
@@ -559,6 +589,11 @@ impl<'a> GenerateStage<'a> {
         || cached_relink.chunk_idx_to_template_pos.get(chunk_idx).copied().flatten().is_none()
     }) {
       return Ok(Err("dirty_record"));
+    }
+    // Only the dirty modules render again, so the properties pruned from the others must stay
+    // what their statement inclusion implies.
+    if !self.link_output.plain_object_reads.plan_is_current(&self.link_output.metas) {
+      return Ok(Err("plain_object_reads"));
     }
     self.plugin_driver.render_start(self.options).await?;
     set_emitted_chunk_preliminary_filenames(
@@ -686,7 +721,7 @@ impl<'a> GenerateStage<'a> {
       return Err(errors.into());
     }
 
-    self
+    let res = self
       .render_dirty_chunks_to_assets(
         &cached_relink.chunk_graph,
         dirty_rendered_modules,
@@ -701,8 +736,15 @@ impl<'a> GenerateStage<'a> {
         &mut cached_relink.excluded_from_reused_filenames,
         &mut cached_relink.pool_installed,
       )
-      .await
-      .map(|output| Ok((output, retired_filenames)))
+      .await;
+    for &(_module_idx, chunk_idx, _) in dirty_modules_with_used {
+      let chunk = &mut cached_relink.chunk_graph.chunk_table[chunk_idx];
+      chunk.pre_rendered_chunk = None;
+      chunk.canonical_names = FxHashMap::default();
+      chunk.require_binding_names_for_other_chunks = FxHashMap::default();
+      chunk.node_mode_external_ns_names = FxHashMap::default();
+    }
+    res.map(|output| Ok((output, retired_filenames)))
   }
 
   /// Notices:
@@ -784,6 +826,14 @@ impl<'a> GenerateStage<'a> {
 
     let options = self.options;
     let runtime_id = self.link_output.runtime.id();
+    let consumer_shared_names = crate::utils::topology_config::get(options)
+      .is_some_and(|cfg| cfg.consumer_shared_chunk_names);
+    let flattened_entries: Vec<&rolldown_common::EntryPoint> = if consumer_shared_names {
+      self.link_output.entries.values().flatten().collect()
+    } else {
+      Vec::new()
+    };
+    let flattened_entries_ref = &flattened_entries;
     let mut index_pre_generated_names: IndexVec<ChunkIdx, PreGeneratedChunkName> =
       if order_matches_previous {
         IndexVec::default()
@@ -858,6 +908,33 @@ impl<'a> GenerateStage<'a> {
                   Ok(generated)
                 }
                 ChunkKind::Common => {
+                  if consumer_shared_names && !is_record && chunk.bits.bit_count() >= 2 {
+                    let all_vendor = !chunk.modules.is_empty()
+                      && chunk.modules.iter().filter(|&&m| m != runtime_id).all(|&m| {
+                        modules[m].id().as_str().replace('\\', "/").contains("/node_modules/")
+                      });
+                    let all_dynamic = chunk.bits.index_of_one().all(|bit| {
+                      flattened_entries_ref
+                        .get(bit as usize)
+                        .is_some_and(|ep| ep.kind.is_dynamic_import())
+                    });
+                    let prefix = if all_vendor && all_dynamic { "vendors-async" } else { "shared" };
+                    if let Some(shared_name) =
+                      manual_code_splitting::derive_consumer_shared_chunk_name(
+                        prefix,
+                        &chunk.bits,
+                        flattened_entries_ref,
+                        modules,
+                      )
+                    {
+                      let sanitized = sanitize_filename.call(&shared_name).await?;
+                      return Ok(PreGeneratedChunkName {
+                        representative_chunk_name: sanitized.clone(),
+                        chunk_name: sanitized.clone(),
+                        chunk_filename: sanitized,
+                      });
+                    }
+                  }
                   // - rollup use the first entered/last executed module as the `[name]` of common chunks.
                   // - esbuild always use 'chunk' as the `[name]`. However we try to make the name more meaningful here.
                   if let Some(module_id) =
@@ -1286,6 +1363,17 @@ impl<'a> GenerateStage<'a> {
             init_target,
             init_noop,
           ));
+          let mut pruned = ometa
+            .pruned_object_properties
+            .iter()
+            .map(|(symbol, keys)| {
+              let mut keys = keys.iter().map(oxc_str::CompactStr::as_str).collect::<Vec<_>>();
+              keys.sort_unstable();
+              (symbol.index(), keys)
+            })
+            .collect::<Vec<_>>();
+          pruned.sort_unstable();
+          mh.write_val(&pruned);
           if !normal.ecma_view.enum_member_value_map.is_empty() {
             let mut enum_acc = (0u128, 0u128);
             let mut enum_count = 0usize;

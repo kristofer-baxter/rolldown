@@ -10,10 +10,10 @@ use oxc::minifier::{CompressOptions, Compressor, TreeShakeOptions};
 use oxc::semantic::{Scoping, Stats};
 use oxc::syntax::symbol::SymbolFlags;
 use oxc::transformer::Transformer;
-use oxc::transformer_plugins::{
-  InjectGlobalVariables, ReplaceGlobalDefines, ReplaceGlobalDefinesConfig,
-};
+use oxc::transformer_plugins::InjectGlobalVariables;
 use oxc_str::CompactStr;
+
+use super::replace_global_defines::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 
 use rolldown_common::{ConstExportMeta, ConstantValue, NormalizedBundlerOptions};
 use rolldown_ecmascript::{EcmaAst, WithMutFields, semantic_builder_for_transform};

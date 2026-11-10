@@ -151,6 +151,32 @@ pub fn deferred_records(
     .collect()
 }
 
+/// Whether `program` calls `import.meta.hot.invalidate()` anywhere, as a module may in the
+/// callback with which it accepts its own updates: the update then goes on to the modules that
+/// import it, as though it accepted none.
+#[cfg(feature = "experimental")]
+pub(crate) fn calls_hot_invalidate(program: &ast::Program) -> bool {
+  use oxc::ast_visit::{VisitJs, walk_js};
+  struct Invalidates(bool);
+  impl<'a> VisitJs<'a> for Invalidates {
+    fn visit_call_expression(&mut self, call: &ast::CallExpression<'a>) {
+      if let ast::Expression::StaticMemberExpression(invalidate) = &call.callee
+        && invalidate.property.name == "invalidate"
+        && let ast::Expression::StaticMemberExpression(hot) = &invalidate.object
+        && hot.property.name == "hot"
+        && matches!(hot.object, ast::Expression::ImportMeta(_))
+      {
+        self.0 = true;
+        return;
+      }
+      walk_js::walk_call_expression(self, call);
+    }
+  }
+  let mut invalidates = Invalidates(false);
+  invalidates.visit_program(program);
+  invalidates.0
+}
+
 /// The runtime matches accepted deps by stable id, so each recorded dep is rewritten to it.
 pub fn rewrite_hot_accept_deps<'ast>(
   call_expr: &mut ast::CallExpression<'ast>,
@@ -236,6 +262,10 @@ pub trait HmrAstBuilder<'any, 'ast> {
     false
   }
 
+  fn owns_initial_bindings(&self) -> bool {
+    self.native_record()
+  }
+
   /// A native record's export binding cells, which a committed hot update writes. See
   /// `ScopeHoistingFinalizer::native_cells`.
   fn native_cells(&self) -> Option<ast::Expression<'ast>> {
@@ -290,6 +320,18 @@ pub trait HmrAstBuilder<'any, 'ast> {
             SPAN,
             ast::PropertyKind::Init,
             ast::PropertyKey::new_static_identifier(SPAN, "native", &self.builder()),
+            ast::Expression::new_boolean_literal(SPAN, true, &self.builder()),
+            false,
+            false,
+            false,
+            &self.builder(),
+          ));
+        }
+        if self.owns_initial_bindings() && !self.native_record() {
+          properties.push(ast::ObjectPropertyKind::new_object_property(
+            SPAN,
+            ast::PropertyKind::Init,
+            ast::PropertyKey::new_static_identifier(SPAN, "bindings", &self.builder()),
             ast::Expression::new_boolean_literal(SPAN, true, &self.builder()),
             false,
             false,
@@ -468,6 +510,13 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for HmrAstFinalizer<'any, 'ast> {
 }
 
 impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast> {
+  fn owns_initial_bindings(&self) -> bool {
+    self.native_record()
+      || (self.ctx.options.is_dev_mode_enabled()
+        && !crate::utils::native_records::enabled(self.ctx.options)
+        && self.exports_kind() == rolldown_common::ExportsKind::Esm)
+  }
+
   fn native_commonjs_record(&self) -> bool {
     self.native_module_record()
   }
@@ -495,7 +544,7 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
   /// in sync, so any update to the record requires a reload. A re-exported name has no cell:
   /// the engine forwards it to its declaring record.
   fn native_cells(&self) -> Option<ast::Expression<'ast>> {
-    if !self.native_record() {
+    if !self.owns_initial_bindings() {
       return None;
     }
     let scoping = self.scope.scoping();
@@ -516,7 +565,11 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
         let local = self.canonical_name_for(canonical);
         if has_eval { Cell::Reload } else { Cell::GetSet(local) }
       } else if self.ctx.symbol_db.is_facade_symbol(canonical) {
-        Cell::Facade(namespace)
+        if !self.native_record() && canonical == self.ctx.module.default_export_ref {
+          if has_eval { Cell::Reload } else { Cell::GetSet(self.canonical_name_for(canonical)) }
+        } else {
+          Cell::Facade(namespace)
+        }
       } else if scoping.symbol_scope_id(canonical.symbol) != root {
         continue;
       } else {
@@ -546,7 +599,7 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
   /// adding a key to this namespace, so it asks the runtime with this namespace instead; before
   /// this registration runs the record has not started and the binding is uninitialized.
   fn native_temporal(&self) -> Option<ast::Expression<'ast>> {
-    if !self.native_record() {
+    if !self.owns_initial_bindings() {
       return None;
     }
     // Ordered by each name's JSON string, the key order the registration has always used.

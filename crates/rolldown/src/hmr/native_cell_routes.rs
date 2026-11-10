@@ -44,13 +44,14 @@ pub enum Verdict {
   Uncertain,
 }
 
+#[derive(Debug, Clone)]
 pub struct Route {
   pub importer: ModuleIdx,
   pub record: ImportRecordIdx,
   pub donor: ModuleIdx,
   pub verdict: Verdict,
   /// Every module statically reachable from the donor, through records of any kind, sorted.
-  /// Empty for [`Verdict::Evaluate`] and in [`evaluation_routes`], whose readers don't need it.
+  /// Empty for [`Verdict::Evaluate`], whose readers don't need it.
   pub closure: Vec<ModuleIdx>,
   /// For [`Verdict::Bypass`]: imported name to its cell and the cell's export name.
   pub bindings: FxHashMap<String, (ModuleIdx, String)>,
@@ -58,9 +59,6 @@ pub struct Route {
   /// reads, which its record evaluates in place of the donor. It imports nothing for the others.
   pub live_owners: Vec<ModuleIdx>,
 }
-
-/// The native cell and its export name that a donor's export leads to.
-type CellOf = fn(&IndexModules, &NormalModule, &str) -> Option<(ModuleIdx, String)>;
 
 fn cell_export(
   modules: &IndexModules,
@@ -87,14 +85,16 @@ fn forwarded_cell_export(
   modules: &IndexModules,
   donor: &NormalModule,
   name: &str,
+  lead_cache: &mut FxHashMap<(ModuleIdx, String), Lead>,
 ) -> Option<(ModuleIdx, String)> {
-  match forwarded_lead(modules, donor, name) {
+  match forwarded_lead(modules, donor, name, lead_cache) {
     Lead::Cell(cell, cell_name) => Some((cell, cell_name)),
     Lead::Elsewhere | Lead::Undecided => None,
   }
 }
 
 /// Where an export leads through named re-exports and `export *`.
+#[derive(Clone)]
 enum Lead {
   /// To the export of a native cell, by the cell's name for it.
   Cell(ModuleIdx, String),
@@ -109,16 +109,27 @@ enum Lead {
 /// declaration outside a cell, at a namespace object, or at an ES module that doesn't export the
 /// name. A way past an unresolved record, an external, a module that isn't an ES module or the
 /// budget leaves the lead undecided.
-fn forwarded_lead(modules: &IndexModules, donor: &NormalModule, name: &str) -> Lead {
+fn forwarded_lead(
+  modules: &IndexModules,
+  donor: &NormalModule,
+  name: &str,
+  lead_cache: &mut FxHashMap<(ModuleIdx, String), Lead>,
+) -> Lead {
+  let key = (donor.idx, name.to_string());
+  if let Some(cached) = lead_cache.get(&key) {
+    return cached.clone();
+  }
   let mut visited = FxHashSet::default();
-  let mut pending = vec![(donor.idx, name.to_string())];
+  let mut pending = vec![key.clone()];
   let mut undecided = false;
+  let mut found = None;
   while let Some((idx, name)) = pending.pop() {
     if !visited.insert((idx, name.clone())) {
       continue;
     }
     if visited.len() > MAX_MODULES {
-      return Lead::Undecided;
+      undecided = true;
+      break;
     }
     let Some(module) =
       modules[idx].as_normal().filter(|module| module.exports_kind == ExportsKind::Esm)
@@ -127,11 +138,23 @@ fn forwarded_lead(modules: &IndexModules, donor: &NormalModule, name: &str) -> L
       continue;
     };
     if let Some((cell, cell_name)) = cell_export(modules, module, &name) {
-      return Lead::Cell(cell, cell_name);
+      found = Some(Lead::Cell(cell, cell_name));
+      break;
     }
     let Some(export) = module.named_exports.get(name.as_str()) else {
       if name != "default" {
-        pending.extend(module.star_export_module_ids().map(|star| (star, name.clone())));
+        pending.extend(
+          module
+            .star_export_module_ids()
+            .filter(|&star| {
+              modules[star].as_normal().is_none_or(|m| {
+                m.exports_kind != ExportsKind::Esm
+                  || m.named_exports.contains_key(name.as_str())
+                  || m.star_export_module_ids().next().is_some()
+              })
+            })
+            .map(|star| (star, name.clone())),
+        );
       }
       continue;
     };
@@ -144,13 +167,23 @@ fn forwarded_lead(modules: &IndexModules, donor: &NormalModule, name: &str) -> L
       }
     }
   }
-  if undecided { Lead::Undecided } else { Lead::Elsewhere }
+  let result = found.unwrap_or(if undecided { Lead::Undecided } else { Lead::Elsewhere });
+  lead_cache.insert(key, result.clone());
+  result
 }
 
 /// Whether an export of `donor`'s namespace may lead to a native cell ([`forwarded_lead`]): one
 /// that it names, one that an `export *` of it may forward, or any, when its `export *` records
 /// lead further than the scan follows.
-fn namespace_may_lead_to_cell(modules: &IndexModules, donor: &NormalModule) -> bool {
+fn namespace_may_lead_to_cell(
+  modules: &IndexModules,
+  donor: &NormalModule,
+  lead_cache: &mut FxHashMap<(ModuleIdx, String), Lead>,
+  ns_cache: &mut FxHashMap<ModuleIdx, bool>,
+) -> bool {
+  if let Some(&cached) = ns_cache.get(&donor.idx) {
+    return cached;
+  }
   let mut names = FxHashSet::default();
   let mut visited = FxHashSet::default();
   let mut pending = vec![donor.idx];
@@ -161,9 +194,11 @@ fn namespace_may_lead_to_cell(modules: &IndexModules, donor: &NormalModule) -> b
     let Some(module) =
       modules[idx].as_normal().filter(|module| module.exports_kind == ExportsKind::Esm)
     else {
+      ns_cache.insert(donor.idx, true);
       return true;
     };
     if visited.len() > MAX_MODULES {
+      ns_cache.insert(donor.idx, true);
       return true;
     }
     names.extend(
@@ -175,7 +210,11 @@ fn namespace_may_lead_to_cell(modules: &IndexModules, donor: &NormalModule) -> b
     );
     pending.extend(module.star_export_module_ids());
   }
-  names.into_iter().any(|name| !matches!(forwarded_lead(modules, donor, name), Lead::Elsewhere))
+  let result = names
+    .into_iter()
+    .any(|name| !matches!(forwarded_lead(modules, donor, name, lead_cache), Lead::Elsewhere));
+  ns_cache.insert(donor.idx, result);
+  result
 }
 
 /// Whether `name`, followed through named re-exports, is declared by a module that is not a
@@ -263,26 +302,6 @@ pub fn routes(
   asts: &IndexEcmaAst,
   entries: &FxHashSet<ModuleIdx>,
 ) -> Vec<Route> {
-  candidate_routes(modules, statements, asts, entries, true)
-}
-
-/// [`routes`] without their closures, which only patches read.
-pub fn evaluation_routes(
-  modules: &IndexModules,
-  statements: &IndexStmtInfos,
-  asts: &IndexEcmaAst,
-  entries: &FxHashSet<ModuleIdx>,
-) -> Vec<Route> {
-  candidate_routes(modules, statements, asts, entries, false)
-}
-
-fn candidate_routes(
-  modules: &IndexModules,
-  statements: &IndexStmtInfos,
-  asts: &IndexEcmaAst,
-  entries: &FxHashSet<ModuleIdx>,
-  closures: bool,
-) -> Vec<Route> {
   let mut has_native_cells = false;
   for module in modules.iter().filter_map(|module| module.as_normal()) {
     if is_native_cell(module.id.as_str()) {
@@ -311,6 +330,9 @@ fn candidate_routes(
     return Vec::new();
   }
   let mut routes = Vec::new();
+  let mut lead_cache = FxHashMap::default();
+  let mut ns_cache = FxHashMap::default();
+  let mut donor_cache = FxHashMap::default();
   for importer in modules.iter().filter_map(|module| module.as_normal()) {
     for (record_idx, record) in importer.import_records.iter_enumerated() {
       if record.kind != ImportKind::Import || record.meta.contains(ImportRecordMeta::IsExportStar) {
@@ -319,12 +341,19 @@ fn candidate_routes(
       let Some(donor) = record.resolved_module.and_then(|idx| modules[idx].as_normal()) else {
         continue;
       };
+      let is_cell_donor = cell_donors.contains(&donor.idx);
+      if !is_cell_donor && !reexports_import(donor) {
+        continue;
+      }
       let imports = importer
         .named_imports
         .iter()
         .filter(|(_, import)| import.record_idx == record_idx)
         .collect::<Vec<_>>();
-      let binds_own_cell = cell_donors.contains(&donor.idx)
+      if imports.is_empty() {
+        continue;
+      }
+      let binds_own_cell = is_cell_donor
         && imports.iter().any(|(_, import)| match &import.imported {
           Specifier::Literal(name) => cell_export(modules, donor, name).is_some(),
           Specifier::Star => {
@@ -333,30 +362,44 @@ fn candidate_routes(
         });
       // An import that may bind a cell that its donor forwards gets a verdict too, a bypass only
       // where the scan follows a binding all the way to its cell.
-      let cell_of: CellOf = if binds_own_cell {
-        cell_export
+      let forwarded = if binds_own_cell {
+        false
       } else if reexports_import(donor)
         && imports.iter().any(|(_, import)| match &import.imported {
           Specifier::Literal(name) => {
-            !matches!(forwarded_lead(modules, donor, name), Lead::Elsewhere)
+            !matches!(forwarded_lead(modules, donor, name, &mut lead_cache), Lead::Elsewhere)
           }
-          Specifier::Star => namespace_may_lead_to_cell(modules, donor),
+          Specifier::Star => {
+            namespace_may_lead_to_cell(modules, donor, &mut lead_cache, &mut ns_cache)
+          }
         })
       {
-        forwarded_cell_export
+        true
       } else {
         continue;
       };
       routes.push(classify(
-        modules, statements, asts, &required, importer, record_idx, donor, &imports, cell_of,
+        modules,
+        statements,
+        asts,
+        &required,
+        importer,
+        record_idx,
+        donor,
+        &imports,
+        forwarded,
+        &mut lead_cache,
+        &mut donor_cache,
       ));
     }
   }
   settle_run_donors(modules, statements, asts, entries, &mut routes);
-  if closures {
-    for route in routes.iter_mut().filter(|route| route.verdict != Verdict::Evaluate) {
-      route.closure = static_closure(modules, route.donor);
-    }
+  let mut closure_cache: FxHashMap<ModuleIdx, Vec<ModuleIdx>> = FxHashMap::default();
+  for route in routes.iter_mut().filter(|route| route.verdict != Verdict::Evaluate) {
+    route.closure = closure_cache
+      .entry(route.donor)
+      .or_insert_with(|| static_closure(modules, route.donor))
+      .clone();
   }
   routes
 }
@@ -440,23 +483,35 @@ fn certain_successors(
   else {
     return Vec::new();
   };
+  if module.import_records.is_empty() {
+    return Vec::new();
+  }
   let deferred = crate::hmr::utils::deferred_records(module, ast.program());
   // The records that bind a name, and those of which the module reads or re-exports one.
-  let read = statements.get(idx).map(|statements| {
-    statements
-      .iter()
-      .flat_map(|statement| statement.referenced_symbols.iter())
-      .map(|reference| *reference.symbol_ref())
-      .collect::<FxHashSet<_>>()
-  });
-  let reexported =
-    module.named_exports.values().map(|export| export.referenced).collect::<FxHashSet<_>>();
   let mut bound = FxHashSet::default();
   let mut used = FxHashSet::default();
-  for (binding, import) in &module.named_imports {
-    bound.insert(import.record_idx);
-    if reexported.contains(binding) || read.as_ref().is_some_and(|read| read.contains(binding)) {
-      used.insert(import.record_idx);
+  if !module.named_imports.is_empty() {
+    for import in module.named_imports.values() {
+      bound.insert(import.record_idx);
+    }
+    for export in module.named_exports.values() {
+      if let Some(import) = module.named_imports.get(&export.referenced) {
+        used.insert(import.record_idx);
+      }
+    }
+    if used.len() < bound.len()
+      && let Some(statements) = statements.get(idx)
+    {
+      'stmts: for statement in statements.iter() {
+        for reference in &statement.referenced_symbols {
+          if let Some(import) = module.named_imports.get(reference.symbol_ref()) {
+            used.insert(import.record_idx);
+            if used.len() == bound.len() {
+              break 'stmts;
+            }
+          }
+        }
+      }
     }
   }
   let mut successors = Vec::new();
@@ -504,6 +559,83 @@ fn static_closure(modules: &IndexModules, donor: ModuleIdx) -> Vec<ModuleIdx> {
   closure
 }
 
+fn donor_graph_verdict(
+  modules: &IndexModules,
+  required: &FxHashSet<ModuleIdx>,
+  donor_idx: ModuleIdx,
+  donor_cache: &mut FxHashMap<ModuleIdx, (bool, bool)>,
+) -> (bool, bool) {
+  if let Some(&cached) = donor_cache.get(&donor_idx) {
+    return cached;
+  }
+  // The certificate walks `Import` records only; any failure it meets is final, whatever it
+  // meets first.
+  let mut evaluate = false;
+  let mut uncertain = false;
+  let mut state = FxHashMap::default();
+  let mut pending = vec![(donor_idx, false)];
+  let mut edges = 0;
+  while let Some((idx, leaving)) = pending.pop() {
+    if leaving {
+      state.insert(idx, 2_u8);
+      continue;
+    }
+    match state.get(&idx) {
+      Some(1) => {
+        uncertain = true;
+        continue;
+      }
+      Some(2) => continue,
+      _ => {}
+    }
+    let Some(module) = modules[idx].as_normal() else {
+      evaluate = true;
+      break;
+    };
+    if module.side_effects.has_side_effects()
+      || module.meta.has_eval()
+      || module.ast_usage.contains(EcmaModuleAstUsage::TopLevelAwait)
+      || module.exports_kind == ExportsKind::CommonJs
+    {
+      evaluate = true;
+      break;
+    }
+    if module.exports_kind != ExportsKind::Esm
+      || is_json_module(module)
+      || required.contains(&idx)
+      || module.star_export_module_ids().next().is_some()
+    {
+      uncertain = true;
+    }
+    state.insert(idx, 1);
+    pending.push((idx, true));
+    for dependency in module.import_records.iter() {
+      edges += 1;
+      if dependency.kind != ImportKind::Import {
+        evaluate = true;
+        break;
+      }
+      match dependency.resolved_module {
+        Some(next) => pending.push((next, false)),
+        None => {
+          evaluate = true;
+          break;
+        }
+      }
+    }
+    if evaluate {
+      break;
+    }
+    if state.len() > MAX_MODULES || edges > MAX_EDGES {
+      uncertain = true;
+      break;
+    }
+  }
+  let res = (evaluate, uncertain);
+  donor_cache.insert(donor_idx, res);
+  res
+}
+
 #[expect(clippy::too_many_arguments)]
 fn classify(
   modules: &IndexModules,
@@ -514,15 +646,32 @@ fn classify(
   record: ImportRecordIdx,
   donor: &NormalModule,
   imports: &[(&rolldown_common::SymbolRef, &rolldown_common::NamedImport)],
-  cell_of: CellOf,
+  forwarded: bool,
+  lead_cache: &mut FxHashMap<(ModuleIdx, String), Lead>,
+  donor_cache: &mut FxHashMap<ModuleIdx, (bool, bool)>,
 ) -> Route {
   let reexport_only =
     importer.import_records[record].meta.contains(ImportRecordMeta::IsReExportOnly);
-  let mut evaluate = importer.meta.has_eval()
+  let (donor_evaluate, donor_uncertain) =
+    donor_graph_verdict(modules, required, donor.idx, donor_cache);
+  let mut evaluate = donor_evaluate
+    || importer.meta.has_eval()
     || importer.exports_kind == ExportsKind::CommonJs
     || is_json_module(importer)
     || reexport_only;
-  let mut uncertain = importer.exports_kind != ExportsKind::Esm
+  if evaluate {
+    return Route {
+      importer: importer.idx,
+      record,
+      donor: donor.idx,
+      verdict: Verdict::Evaluate,
+      closure: Vec::new(),
+      bindings: FxHashMap::default(),
+      live_owners: Vec::new(),
+    };
+  }
+  let mut uncertain = donor_uncertain
+    || importer.exports_kind != ExportsKind::Esm
     || required.contains(&importer.idx)
     || reexports_import(importer);
   let mut bindings = FxHashMap::default();
@@ -539,7 +688,13 @@ fn classify(
       Specifier::Literal(name) => Some(name.as_str()),
       Specifier::Star => None,
     };
-    let cell = name.and_then(|name| cell_of(modules, donor, name));
+    let cell = name.and_then(|name| {
+      if forwarded {
+        forwarded_cell_export(modules, donor, name, lead_cache)
+      } else {
+        cell_export(modules, donor, name)
+      }
+    });
     let literal = name.and_then(|name| literal_owner(modules, asts, donor, name));
     let owner = cell.as_ref().or(literal.as_ref());
     if let (Some(name), Some(owner)) = (name, owner) {
@@ -584,61 +739,6 @@ fn classify(
   }
   if !live && !uncertain_live {
     evaluate = true;
-  }
-
-  // The certificate walks `Import` records only; any failure it meets is final, whatever it
-  // meets first.
-  let mut state = FxHashMap::default();
-  let mut pending = vec![(donor.idx, false)];
-  let mut edges = 0;
-  while let Some((idx, leaving)) = pending.pop() {
-    if leaving {
-      state.insert(idx, 2_u8);
-      continue;
-    }
-    match state.get(&idx) {
-      Some(1) => {
-        uncertain = true;
-        continue;
-      }
-      Some(2) => continue,
-      _ => {}
-    }
-    let Some(module) = modules[idx].as_normal() else {
-      evaluate = true;
-      continue;
-    };
-    if module.side_effects.has_side_effects()
-      || module.meta.has_eval()
-      || module.ast_usage.contains(EcmaModuleAstUsage::TopLevelAwait)
-      || module.exports_kind == ExportsKind::CommonJs
-    {
-      evaluate = true;
-    }
-    if module.exports_kind != ExportsKind::Esm
-      || is_json_module(module)
-      || required.contains(&idx)
-      || module.star_export_module_ids().next().is_some()
-    {
-      uncertain = true;
-    }
-    state.insert(idx, 1);
-    pending.push((idx, true));
-    for dependency in &module.import_records {
-      edges += 1;
-      if dependency.kind != ImportKind::Import {
-        evaluate = true;
-        continue;
-      }
-      match dependency.resolved_module {
-        Some(next) => pending.push((next, false)),
-        None => evaluate = true,
-      }
-    }
-    if state.len() > MAX_MODULES || edges > MAX_EDGES {
-      uncertain = true;
-      break;
-    }
   }
 
   let verdict = if evaluate {

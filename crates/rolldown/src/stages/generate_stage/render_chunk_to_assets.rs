@@ -86,6 +86,8 @@ impl GenerateStage<'_> {
       .await?;
     if let Some(cache) = self.cache.as_deref_mut() {
       cache.current_rendered_sources = FxHashMap::default();
+    } else {
+      self.ast_table.clear();
     }
     let multi_module_chunks =
       self.cache_multi_module_chunks(multi_module_renders, &mut skip_sourcemap_chunks);
@@ -806,6 +808,8 @@ impl GenerateStage<'_> {
     let mut diagnostics = std::mem::take(&mut self.link_output.diagnostics);
     let dirty_chunk_indices: Vec<ChunkIdx> =
       dirty_rendered_modules.iter().map(|(c, _)| *c).collect();
+    let mut populated_export_item_chunks: Vec<ChunkIdx> =
+      Vec::with_capacity(dirty_rendered_modules.len() * 2);
 
     for &(chunk_idx, _) in &dirty_rendered_modules {
       let map = &mut render_export_items_index_vec[chunk_idx];
@@ -813,6 +817,7 @@ impl GenerateStage<'_> {
       for (k, v) in get_export_items(&chunk_graph.chunk_table[chunk_idx]) {
         map.entry(v).or_default().push(k);
       }
+      populated_export_item_chunks.push(chunk_idx);
       for &importee_chunk_idx in chunk_graph.chunk_table[chunk_idx].imports_from_other_chunks.keys()
       {
         if render_export_items_index_vec[importee_chunk_idx].is_empty()
@@ -822,13 +827,14 @@ impl GenerateStage<'_> {
           for (k, v) in get_export_items(&chunk_graph.chunk_table[importee_chunk_idx]) {
             imp_map.entry(v).or_default().push(k);
           }
+          populated_export_item_chunks.push(importee_chunk_idx);
         }
       }
     }
 
     let mut instantiated_chunks: IndexInstantiatedChunks =
       IndexVec::with_capacity(dirty_rendered_modules.len());
-    {
+    let instantiate_res = {
       let render_export_items_ref: &IndexVec<ChunkIdx, FxIndexMap<SymbolRef, Vec<CompactStr>>> =
         render_export_items_index_vec;
       let resolved_paths = self.resolved_paths.as_ref();
@@ -864,18 +870,22 @@ impl GenerateStage<'_> {
           });
           ecma_chunks_future
         });
-      for result in try_join_all(futures).await? {
-        match result {
-          Ok(generate_output) => {
-            for ins_chunk in generate_output.chunks {
-              let base_chunk_idx = ins_chunk.originate_from;
-              let ins_chunk_idx = instantiated_chunks.push(ins_chunk);
-              index_chunk_to_instances[base_chunk_idx].insert(ins_chunk_idx);
-            }
-            diagnostics.extend(generate_output.warnings);
+      try_join_all(futures).await
+    };
+    for chunk_idx in populated_export_item_chunks {
+      render_export_items_index_vec[chunk_idx] = Default::default();
+    }
+    for result in instantiate_res? {
+      match result {
+        Ok(generate_output) => {
+          for ins_chunk in generate_output.chunks {
+            let base_chunk_idx = ins_chunk.originate_from;
+            let ins_chunk_idx = instantiated_chunks.push(ins_chunk);
+            index_chunk_to_instances[base_chunk_idx].insert(ins_chunk_idx);
           }
-          Err(e) => diagnostics.extend(e.into_vec()),
+          diagnostics.extend(generate_output.warnings);
         }
+        Err(e) => diagnostics.extend(e.into_vec()),
       }
     }
 

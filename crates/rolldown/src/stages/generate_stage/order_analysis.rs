@@ -162,6 +162,7 @@ impl GenerateStage<'_> {
       }
     }
     let mut roots = Vec::new();
+    let sole_boot = self.sole_root_boot_evaluated(chunk_graph, &import_edges, &chunk_cycles);
 
     for &root in self.link_output.entries.keys() {
       if !self.link_output.metas[root].is_included {
@@ -171,9 +172,19 @@ impl GenerateStage<'_> {
         continue;
       };
 
-      let expected_order = self.expected_order_for_root(root);
-      let (actual_order, trigger_hosts) =
-        self.actual_order_for_root(root, root_chunk, chunk_graph, &import_edges);
+      let pre_evaluated = sole_boot
+        .as_ref()
+        .filter(|(sole_root, _, _)| *sole_root != root)
+        .map(|(_, chunk, modules)| (*chunk, modules));
+      let expected_order =
+        self.expected_order_for_root_with_boot(root, pre_evaluated.map(|(_, modules)| modules));
+      let (actual_order, trigger_hosts) = self.actual_order_for_root_with_boot(
+        root,
+        root_chunk,
+        chunk_graph,
+        &import_edges,
+        pre_evaluated,
+      );
       let mut at_risk = self.at_risk_modules(&expected_order, &actual_order, &trigger_hosts);
       // Scope pre-lowering cycle wrapping to modules in the cyclic chunk SCCs and their backward
       // static-import closure rather than poisoning every module reachable from the root chunk.
@@ -805,8 +816,106 @@ impl GenerateStage<'_> {
   }
 
   fn expected_order_for_root(&self, root: ModuleIdx) -> Vec<ModuleIdx> {
+    self.expected_order_for_root_with_boot(root, None)
+  }
+
+  fn expected_order_for_root_with_boot(
+    &self,
+    root: ModuleIdx,
+    boot_evaluated: Option<&FxHashSet<ModuleIdx>>,
+  ) -> Vec<ModuleIdx> {
     let mut states = index_vec![VisitState::Unvisited; self.link_output.module_table.modules.len()];
+    if let Some(boot) = boot_evaluated {
+      for &module_idx in boot {
+        states[module_idx] = VisitState::Done;
+      }
+    }
     self.expected_order_for_root_with_states(root, &mut states)
+  }
+
+  fn sole_root_boot_evaluated(
+    &self,
+    chunk_graph: &ChunkGraph,
+    import_edges: &IndexVec<ChunkIdx, FxHashSet<ChunkIdx>>,
+    chunk_cycles: &ChunkCycles,
+  ) -> Option<(ModuleIdx, ChunkIdx, FxHashSet<ModuleIdx>)> {
+    let sole_root = self.sole_root_entry()?;
+    if !self.link_output.metas[sole_root].is_included
+      || self.link_output.metas.iter().any(|meta| meta.is_tla_or_contains_tla_dependency)
+    {
+      return None;
+    }
+    let runtime_idx = self.link_output.runtime.id();
+    let &sole_chunk = chunk_graph.entry_module_to_entry_chunk.get(&sole_root)?;
+    if !import_edges[sole_chunk].iter().all(|&dep| {
+      import_edges[dep].is_empty()
+        && chunk_graph.chunk_table[dep]
+          .modules
+          .iter()
+          .all(|&m| m == runtime_idx || !self.link_output.metas[m].is_included)
+    }) || chunk_cycles.reachable_from(sole_chunk, import_edges)
+    {
+      return None;
+    }
+    let expected = self.expected_order_for_root(sole_root);
+    let (actual, triggers) =
+      self.actual_order_for_root(sole_root, sole_chunk, chunk_graph, import_edges);
+    if !self.at_risk_modules(&expected, &actual, &triggers).is_empty() {
+      return None;
+    }
+    let mut actual_set: FxHashSet<ModuleIdx> = actual.iter().copied().collect();
+    let mut top_level_imported_interop = FxHashSet::default();
+    for &module_idx in &actual {
+      if !self.link_output.metas[module_idx].wrap_kind().is_none() {
+        continue;
+      }
+      let Some(module) = self.link_output.module_table[module_idx].as_normal() else {
+        continue;
+      };
+      let meta = &self.link_output.metas[module_idx];
+      for (stmt_idx, stmt_info) in
+        self.link_output.stmt_infos[module_idx].iter_enumerated_without_namespace_stmt()
+      {
+        if !meta.stmt_info_included.has_bit(stmt_idx) {
+          continue;
+        }
+        for &rec_idx in &stmt_info.import_records {
+          let rec = &module.import_records[rec_idx];
+          if rec.kind == ImportKind::Import
+            && let Some(importee_idx) = rec.resolved_module
+            && !self.link_output.metas[importee_idx].wrap_kind().is_none()
+          {
+            top_level_imported_interop.insert(importee_idx);
+          }
+        }
+      }
+    }
+    for &module_idx in &chunk_graph.chunk_table[sole_chunk].modules {
+      if module_idx == runtime_idx || !self.link_output.metas[module_idx].is_included {
+        continue;
+      }
+      if self.link_output.metas[module_idx].wrap_kind().is_none() {
+        if !actual_set.contains(&module_idx) {
+          return None;
+        }
+      } else if !top_level_imported_interop.contains(&module_idx) {
+        if self.is_order_sensitive(module_idx) {
+          return None;
+        }
+        actual_set.remove(&module_idx);
+      }
+    }
+    for &module_idx in &actual {
+      if !self.link_output.metas[module_idx].wrap_kind().is_none()
+        && !top_level_imported_interop.contains(&module_idx)
+      {
+        if self.is_order_sensitive(module_idx) {
+          return None;
+        }
+        actual_set.remove(&module_idx);
+      }
+    }
+    Some((sole_root, sole_chunk, actual_set))
   }
 
   fn expected_order_for_root_with_states(
@@ -880,6 +989,17 @@ impl GenerateStage<'_> {
     chunk_graph: &ChunkGraph,
     import_edges: &IndexVec<ChunkIdx, FxHashSet<ChunkIdx>>,
   ) -> (Vec<ModuleIdx>, FxHashMap<ModuleIdx, ModuleIdx>) {
+    self.actual_order_for_root_with_boot(root, root_chunk, chunk_graph, import_edges, None)
+  }
+
+  fn actual_order_for_root_with_boot(
+    &self,
+    root: ModuleIdx,
+    root_chunk: ChunkIdx,
+    chunk_graph: &ChunkGraph,
+    import_edges: &IndexVec<ChunkIdx, FxHashSet<ChunkIdx>>,
+    boot_evaluated: Option<(ChunkIdx, &FxHashSet<ModuleIdx>)>,
+  ) -> (Vec<ModuleIdx>, FxHashMap<ModuleIdx, ModuleIdx>) {
     let mut traversal = ActualOrderTraversal {
       chunk_states: index_vec![VisitState::Unvisited; chunk_graph.chunk_table.len()],
       module_states: index_vec![
@@ -889,6 +1009,12 @@ impl GenerateStage<'_> {
       order: Vec::new(),
       trigger_hosts: FxHashMap::default(),
     };
+    if let Some((sole_chunk, boot_modules)) = boot_evaluated {
+      traversal.chunk_states[sole_chunk] = VisitState::Done;
+      for &module_idx in boot_modules {
+        traversal.module_states[module_idx] = VisitState::Done;
+      }
+    }
 
     self.visit_actual_chunk(root_chunk, chunk_graph, import_edges, &mut traversal);
     if !self.link_output.metas[root].wrap_kind().is_none() {

@@ -217,6 +217,13 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
         ImportKind::AtImport | ImportKind::UrlImport => unreachable!(),
       }
     }
+    if self.ctx.compact_module_arenas {
+      retained_memory::shrink_scanned_module(
+        &mut ecma_view,
+        &mut ecma_related.symbols,
+        &mut ecma_related.stmt_infos,
+      );
+    }
 
     let repr_name = self.resolved_id.id.representative_name();
     let repr_name = legitimize_identifier_name(&repr_name).into_owned();

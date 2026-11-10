@@ -747,6 +747,17 @@ impl GenerateStage<'_> {
       meta.wrap_kind() as u8,
       meta.wrapper_ref.map(sym_key),
     ));
+    let mut pruned = meta
+      .pruned_object_properties
+      .iter()
+      .map(|(symbol, keys)| {
+        let mut keys = keys.iter().map(oxc_str::CompactStr::as_str).collect::<Vec<_>>();
+        keys.sort_unstable();
+        (symbol.index(), keys)
+      })
+      .collect::<Vec<_>>();
+    pruned.sort_unstable();
+    h.write_val(&pruned);
     if let Some(f) = chunk.preliminary_filename.as_ref() {
       rolldown_utils::hash_placeholder::visit_with_placeholders_defaulted(
         f.as_str(),

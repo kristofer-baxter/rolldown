@@ -30,4 +30,5 @@ pub mod uuid;
 mod determine_minify_internal_exports_default;
 
 pub use determine_minify_internal_exports_default::determine_minify_internal_exports_default;
+pub mod replace_global_defines;
 pub mod temporal_reads;

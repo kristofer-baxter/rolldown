@@ -21,6 +21,9 @@ use rolldown_ecmascript_utils::{
 };
 use rolldown_error::EmptyImportMetaKind;
 
+use crate::utils::replace_global_defines::{
+  expand_changed_shorthand_property, expand_shorthand_property,
+};
 use crate::{
   module_finalizers::{FinalizedExprProcessHint, KeepNameId, ModuleWrapperMode, TraverseState},
   utils::renamer::cjs_wrapper_fixed_params,
@@ -1082,7 +1085,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         match self.generate_finalized_expr_for_reference(id_ref, false) {
           Some(expr) => {
             prop.value = expr;
-            prop.shorthand = false;
+            expand_shorthand_property(prop, self.allocator());
           }
           None => {
             id_ref.reference_id.get_mut().take();
@@ -1092,6 +1095,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     }
 
     walk_js_mut::walk_object_property(self, prop);
+    expand_changed_shorthand_property(prop, self.allocator());
   }
 
   fn visit_object_pattern(&mut self, pat: &mut ast::ObjectPattern<'ast>) {

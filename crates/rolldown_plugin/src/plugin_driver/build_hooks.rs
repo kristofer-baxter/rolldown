@@ -412,35 +412,29 @@ impl PluginDriver {
     target = "rolldown_plugin::plugin_driver::build_hooks::total::transform_ast",
     skip_all
   )]
-  pub async fn transform_ast(&self, mut args: HookTransformAstArgs<'_>) -> HookTransformAstReturn {
+  pub async fn transform_ast(&self, args: HookTransformAstArgs<'_>) -> HookTransformAstReturn {
+    let HookTransformAstArgs { cwd, mut ast, id, stable_id, is_user_defined_entry, module_type } =
+      { args };
     for (plugin_idx, plugin, ctx) in
       self.iter_plugin_with_context_by_order(&self.order_by_transform_ast_meta)
     {
       if should_skip_plugin_for_lazy_proxy(
         self.should_skip_user_plugins_for_lazy_proxy_modules,
-        args.id,
+        id,
         plugin_idx,
         self.lazy_compilation_plugin_idx,
       ) {
         continue;
       }
-      // Reconstructing the struct is necessary because `args.ast` is moved and reassigned each iteration
-      #[expect(clippy::unnecessary_struct_initialization)]
-      let transform_args = HookTransformAstArgs {
-        cwd: args.cwd,
-        ast: args.ast,
-        id: args.id,
-        stable_id: args.stable_id,
-        is_user_defined_entry: args.is_user_defined_entry,
-        module_type: args.module_type,
-      };
+      let transform_args =
+        HookTransformAstArgs { cwd, ast, id, stable_id, is_user_defined_entry, module_type };
       let result = plugin
         .call_transform_ast(ctx, transform_args)
         .instrument(debug_span!("transform_ast_hook", plugin_name = plugin.call_name().as_ref()))
         .await;
-      args.ast = result.with_context(|| CausedPlugin::new(plugin.call_name()))?;
+      ast = result.with_context(|| CausedPlugin::new(plugin.call_name()))?;
     }
-    Ok(args.ast)
+    Ok(ast)
   }
 
   #[tracing::instrument(

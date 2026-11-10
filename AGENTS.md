@@ -108,8 +108,8 @@ IMPORTANT: The project uses `just` as a task runner. Always prefer `just` comman
 
 # Upstream Sync, Deduplication & Performance Gate (`just perf-gate`)
 
-This fork maintains `developer-bundler` Rolldown and Rolldown Plugin alterations (`RD-01..RD-53`, `RP-01..RP-02`, and `vendor/oxc_sourcemap-9.0.0` `OS-01..OS-04`) on top of upstream `rolldown/rolldown`:
+This maintained fork is the authoritative implementation of its compiler and plugin extensions on top of upstream `rolldown/rolldown`. Consumers must not maintain a second patched source tree.
 
-1. **Run `node .github/scripts/perf-gate.js --base origin/main` (`just perf-gate`)** after merging upstream changes or editing `crates/rolldown` / `crates/rolldown_plugin`.
-2. **Deduplicate upstreamed fixes**: When `perf-gate.js` reports `Upstream Overlap Candidates` against `origin/main` (such as standalone bugfixes in `RD-05`, `RD-24`, `RD-25`, `RD-32`, `RD-37`, `RD-38`, `RD-45`, `RD-46`), drop duplicate fork hunks in favor of upstream's implementation whenever the downstream reproduction test in `developer-bundler` passes without the fork hunk.
-3. **Sync into `developer-bundler`**: Run `node scripts/sync-vendor-from-forks.mjs --sync` in `/Users/kristoferbaxter/Projects/developer-bundler` (or the active worktree) to export `crates/rolldown`, `crates/rolldown_plugin`, and `vendor/oxc_sourcemap-*`, regenerate `UPSTREAM.json`, `revision-cache.patch`, `PATCHES`, and `docs/dependency-alterations.md`, and verify `node --test scripts/dependency-alterations.test.mjs`.
+1. **Check invariants and overlap locally** with `node .github/scripts/perf-gate.js --base origin/main --no-tests --no-bench`, then run targeted core/plugin regressions. Run performance qualification on CI, not shared development machines.
+2. **Deduplicate upstreamed fixes**: investigate the gate's overlap candidates and prefer upstream implementations when standalone regression coverage proves equivalent behavior. Keep unrelated upstream changes and optional-mode guards intact.
+3. **Consume an exact Git revision**: pin the compiler, plugin, and every workspace crate whose types cross the consumer boundary to the same fork commit. Apply root `[patch.crates-io]` entries where transitive dependencies would otherwise introduce registry copies. Keep the coupled Oxc crates on one compatible family and source, including React compiler integrations; verify the resolved graph with Cargo metadata. There is no source-export or vendor-sync step. See [Rust crate consumption](docs/apis/rust-crates.md#maintained-fork-consumption).

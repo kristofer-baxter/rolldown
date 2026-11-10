@@ -307,6 +307,15 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let mut dirty_modules: Vec<ModuleIdx> =
       self.cache.dirty_native_modules.iter().copied().filter(|idx| idx.index() < old_len).collect();
     dirty_modules.sort_unstable();
+    // Property pruning read every module that the analysis guards as linking found it.
+    if let Some(&idx) =
+      dirty_modules.iter().find(|&&idx| cached.link_output.plain_object_reads.guards(idx))
+    {
+      reject_with!(
+        "plain_object_reads",
+        cached.link_output.module_table.modules[idx].stable_id().to_string()
+      );
+    }
     // A module that the graph reaches only through records that order no execution, an
     // `import.meta.hot.accept()` dependency and what only such modules import, has no record, so
     // the relink prepares nothing of it, while linking reads its records as any module's (#660).
@@ -1754,14 +1763,6 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
 
       let mut meta = LinkingMetadata::default();
-      meta.dependencies = module
-        .import_records
-        .iter()
-        .filter_map(|rec| match rec.kind {
-          ImportKind::DynamicImport | ImportKind::Require | ImportKind::HotAccept => None,
-          _ => rec.resolved_module,
-        })
-        .collect();
       meta.resolved_exports = module
         .named_exports
         .iter()

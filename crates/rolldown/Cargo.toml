@@ -39,6 +39,7 @@ oxc_traverse = { workspace = true }
 percent-encoding = { workspace = true }
 petgraph = { workspace = true }
 rayon = { workspace = true }
+regex = { workspace = true }
 rolldown_common = { workspace = true }
 rolldown_dev_common = { workspace = true }
 rolldown_devtools = { workspace = true }
@@ -74,7 +75,6 @@ xxhash-rust = { workspace = true, features = ["xxh3"] }
 cow-utils = { workspace = true }
 dunce = { workspace = true }
 insta = { workspace = true }
-regex = { workspace = true }
 rolldown_common = { workspace = true }
 rolldown_testing = { path = "../rolldown_testing" }
 rolldown_workspace = { workspace = true }

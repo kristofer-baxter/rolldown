@@ -189,9 +189,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     hot_update_hook_enabled: bool,
   ) -> BuildResult<Vec<ClientHmrUpdate>> {
     self.cache.last_fast_native_relink = false;
+    self.cache.last_link_decisions_unchanged = false;
     self.cache.last_native_relink_fallback = None;
     self.cache.last_rebuilt_chunk_filenames.clear();
     self.cache.last_rebuilt_chunk_outputs.clear();
+    self.cache.last_standby.clear();
     tracing::trace!(
       changed_files = %changed_file_paths
         .iter()
@@ -492,7 +494,29 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           })
           .collect::<Vec<_>>();
         forwards.sort_unstable();
-        (module.stable_id.to_string(), names, stars, forwards)
+        // Distinct export names may write the same retained lexical cell.
+        let symbols = &stage.cache.get_snapshot().symbol_ref_db;
+        let mut bindings: FxHashMap<_, Vec<String>> = FxHashMap::default();
+        for (name, export) in &module.named_exports {
+          if module.named_exports.len() > 1
+            && module.exports_kind == ExportsKind::Esm
+            && !export.came_from_commonjs
+            && export.referenced.owner == module.idx
+            && !module.named_imports.contains_key(&export.referenced)
+          {
+            bindings
+              .entry(symbols.canonical_ref_for(export.referenced))
+              .or_default()
+              .push(name.to_string());
+          }
+        }
+        let mut aliases =
+          bindings.into_values().filter(|names| names.len() > 1).collect::<Vec<_>>();
+        for names in &mut aliases {
+          names.sort_unstable();
+        }
+        aliases.sort_unstable();
+        (module.stable_id.to_string(), names, stars, forwards, aliases)
       })
     };
     // A native record build may omit the evaluation edge of an `export *` from a pure leaf
@@ -504,7 +528,6 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // and keeps its evaluation edge, when the leaf exports a name other than `default` that
     // neither the barrel itself nor any of its other stars may export (#625).
     let star_omissions = |stage: &Self| {
-      let reach = stage.reach();
       let mut omissions = Vec::new();
       let modules = &stage.module_table().modules;
       for &star_idx in &stage.cache.export_star_modules {
@@ -544,7 +567,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
               })
           };
           if donor.named_exports.keys().all(|name| name == "default" || shadowed(name)) {
-            omissions.push((module.idx, donor.idx, reach.reaches(module.idx)));
+            omissions.push((module.idx, donor.idx, stage.reach().reaches(module.idx)));
           }
         }
       }
@@ -580,13 +603,14 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     };
     // The modules that a module's native record evaluates as it evaluates, and those that it
     // imports with `import defer`, which links a target without evaluating it (#625). A native
-    // record imports the record of every target but a dynamic `import()`'s, `require`'s and a
-    // dependency `import.meta.hot.accept`'s included, unless development output drops it as
-    // an unused import of a side-effect-free module (`unused_side_effect_free_import`). A page
-    // that evaluated a module evaluated those records, so an edit that keeps importing the same
-    // leaves changes no demand on them; one that starts or stops importing a leaf, or starts
-    // or stops using one, does. A dynamic `import()` loads its target on demand, and a patch
-    // ships the factory of a target that a page may not have run.
+    // record imports the record of every target but a dynamic `import()`'s and a dependency
+    // `import.meta.hot.accept`'s (`native_records::accept_only`), `require`'s included,
+    // unless development output drops it as an unused import of a side-effect-free module
+    // (`unused_side_effect_free_import`). A page that evaluated a module evaluated those records,
+    // so an edit that keeps importing the same leaves changes no demand on them; one that starts
+    // or stops importing a leaf, or starts or stops using one, does. A dynamic `import()` loads
+    // its target on demand, and a patch ships the factory of a target that a page may not have
+    // run.
     //
     // That needs the module's scope tree (`hmr::utils::import_scoping`). Without one, an import
     // that may be unused counts as dropped, which can only add a reload.
@@ -601,10 +625,13 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         module,
         rescanned,
       );
-      let deferred_records =
+      let deferred_records = if stage.cache.deferred_import_modules.contains(&module_idx) {
         stage.index_ecma_ast()[module_idx].as_ref().map_or_else(FxHashSet::default, |ast| {
           crate::hmr::utils::deferred_records(module, ast.program())
-        });
+        })
+      } else {
+        FxHashSet::default()
+      };
       let mut eager = FxHashSet::default();
       let mut deferred = FxHashSet::default();
       for (record_idx, record) in module.import_records.iter_enumerated() {
@@ -612,6 +639,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           continue;
         };
         if record.kind == ImportKind::DynamicImport
+          || crate::utils::native_records::accept_only(&stage.options, record.kind)
           || crate::hmr::utils::drops_import(
             module,
             record_idx,
@@ -632,13 +660,25 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // A wrapped leaf has no native namespace, so a barrel's star can't omit its evaluation
     // (`has_native_namespace`), and an edit that starts or stops requiring a module upstream of
     // the leaf changes whether a fresh build omits it, whatever module the edit touched (#642).
-    let pre_rebuild_wrapped =
-      if native_records && !rescan_only && !self.cache.export_star_modules.is_empty() {
-        let reach = self.reach();
-        wrapped_modules(&self.module_table().modules, |idx| reach.reaches(idx))
-      } else {
-        FxHashSet::default()
-      };
+    let may_have_star_omissions = !pre_rebuild_star_omissions.is_empty()
+      || self.cache.export_star_modules.iter().any(|star_idx| {
+        changed_modules.contains(star_idx)
+          || self.module_table().modules.get(*star_idx).and_then(Module::as_normal).is_some_and(
+            |module| {
+              module.import_records.iter().any(|record| {
+                record.kind == ImportKind::Import
+                  && record.meta.contains(ImportRecordMeta::IsExportStar)
+                  && record.resolved_module.is_some_and(|donor| changed_modules.contains(&donor))
+              })
+            },
+          )
+      });
+    let pre_rebuild_wrapped = if native_records && !rescan_only && may_have_star_omissions {
+      let reach = self.reach();
+      wrapped_modules(&self.module_table().modules, |idx| reach.reaches(idx))
+    } else {
+      FxHashSet::default()
+    };
     let pre_rebuild_imports: FxHashMap<ModuleIdx, (FxHashSet<ModuleIdx>, FxHashSet<ModuleIdx>)> =
       if native_records && !rescan_only {
         changed_modules
@@ -653,7 +693,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       } else {
         FxHashMap::default()
       };
-    let pre_rebuild_export_shapes = if native_records && !rescan_only {
+    let binding_cells = native_records || self.options.is_dev_mode_enabled();
+    let pre_rebuild_export_shapes = if binding_cells && !rescan_only {
       changed_modules
         .iter()
         .filter_map(|module_idx| Some((*module_idx, native_export_shape(self, *module_idx)?)))
@@ -661,8 +702,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     } else {
       Vec::new()
     };
-    // A patch publishes a native record's new values by copying them into the resident
-    // record's binding cells once. A binding the new generation's own code assigns later would
+    // A patch publishes initial records' or bundles' values through their resident binding
+    // cells once. A binding the new generation's own code assigns later would
     // diverge from the namespace, so an edit that makes an export assignable reloads. Exports
     // the resident record already assigns have no writable cell; the client refuses those.
     let assigned_exports = |stage: &Self, module_idx: ModuleIdx| {
@@ -693,11 +734,16 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // JSON module that the graph reaches before and after the edit counts: one that the edit
     // retires, or appends, holds no namespace that a page has and a fresh page reads (#660).
     let json_namespace_shapes = |stage: &Self| {
+      if stage.cache.json_modules.is_empty() {
+        return FxHashMap::default();
+      }
       let modules = &stage.module_table().modules;
       let reach = stage.reach();
-      modules
+      stage
+        .cache
+        .json_modules
         .iter()
-        .filter_map(Module::as_normal)
+        .filter_map(|&idx| modules.get(idx).and_then(Module::as_normal))
         .filter(|module| {
           crate::utils::import_options::is_json_module(module) && reach.reaches(module.idx)
         })
@@ -756,6 +802,18 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         Some((*module_idx, importee_interop(modules[*module_idx].as_normal()?)))
       })
       .collect::<FxHashMap<_, _>>();
+    // The changed modules that called `import.meta.hot.invalidate()` before the edit: a page runs
+    // the acceptance callbacks of the instance that it holds, which may invalidate the update
+    // also where the edit drops the call.
+    let pre_rebuild_invalidating = changed_modules
+      .iter()
+      .copied()
+      .filter(|module_idx| {
+        self.index_ecma_ast()[*module_idx]
+          .as_ref()
+          .is_some_and(|ast| crate::hmr::utils::calls_hot_invalidate(ast.program()))
+      })
+      .collect::<FxHashSet<_>>();
 
     // 1. Do ONE module refetch and cache merge — the update-superset walk (which
     // selects the factories to ship) runs on the post-rebuild table; boundary
@@ -856,11 +914,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       // prunes its record as the update's patch applies, so the leaf of a barrel that an earlier
       // update or this one retired is no end any more (#732). The barrel itself stays one. So
       // does the leaf where a page may hold the barrel past its retirement, as one that loaded it
-      // through a dependency `import.meta.hot.accept()`, which registers no edge, or through an
-      // `import()` loader or a read of an `import defer` namespace that it saved before an update
-      // dropped the import, or one that loaded a graph input after its first patch, which it
-      // never prunes from: a factory of the barrel that an edit there re-runs would run a leaf
-      // that its record omitted.
+      // through an `import()` loader or a read of an `import defer` namespace that it saved
+      // before an update dropped the import, or one that loaded a graph input after its first
+      // patch, which it never prunes from: a factory of the barrel that an edit there re-runs
+      // would run a leaf that its record omitted.
       let reach = self.reach();
       let held = self.cache.late_records
         || self
@@ -1241,10 +1298,12 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         .collect::<FxIndexSet<_>>()
     };
 
-    let mut affected = self.collect_client_update_superset(&changed_modules);
+    let (mut affected, mut standby) =
+      self.collect_client_update_superset(&changed_modules, &pre_rebuild_invalidating);
     affected.extend(new_added_modules.iter().copied());
     affected.extend(rerendered_importers.iter().copied());
     affected.retain(|idx| self.module_table().modules[*idx].is_normal());
+    standby.retain(|idx| !new_added_modules.contains(idx) && !rerendered_importers.contains(idx));
 
     // Client-invariant per-module data, resolved once instead of per client:
     // `(idx, stable id, latest stamp)` for every affected module.
@@ -1266,8 +1325,12 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // What the patches' factories read of CommonJS modules, which a later scan of the update can
     // decide otherwise (`changed_commonjs_read`).
     let mut commonjs_reads = Vec::new();
+    // The factories that the patches list for their clients to hold aside (`ScanStageCache::last_standby`).
+    let mut last_standby = Vec::new();
     for client in clients {
       let mut carried = FxIndexSet::default();
+      // The factories that the client needs whether or not a module invalidates its update.
+      let mut forced = FxHashSet::default();
       for (module_idx, stable_id, latest_stamp) in &affected_with_stamps {
         match client.shipped.get(*stable_id) {
           None => {
@@ -1276,6 +1339,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           Some(stamp) => {
             if *latest_stamp > *stamp {
               carried.insert(*module_idx);
+              forced.insert(*module_idx);
             }
           }
         }
@@ -1287,6 +1351,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           {
             if self.module_table().modules[module_idx].is_normal() {
               carried.insert(module_idx);
+              forced.insert(module_idx);
             }
           }
         }
@@ -1298,19 +1363,33 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           evaluated: client.top_level_evaluated,
           stamp_table,
         };
+        let mut unheld = FxIndexSet::default();
         self.collect_unheld_sync_deps(
           &[],
           added_static_deps.iter().copied(),
           None,
           &held,
-          &mut carried,
+          &mut unheld,
         );
+        forced.extend(unheld.iter().copied());
+        carried.extend(unheld);
       }
+      let standby = carried
+        .iter()
+        .copied()
+        .filter(|module_idx| standby.contains(module_idx) && !forced.contains(module_idx))
+        .collect::<FxHashSet<_>>();
+      last_standby.extend(
+        standby
+          .iter()
+          .map(|idx| self.module_table().modules[*idx].stable_id().as_arc_str().clone()),
+      );
 
       let reads = self.commonjs_reads(carried.iter().copied(), &side_effects);
       let update = self
         .render_hmr_patch(
           carried,
+          &standby,
           changed_ids.clone(),
           stamp_table,
           &cell_routes,
@@ -1324,6 +1403,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       client_updates.push(ClientHmrUpdate { client_id: client.client_id.to_string(), update });
     }
     self.cache.commonjs_reads.extend(commonjs_reads);
+    self.cache.last_standby.extend(last_standby);
 
     *self.lost_hmr_update = lost_before;
     Ok(client_updates)
@@ -1331,70 +1411,97 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
   /// Collect the superset of modules any client's walk may re-run for these changes:
   /// pure reachability over the importer graph (static ∪ dynamic edges), stopping at
-  /// statically self-accepting modules and at accepting importer edges.
+  /// statically self-accepting modules and at accepting importer edges, but not at a module
+  /// that may invalidate its own update (`import.meta.hot.invalidate()`), as it does after the
+  /// edit or did before it (`invalidating`), which a client then passes on to the module's
+  /// importers as though the module accepted none. With it come the modules that only
+  /// such a module leads to, whose factories a client holds aside until it passes an update on
+  /// to them: a factory that a client registers stands for an update of its module, so a page
+  /// that later loads the module's record would reload.
   ///
   /// The scan keeps an importer that the graph no longer reaches until a fresh graph (#660). A
   /// page prunes its record once the update that retires it applies, unless the page loaded it
-  /// through an edge that the page doesn't register, a dependency `import.meta.hot.accept()`'s,
-  /// so the walk still follows such an importer, but not one with top-level await, whose factory
-  /// no patch can run: a page that pruned it never runs it again, and one that still holds it
-  /// lacks its factory and reloads, as the whole update did before (#728).
+  /// through no edge that the page registers, as through an `import()` loader or an `import
+  /// defer` namespace that it saved before an update dropped the import, so the walk still
+  /// follows such an importer, but not one with top-level await, whose factory no patch can run:
+  /// a page that pruned it never runs it again, and one that still holds it lacks its factory and
+  /// reloads, as the whole update did before.
   fn collect_client_update_superset(
     &self,
     changed_modules: &FxIndexSet<ModuleIdx>,
-  ) -> FxIndexSet<ModuleIdx> {
+    invalidating: &FxHashSet<ModuleIdx>,
+  ) -> (FxIndexSet<ModuleIdx>, FxHashSet<ModuleIdx>) {
     let reach = self.reach();
-    let mut affected = FxIndexSet::default();
-    let mut stack: Vec<ModuleIdx> = changed_modules.iter().copied().collect();
-    while let Some(module_idx) = stack.pop() {
-      if !affected.insert(module_idx) {
-        // Already walked via another path (also breaks cycles).
-        continue;
-      }
+    // The modules that the walk reaches, and whether it went on past a module that may invalidate.
+    let walk = |passing: bool| {
+      let mut affected = FxIndexSet::default();
+      let mut passed = false;
+      let mut stack: Vec<ModuleIdx> = changed_modules.iter().copied().collect();
+      while let Some(module_idx) = stack.pop() {
+        if !affected.insert(module_idx) {
+          // Already walked via another path (also breaks cycles).
+          continue;
+        }
 
-      let Module::Normal(module) = &self.module_table().modules[module_idx] else {
-        // Non-normal modules can't be re-run; they are filtered out of the patch later.
-        continue;
-      };
-
-      if module.is_hmr_self_accepting_module() {
-        tracing::trace!(
-          "[HmrStage] module {} is self-accepting, stop propagation here",
-          module.stable_id,
-        );
-        continue;
-      }
-
-      // Static and dynamic `import()` importers are walked the same way — parity with
-      // Vite (`node.importers`) and webpack (`module.parents`), neither of which
-      // distinguishes the edge kind. Duplicate pushes are fine: the `affected.insert`
-      // check at pop time dedups them.
-      for importer_idx in
-        module.importers_idx.iter().chain(module.dynamic_importers_idx.iter()).copied()
-      {
-        let Module::Normal(importer) = &self.module_table().modules[importer_idx] else {
+        let Module::Normal(module) = &self.module_table().modules[module_idx] else {
+          // Non-normal modules can't be re-run; they are filtered out of the patch later.
           continue;
         };
-        if !reach.reaches(importer_idx)
-          && importer.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+
+        if module.is_hmr_self_accepting_module() {
+          if !(passing
+            && (invalidating.contains(&module_idx)
+              || self.index_ecma_ast()[module_idx]
+                .as_ref()
+                .is_some_and(|ast| crate::hmr::utils::calls_hot_invalidate(ast.program()))))
+          {
+            tracing::trace!(
+              "[HmrStage] module {} is self-accepting, stop propagation here",
+              module.stable_id,
+            );
+            continue;
+          }
+          passed = true;
+        }
+
+        // Static and dynamic `import()` importers are walked the same way — parity with
+        // Vite (`node.importers`) and webpack (`module.parents`), neither of which
+        // distinguishes the edge kind. Duplicate pushes are fine: the `affected.insert`
+        // check at pop time dedups them.
+        for importer_idx in
+          module.importers_idx.iter().chain(module.dynamic_importers_idx.iter()).copied()
         {
-          continue;
+          let Module::Normal(importer) = &self.module_table().modules[importer_idx] else {
+            continue;
+          };
+          if !reach.reaches(importer_idx)
+            && importer.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+          {
+            continue;
+          }
+          if importer.can_accept_hmr_dependency_for(&module.id) {
+            // Edge boundary: the accepting importer is not re-run, so it joins no set.
+            continue;
+          }
+          stack.push(importer_idx);
         }
-        if importer.can_accept_hmr_dependency_for(&module.id) {
-          // Edge boundary: the accepting importer is not re-run, so it joins no set.
-          continue;
-        }
-        stack.push(importer_idx);
       }
-    }
+      (affected, passed)
+    };
+    let (mut affected, passed) = walk(true);
+    let standby = if passed {
+      let (accepted, _) = walk(false);
+      affected.iter().copied().filter(|idx| !accepted.contains(idx)).collect()
+    } else {
+      FxHashSet::default()
+    };
     // Deterministic order keeps snapshots stable: one sort of the final set replaces a
     // per-node importer sort (an alloc plus O(deg log deg) comparisons per visit).
     affected.sort_unstable_by(|a, b| {
       self.module_table().modules[*a].stable_id().cmp(self.module_table().modules[*b].stable_id())
     });
-    affected
+    (affected, standby)
   }
-
   /// Compile a lazy entry module and return compiled code plus the pending-payload
   /// entry (`carried`) the delivery-time ship-map write consumes.
   ///
@@ -1760,6 +1867,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
   async fn render_hmr_patch(
     &self,
     mut carried_modules: FxIndexSet<ModuleIdx>,
+    standby: &FxHashSet<ModuleIdx>,
     changed_ids: Vec<String>,
     stamp_table: &HmrStampTable,
     cell_routes: &[crate::hmr::native_cell_routes::Route],
@@ -1768,6 +1876,37 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
   ) -> BuildResult<HmrUpdate> {
     // Note: the carried set might include external modules. There's no way to "update" them, so we need to remove them.
     carried_modules.retain(|idx| self.module_table().modules[*idx].is_normal());
+    // A factory that a client would hold aside stays out of the patch where it can't run as its
+    // module's record ran: one with top-level await, which no patch runs, one with an `import()`,
+    // a `require` or an `import defer`, whose targets a page may lack or may not have run, which
+    // no check of what the patch runs counts for it, one that imports an external module, whose
+    // import the patch hoists out of the factory, so a page would run it as the patch loads, held
+    // aside or not, and one with an `export *` of a leaf without side effects, whose evaluation
+    // the module's native record may omit, which the factory runs
+    // (`native_records::omittable_star_evaluation`). A client that passes an update on to such a
+    // module reloads then for want of the factory, rather than every client now.
+    carried_modules.retain(|idx| {
+      let modules = &self.module_table().modules;
+      !standby.contains(idx)
+        || modules[*idx].as_normal().is_some_and(|module| {
+          !module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+            && !module.import_records.iter().any(|rec| {
+              matches!(rec.kind, ImportKind::DynamicImport | ImportKind::Require)
+                || rec.resolved_module.is_some_and(|dep| !modules[dep].is_normal())
+                || (rec.meta.contains(ImportRecordMeta::IsExportStar)
+                  && rec.resolved_module.and_then(|donor| modules[donor].as_normal()).is_some_and(
+                    |donor| {
+                      donor.import_records.is_empty()
+                        && !donor.side_effects.has_side_effects()
+                        && !donor.meta.has_eval()
+                    },
+                  ))
+            })
+            && self.index_ecma_ast()[*idx].as_ref().is_some_and(|ast| {
+              crate::hmr::utils::deferred_records(module, ast.program()).is_empty()
+            })
+        })
+    });
 
     // Nothing to ship and nothing for the client's walk to re-run — every changed
     // module rendered byte-identical (dropped upstream) and the stale sweep
@@ -1839,6 +1978,22 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       Some(stamp_table),
     ) {
       source_joiner.append_source(prelude);
+    }
+    // The factories that a client needs only once a module passes its update on to the modules
+    // that import it, which it holds aside until then. A runtime without the hook
+    // registers them as any other.
+    let mut standby_ids = carried_modules
+      .iter()
+      .filter(|idx| standby.contains(idx))
+      .map(|idx| self.module_table().modules[*idx].stable_id().as_str())
+      .collect::<Vec<_>>();
+    if !standby_ids.is_empty() {
+      standby_ids.sort_unstable();
+      source_joiner.append_source(concat_string!(
+        "__rolldown_runtime__.standby?.(",
+        serde_json::to_string(&standby_ids).expect("stable ids serialize"),
+        ");"
+      ));
     }
     let rendered_sources = module_render_inputs
       .into_par_iter()
@@ -2140,6 +2295,16 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
   ) -> Vec<(ArcStr, ArcStr, ImportKind, bool, bool)> {
     let side_effects = self.linked_side_effects();
     let routes = self.native_cell_routes();
+    let mut bypass_by_importer: FxHashMap<ModuleIdx, FxHashMap<ImportRecordIdx, &[ModuleIdx]>> =
+      FxHashMap::default();
+    for route in
+      routes.iter().filter(|route| route.verdict == crate::hmr::native_cell_routes::Verdict::Bypass)
+    {
+      bypass_by_importer
+        .entry(route.importer)
+        .or_default()
+        .insert(route.record, route.live_owners.as_slice());
+    }
     let modules = &self.module_table().modules;
     let mut imports = Vec::new();
     for stable_id in stable_ids {
@@ -2154,11 +2319,14 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         module,
         false,
       );
-      let deferred =
+      let deferred = if self.cache.deferred_import_modules.contains(&module.idx) {
         self.index_ecma_ast()[module.idx].as_ref().map_or_else(FxHashSet::default, |ast| {
           crate::hmr::utils::deferred_records(module, ast.program())
-        });
-      let bypassed = crate::hmr::native_cell_routes::bypass_evaluations(&routes, module.idx);
+        })
+      } else {
+        FxHashSet::default()
+      };
+      let bypassed = bypass_by_importer.get(&module.idx);
       for (record_idx, record) in module.import_records.iter_enumerated() {
         if !matches!(
           record.kind,
@@ -2173,13 +2341,13 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         // (`collect_sync_dependencies_for_client`).
         if matches!(
           record.module_request.as_str(),
-          "\0rolldown/json-module" | "\0rolldown/text-module"
+          "\0rolldown/json-module" | "\0rolldown/text-module" | "\0rolldown/raw-text-module"
         ) && modules[target].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
         {
           continue;
         }
         let deferred_import = deferred.contains(&record_idx);
-        let owners = bypassed.get(&record_idx).filter(|_| !deferred_import);
+        let owners = bypassed.and_then(|map| map.get(&record_idx)).filter(|_| !deferred_import);
         let kept = owners.is_none()
           && (record.kind != ImportKind::Import
             || !scoping.is_some_and(|scoping| {
@@ -2211,6 +2379,76 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     imports
   }
 
+  /// [`Self::static_import_phases`] without whether each static import is kept as used.
+  pub fn static_import_edges<'b>(
+    &self,
+    stable_ids: impl IntoIterator<Item = &'b str>,
+  ) -> Vec<(ArcStr, ArcStr, ImportKind, bool)> {
+    let routes = self.native_cell_routes();
+    let mut bypass_by_importer: FxHashMap<ModuleIdx, FxHashMap<ImportRecordIdx, &[ModuleIdx]>> =
+      FxHashMap::default();
+    for route in
+      routes.iter().filter(|route| route.verdict == crate::hmr::native_cell_routes::Verdict::Bypass)
+    {
+      bypass_by_importer
+        .entry(route.importer)
+        .or_default()
+        .insert(route.record, route.live_owners.as_slice());
+    }
+    let modules = &self.module_table().modules;
+    let mut imports = Vec::new();
+    for stable_id in stable_ids {
+      let Some(module) =
+        self.cache.module_idx_by_stable_id.get(stable_id).and_then(|idx| modules[*idx].as_normal())
+      else {
+        continue;
+      };
+      let deferred = if self.cache.deferred_import_modules.contains(&module.idx) {
+        self.index_ecma_ast()[module.idx].as_ref().map_or_else(FxHashSet::default, |ast| {
+          crate::hmr::utils::deferred_records(module, ast.program())
+        })
+      } else {
+        FxHashSet::default()
+      };
+      let bypassed = bypass_by_importer.get(&module.idx);
+      for (record_idx, record) in module.import_records.iter_enumerated() {
+        if !matches!(
+          record.kind,
+          ImportKind::Import | ImportKind::Require | ImportKind::DynamicImport
+        ) {
+          continue;
+        }
+        let Some(target) = record.resolved_module else {
+          continue;
+        };
+        if matches!(
+          record.module_request.as_str(),
+          "\0rolldown/json-module" | "\0rolldown/text-module" | "\0rolldown/raw-text-module"
+        ) && modules[target].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
+        {
+          continue;
+        }
+        let deferred_import = deferred.contains(&record_idx);
+        let owners = bypassed.and_then(|map| map.get(&record_idx)).filter(|_| !deferred_import);
+        imports.push((
+          module.id.as_arc_str().clone(),
+          modules[target].stable_id().as_arc_str().clone(),
+          record.kind,
+          deferred_import,
+        ));
+        for owner in owners.into_iter().flat_map(|owners| owners.iter()) {
+          imports.push((
+            module.id.as_arc_str().clone(),
+            modules[*owner].stable_id().as_arc_str().clone(),
+            record.kind,
+            false,
+          ));
+        }
+      }
+    }
+    imports
+  }
+
   /// Native-cell bypass verdicts on the current scan (`native_cell_routes`); empty without
   /// native records.
   fn native_cell_routes(&self) -> Vec<crate::hmr::native_cell_routes::Route> {
@@ -2219,34 +2457,21 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     {
       return Vec::new();
     }
-    let snapshot = self.cache.get_snapshot();
-    crate::hmr::native_cell_routes::routes(
-      &snapshot.module_table.modules,
-      &snapshot.stmt_infos,
-      &snapshot.index_ecma_ast,
-      &snapshot.user_defined_entry_modules,
-    )
+    self.cache.cell_routes().to_vec()
   }
 
   /// What every page ran along `routes`, by the scan's evaluation of every user-defined entry
   /// (`native_cell_routes::resident`); empty without native cells.
   fn native_cell_resident(
     &self,
-    routes: &[crate::hmr::native_cell_routes::Route],
+    _routes: &[crate::hmr::native_cell_routes::Route],
   ) -> FxHashSet<ModuleIdx> {
     if !crate::utils::native_records::enabled(&self.options)
       || self.cache.native_cell_modules.is_empty()
     {
       return FxHashSet::default();
     }
-    let snapshot = self.cache.get_snapshot();
-    crate::hmr::native_cell_routes::resident(
-      &snapshot.module_table.modules,
-      &snapshot.stmt_infos,
-      &snapshot.index_ecma_ast,
-      &snapshot.user_defined_entry_modules,
-      routes,
-    )
+    self.cache.cell_resident().clone()
   }
 
   /// Finalize and print one module into its HMR payload form (factory-registration
@@ -2827,7 +3052,7 @@ impl<Fs: FileSystem + Clone + 'static> HmrStage<'_, Fs> {
           // JSON's loader-owned classification marker is not an executable dependency.
           if matches!(
             rec.module_request.as_str(),
-            "\0rolldown/json-module" | "\0rolldown/text-module"
+            "\0rolldown/json-module" | "\0rolldown/text-module" | "\0rolldown/raw-text-module"
           ) && modules[dep_idx].id().as_str() == rolldown_common::RUNTIME_MODULE_KEY
           {
             continue;

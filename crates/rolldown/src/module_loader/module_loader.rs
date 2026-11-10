@@ -3,13 +3,13 @@ use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::utils::replace_global_defines::ReplaceGlobalDefinesConfig;
 use arcstr::ArcStr;
 use futures::future::join_all;
 use itertools::Itertools;
 use oxc::semantic::NodeId;
 use oxc::semantic::{ScopeId, Scoping};
 use oxc::span::Span;
-use oxc::transformer_plugins::ReplaceGlobalDefinesConfig;
 use oxc_index::IndexVec;
 use rolldown_common::dynamic_import_usage::DynamicImportExportsUsage;
 use rolldown_common::{
@@ -1104,6 +1104,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           // The `dynamic_importers/importers` should be added after `module_parsed` hook.
           let importers = &self.intermediate_normal_modules.importers[idx];
           module.ecma_view.rebuild_importer_sets(importers);
+          if self.shared_context.compact_module_arenas {
+            crate::utils::retained_memory::shrink_ecma_view_importers(&mut module.ecma_view);
+          }
           if !importers.is_empty() {
             idx_of_module_info_need_update.push(idx);
           }

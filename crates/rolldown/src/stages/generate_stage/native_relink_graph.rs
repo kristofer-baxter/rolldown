@@ -943,6 +943,7 @@ impl GenerateStage<'_> {
     for (record_idx, rec) in module.import_records.iter_enumerated() {
       let target_chunk = rec.resolved_module.and_then(|m| chunk_graph.module_to_chunk[m]);
       if rec.kind == ImportKind::DynamicImport
+        || crate::utils::native_records::accept_only(self.options, rec.kind)
         || (rec.kind == ImportKind::Import && target_chunk != Some(chunk_idx))
         || crate::utils::native_records::omittable_star_evaluation(
           self.options,

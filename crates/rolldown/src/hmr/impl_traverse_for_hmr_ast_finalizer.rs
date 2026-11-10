@@ -16,6 +16,7 @@ use crate::hmr::{
   hmr_ast_finalizer::HmrAstFinalizer,
   utils::{HmrAstBuilder, MODULE_ID_PARAM_FOR_HMR},
 };
+use crate::utils::replace_global_defines::expand_changed_shorthand_property;
 
 impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
   fn exit_object_property(
@@ -23,6 +24,7 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
     node: &mut ast::ObjectProperty<'ast>,
     _ctx: &mut oxc_traverse::TraverseCtx<'ast, ()>,
   ) {
+    expand_changed_shorthand_property(node, self.allocator());
     if self.module.module_type == rolldown_common::ModuleType::Json
       && self.module.meta.has_lazy_export()
       && node.key.static_name().is_some_and(|key| key.as_str() == Some("__proto__"))
