@@ -13,8 +13,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use rolldown::{BundleOutput, Bundler, BundlerOptions};
 use rolldown_common::{
-  BundleMode, ExperimentalOptions, InlineConstOption, InputItem, ModuleDefFormat,
-  OptimizationOption, Output, OutputFormat, RawMinifyOptions, ScanMode,
+  BundleMode, CommentsOptions, ExperimentalOptions, InlineConstOption, InputItem, ModuleDefFormat,
+  OptimizationOption, Output, OutputFormat, RawMinifyOptions, RawMinifyOptionsDetailed, ScanMode,
 };
 use rolldown_plugin::{
   HookGenerateBundleArgs, HookLoadArgs, HookLoadOutput, HookLoadReturn, HookNoopReturn,
@@ -462,6 +462,44 @@ async fn bundled_lexical_cells_preserve_local_tdz_and_const_assignment_errors() 
     fixture.execute("./dist/main.js")?,
     serde_json::json!(["ReferenceError", 1, "TypeError", 1])
   );
+  Ok(())
+}
+
+#[tokio::test]
+async fn final_output_preserves_annotation_options_independently_of_whitespace() -> Result<()> {
+  let fixture =
+    Fixture::new(&[("main.js", "export const value=/* @__PURE__ */unknownFactory();")])?;
+  for remove_whitespace in [false, true] {
+    for annotation in [None, Some(true), Some(false)] {
+      let mut options = fixture.options();
+      options.comments =
+        annotation.map(|annotation| CommentsOptions { annotation, ..Default::default() });
+      options.minify = Some(RawMinifyOptions::Object(RawMinifyOptionsDetailed {
+        mangle: None,
+        mangle_properties: None,
+        compress: Some(Default::default()),
+        remove_whitespace,
+        ascii_only: false,
+      }));
+      let mut bundler = Bundler::new(options)?;
+      let output = bundler.generate().await?;
+      bundler.close().await?;
+      let code = output
+        .assets
+        .iter()
+        .filter_map(|asset| {
+          let Output::Chunk(chunk) = asset else { return None };
+          Some(chunk.code.as_str())
+        })
+        .collect::<Vec<_>>()
+        .join("\n");
+      ensure!(code.contains("unknownFactory"), "the exported initializer must remain: {code}");
+      ensure!(
+        code.contains("@__PURE__") == annotation.unwrap_or(true),
+        "annotation={annotation:?}, remove_whitespace={remove_whitespace}:\n{code}"
+      );
+    }
+  }
   Ok(())
 }
 

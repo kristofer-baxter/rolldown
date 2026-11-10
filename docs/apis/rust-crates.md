@@ -37,3 +37,18 @@ No source synchronization script, independent compiler patch inventory, or regen
 These are unstable Rust APIs. `ReplaceGlobalDefines` and its configuration are exported for AST-based define replacement, including shorthand `__proto__` own-property preservation. The fork follows the current Oxc allocator and AST APIs; older consumers must update together rather than mix AST families.
 
 The experimental bundler API also exposes `has_native_cells`, `static_import_edges`, `last_standby`, `link_decisions_generation`, and `last_link_decisions_unchanged` for native-record and incremental-update coordination. Topology configuration includes `GroupNamingPolicy::ByConsumers { prefix }` and the `standalone_runtime_chunk` and `consumer_shared_chunk_names` fields. `Bundle::set_mangle_properties` accepts the current Oxc `ManglePropertiesOptions`; its global mapping implementation uses public Oxc APIs and does not require downstream-only option fields or constructors.
+
+### Native runtime fixture
+
+The committed `crates/rolldown/tests/fixtures/runtime/native-runtime-base.js` is the canonical native runtime base assembled by `get_runtime_base_js(true)` in `crates/rolldown/src/module_loader/runtime_module_task.rs`. The raw `src/runtime/runtime-base.js` uses ordinary/upstream helpers; native runtime semantics replace two helper blocks and capture the global Promise and URL constructors before parsing the runtime. Platform-specific assembly adds the require helper separately, so this base fixture is not a complete platform runtime.
+
+Consumers testing native helper semantics can copy the generated fixture unchanged from their pinned fork commit and record its Git blob identity. They must not reconstruct the Rust substitutions or maintain another runtime implementation. Native namespace creation passes the third `fixed` argument explicitly (`0` for runtime-discovered star exports, `1` for fixed exports); a subsequent one-argument `__exportAll(namespace)` completes a tracked star namespace. Omitting `fixed` during creation selects the legacy getter-object helper, not a native star namespace.
+
+Regenerate and check the fixture from the fork root (prefer an existing `just` recipe if available):
+
+```sh
+cargo test --locked -p rolldown --lib regenerate_native_runtime_fixture -j 2 -- --ignored
+cargo test --locked -p rolldown --lib runtime_fixture_tests -j 2
+```
+
+The generator calls the real Rust assembly function. The drift check compares every byte, verifies both substitutions still match exactly once, and independently checks that ordinary-mode assembly leaves the raw base unchanged. Regeneration is explicitly ignored during normal tests; the drift check never rewrites the fixture.
