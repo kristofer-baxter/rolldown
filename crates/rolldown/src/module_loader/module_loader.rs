@@ -485,7 +485,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
 
   /// The build error for a task that ended without sending its result.
   fn task_failure(&mut self, error: tokio::task::JoinError) -> BuildDiagnostic {
-    let module = self.task_modules.remove(&error.id()).map_or_else(
+    let module_id = self.task_modules.remove(&error.id());
+    if let Some(id) = &module_id {
+      self.shared_context.plugin_driver.mark_context_load_modules_loaded(id.clone());
+    }
+    let module = module_id.map_or_else(
       || "an unknown module".to_string(),
       |id| format!("`{}`", id.stabilize(&self.shared_context.options.cwd)),
     );
