@@ -1418,7 +1418,10 @@ fn static_property_name_of_computed_expr<'b, 'a: 'b>(
   match &expr.expression {
     Expression::StringLiteral(lit) => lit.value.as_arena_str(),
     Expression::TemplateLiteral(lit) if lit.expressions.is_empty() && lit.quasis.len() == 1 => {
-      Some(lit.quasis[0].value.raw)
+      match lit.quasis[0].value.cooked {
+        Some(cooked) => cooked.as_arena_str(),
+        None => Some(lit.quasis[0].value.raw),
+      }
     }
     _ => None,
   }

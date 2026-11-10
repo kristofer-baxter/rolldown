@@ -1005,6 +1005,60 @@ async fn defines_preserve_shorthand_proto_own_properties_and_destructured_prefix
 }
 
 #[tokio::test]
+async fn defines_match_cooked_template_keys_without_decoding_literal_backslashes() -> Result<()> {
+  let fixture = Fixture::new(&[(
+    "main.js",
+    r#"events.push(
+      process.env.MODE,
+      process["env"]["MODE"],
+      process[`env`][`MODE`],
+      process[`e\u006ev`].MODE,
+      process.env[`M\u004fDE`],
+      process[`e\u{6e}v`][`M\u004fDE`],
+      process[`e\\u006ev`].MODE,
+      process[`${globalThis.envKey}`].MODE,
+      process[`\uD800`].MODE
+    );"#,
+  )])?;
+  fixture.write(
+    "run.js",
+    r#"process.env.MODE = "runtime";
+       process["e\\u006ev"] = {MODE: "raw"};
+       process["\uD800"] = {MODE: "surrogate"};
+       globalThis.envKey = "env";
+       await import("./dist/main.js");"#,
+  )?;
+  for (key, value) in
+    [("process.env", r#"({"MODE":"configured"})"#), ("process.env.MODE", r#""configured""#)]
+  {
+    for minify in [false, true] {
+      let mut options = fixture.options();
+      options.define = Some([(key.to_owned(), value.to_owned())].into_iter().collect());
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      bundler.close().await?;
+      assert_eq!(
+        fixture.execute("./run.js")?,
+        serde_json::json!([
+          "configured",
+          "configured",
+          "configured",
+          "configured",
+          "configured",
+          "configured",
+          "raw",
+          "runtime",
+          "surrogate"
+        ]),
+        "define={key}, minify={minify}"
+      );
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn closed_plain_objects_prune_unused_properties_but_not_escaped_shapes() -> Result<()> {
   let fixture = Fixture::new(&[
     ("tokens.js", "export const tokens={live:'LIVE',dead:'UNUSED_TOKEN'};"),
