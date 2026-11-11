@@ -2301,6 +2301,7 @@ export interface BindingExperimentalDevModeOptions {
 
 export interface BindingExperimentalOptions {
   viteMode?: boolean
+  defineObjectDestructuring?: Array<string>
   resolveNewUrlToAsset?: boolean
   devMode?: BindingExperimentalDevModeOptions
   attachDebugInfo?: BindingAttachDebugInfo
