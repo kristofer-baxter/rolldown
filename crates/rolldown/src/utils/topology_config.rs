@@ -144,6 +144,8 @@ fn route_path_segment_name(segment: &str) -> String {
 
 /// Computes the deterministic `routeChunkName` for a TanStack Router `?tsr-split=<grouping>` module ID
 /// when `<grouping>` uses named route properties (`component`, `loader`, `errorComponent`, etc.).
+/// Retains the established `root`, `home`, `code`, and `autopilot` labels for their exact
+/// `_coreShell` route paths; all other paths use generic route/layout labels.
 pub fn route_split_chunk_name(id: &str) -> Option<String> {
   let normalized = id.replace('\\', "/");
   let (before_query, query) = normalized.split_once("?tsr-split=")?;
@@ -183,6 +185,16 @@ pub fn route_split_chunk_name(id: &str) -> Option<String> {
     let kinds: Vec<String> = grouping.iter().map(|g| kebab_case_segment(g)).collect();
     format!("--{}", kinds.join("-"))
   };
+  let established = match route_file {
+    "_coreShell/_home/index" => Some("root"),
+    "_coreShell/_home/home" => Some("home"),
+    "_coreShell/_code/code.index" => Some("code"),
+    "_coreShell/_autopilot/autopilot.index" => Some("autopilot"),
+    _ => None,
+  };
+  if let Some(name) = established {
+    return Some(format!("{name}{suffix}"));
+  }
   let mut segments: Vec<&str> = route_file.split('/').flat_map(|part| part.split('.')).collect();
   let layout = segments.last() == Some(&"route");
   if layout {
@@ -331,4 +343,53 @@ pub fn get(options: &rolldown_common::NormalizedBundlerOptions) -> Option<Arc<To
     }
   }
   None
+}
+
+#[cfg(test)]
+mod route_name_tests {
+  use super::route_split_chunk_name;
+
+  #[test]
+  fn route_split_names_keep_established_aliases_and_groupings() {
+    let cases = [
+      ("_coreShell/_home/index.tsx", "component", "root"),
+      ("_coreShell/_home/home.tsx", "component", "home"),
+      ("_coreShell/_code/code.index.tsx", "component", "code"),
+      ("_coreShell/_autopilot/autopilot.index.tsx", "component", "autopilot"),
+      ("(development-auth)/loginDev.tsx", "component", "route-login-dev"),
+      ("_homeStandalone/showcase.$.tsx", "loader", "route-showcase-splat--loader"),
+      ("_homeStandalone/showcase.$.tsx", "component---pendingComponent", "route-showcase-splat"),
+      ("_coreShell/route.tsx", "component", "layout-core-shell"),
+      ("_coreShell/_home/route.tsx", "notFoundComponent", "layout-home--not-found-component"),
+    ];
+    for (path, grouping, expected) in cases {
+      let id = format!("/app/src/routes/{path}?tsr-split={grouping}");
+      assert_eq!(route_split_chunk_name(&id).as_deref(), Some(expected), "{id}");
+    }
+  }
+
+  #[test]
+  fn route_split_aliases_are_exact_and_keep_normalization_and_suffixes() {
+    for (id, expected) in [
+      (r"C:\app\src\routes\_coreShell\_home\index.ts?tsr-split=loader", "root--loader"),
+      (
+        "routes/_coreShell/_code/code.index.jsx?tsr-split=loader---errorComponent&v=1",
+        "code--error-component-loader",
+      ),
+      ("src/routes/_coreShell/_home/home.js?tsr-split=component---loader", "home"),
+      ("/app/routes/_coreShell/_home/index-copy.tsx?tsr-split=component", "route-index-copy"),
+      ("/app/routes/_other/_home/index.tsx?tsr-split=component", "route-index"),
+      ("/app/routes/products.$id.tsx?tsr-split=loader", "route-products-id--loader"),
+    ] {
+      assert_eq!(route_split_chunk_name(id).as_deref(), Some(expected), "{id}");
+    }
+    for id in [
+      "/app/src/routes/__root.tsx?tsr-split=component",
+      "/app/src/routes/_coreShell/_home/index.tsx?tsr-split=",
+      "/app/src/routes/_coreShell/_home/index.tsx?tsr-split=component---",
+      "/app/src/routes/_coreShell/_home/index.json?tsr-split=component",
+    ] {
+      assert_eq!(route_split_chunk_name(id), None, "{id}");
+    }
+  }
 }

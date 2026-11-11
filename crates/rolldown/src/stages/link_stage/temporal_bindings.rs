@@ -396,9 +396,14 @@ impl LinkStage<'_> {
   }
 
   pub(super) fn preserve_temporal_bindings(&mut self) {
+    // See internal-docs/linking/module-execution-order/implementation.md.
     let native_records = crate::utils::native_records::enabled(self.options);
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options);
     if !native_records
-      && !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+      && !runtime_semantics
+      && !self.options.is_strict_execution_order_enabled()
+      && !self.options.minify.is_enabled()
     {
       return;
     }
@@ -417,7 +422,22 @@ impl LinkStage<'_> {
             ))
       });
     for module in self.module_table.modules.iter().filter_map(Module::as_normal) {
-      if module.idx == self.runtime.id() || module.exports_kind.is_commonjs() {
+      if module.idx == self.runtime.id() {
+        continue;
+      }
+      if module.exports_kind.is_commonjs() {
+        // Native lexical declarations suffice until chunk compression, which assumes
+        // that local reads never throw. Keep their checks observable through that pass.
+        if !self.options.minify.is_enabled() {
+          continue;
+        }
+      } else if !(native_records
+        || runtime_semantics
+        || (self.options.is_strict_execution_order_enabled()
+          && self.metas[module.idx].wrap_kind() == rolldown_common::WrapKind::Esm))
+      {
+        // Strict wrappers lift lexical bindings into vars. Ordinary unwrapped modules
+        // do not need the native-record protocol or wrapper-specific guards.
         continue;
       }
       let mut bindings = Vec::new();
@@ -537,7 +557,10 @@ impl LinkStage<'_> {
       bindings.sort_unstable_by_key(|(symbol, _)| *symbol);
       bindings.dedup_by_key(|(symbol, _)| *symbol);
       for (symbol, constant) in bindings {
-        if native_records && authored_lexical.contains(&symbol) {
+        if native_records
+          && !module.exports_kind.is_commonjs()
+          && authored_lexical.contains(&symbol)
+        {
           // Each preserved development module is its own native module record: the engine
           // already enforces TDZ and const assignment for real lexical declarations.
           self.global_constant_symbol_map.remove(&(module.idx, symbol).into());

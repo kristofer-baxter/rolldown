@@ -465,6 +465,27 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         let (commonjs_ref_expr, _) = self.finalized_expr_for_symbol_ref(commonjs_ref, false, false);
 
         let mut stmts_inside_closure = allocator::Vec::new_in(self);
+        if !self.top_level_var_bindings.is_empty() {
+          // Guarded CommonJS lexicals belong to the evaluator's scope, not the chunk.
+          // Their flags must be declared even when native records hoist the wrapper.
+          let declarations = self.top_level_var_bindings.iter().map(|name| {
+            ast::VariableDeclarator::new(
+              SPAN,
+              ast::BindingPattern::new_binding_identifier(SPAN, *name, self),
+              None,
+              None,
+              false,
+              self,
+            )
+          });
+          stmts_inside_closure.push(Statement::new_variable_declaration(
+            SPAN,
+            ast::VariableDeclarationKind::Var,
+            allocator::Vec::from_iter_in(declarations, self),
+            false,
+            self,
+          ));
+        }
         stmts_inside_closure.append(&mut program.body);
 
         program.body.push(Statement::new_commonjs_wrapper_stmt(

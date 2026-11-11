@@ -32,6 +32,156 @@ mod bundled_hmr;
 
 mod structured_defines;
 
+#[tokio::test]
+async fn require_cycle_keeps_tdz_reads_inside_a_hoisted_function() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "const a=require('./a.js');export function f(){x;return 'ok'}\
+      const x=1;export const out=`${a.res}:${x}`;",
+    ),
+    ("a.js", "import{f}from'./main.js';export const res=f();"),
+    (
+      "observe.js",
+      "try{await import('./dist/main.js');events.push('ok')}\
+      catch(error){events.push(error.name,error.message)}",
+    ),
+  ])?;
+  for native in [false, true] {
+    for minify in [false, true] {
+      for on_demand in [false, true] {
+        let mut options = fixture.options();
+        options.strict_execution_order = Some(true);
+        options.preserve_entry_signatures = Some(PreserveEntrySignatures::AllowExtension);
+        options.minify = Some(RawMinifyOptions::Bool(minify));
+        options.experimental = Some(ExperimentalOptions {
+          resolve_new_url_to_asset: Some(native),
+          on_demand_wrapping: Some(on_demand),
+          chunk_optimization: Some(ChunkOptimizationOption::Bool(true)),
+          ..Default::default()
+        });
+        let mut bundler = Bundler::new(options)?;
+        let output = bundler.generate().await?;
+        fixture.output(&output)?;
+        bundler.close().await?;
+        let outcome = fixture.execute("./observe.js")?;
+        assert_eq!(
+          outcome[0], "ReferenceError",
+          "native={native}, minify={minify}, on_demand={on_demand}: {outcome}"
+        );
+        assert!(
+          outcome[1].as_str().is_some_and(|message| message.starts_with("Cannot access")),
+          "native={native}, minify={minify}: {outcome}"
+        );
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn commonjs_keeps_tdz_reads_inside_a_labeled_hoisted_function() -> Result<()> {
+  let source = "f();const y=1;l:function f(){y;return'ok'}module.exports=y;";
+  let fixture = Fixture::new(&[
+    ("c.cjs", source),
+    ("reference.cjs", source),
+    (
+      "reference.js",
+      "try{await import('./reference.cjs');events.push('ok')}\
+      catch(error){events.push(error.name,error.message)}",
+    ),
+    (
+      "observe.js",
+      "try{await import('./dist/main.js');events.push('ok')}\
+      catch(error){events.push(error.name,error.message)}",
+    ),
+  ])?;
+  let expected = fixture.execute("./reference.js")?;
+  assert_eq!(expected[0], "ReferenceError");
+  for native in [false, true] {
+    if native {
+      // Annex B labels are script-only syntax, unlike the native ESM control's wrapper.
+      fixture.write("c.cjs", "f();const y=1;function f(){y;return'ok'}module.exports=y;")?;
+    }
+    for minify in [false, true] {
+      let mut options = fixture.options();
+      options.input.as_mut().unwrap()[0].import = "./c.cjs".into();
+      options.preserve_modules = Some(native);
+      options.format = Some(if native { OutputFormat::Esm } else { OutputFormat::Cjs });
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      options.experimental =
+        Some(ExperimentalOptions { resolve_new_url_to_asset: Some(native), ..Default::default() });
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      if !native {
+        fixture.write("dist/package.json", r#"{"type":"commonjs"}"#)?;
+      }
+      bundler.close().await?;
+      let outcome = fixture.execute("./observe.js")?;
+      assert_eq!(outcome[0], expected[0], "native={native}, minify={minify}: {outcome}");
+      assert!(
+        outcome[1].as_str().is_some_and(|message| message.starts_with("Cannot access")),
+        "native={native}, minify={minify}: {outcome}"
+      );
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn initialized_lexicals_remain_readable_inside_hoisted_functions() -> Result<()> {
+  for minify in [false, true] {
+    let fixture = Fixture::new(&[
+      (
+        "main.js",
+        "const x=1;const a=require('./a.js');export function f(){x;return 'ok'}\
+        export const out=`${a.res}:${x}`;",
+      ),
+      ("a.js", "import{f}from'./main.js';export const res=f();"),
+      ("observe.js", "events.push((await import('./dist/main.js')).out)"),
+    ])?;
+    let mut options = fixture.options();
+    options.strict_execution_order = Some(true);
+    options.minify = Some(RawMinifyOptions::Bool(minify));
+    options.experimental = Some(ExperimentalOptions {
+      on_demand_wrapping: Some(true),
+      chunk_optimization: Some(ChunkOptimizationOption::Bool(true)),
+      ..Default::default()
+    });
+    let mut bundler = Bundler::new(options)?;
+    fixture.output(&bundler.generate().await?)?;
+    bundler.close().await?;
+    assert_eq!(fixture.execute("./observe.js")?, serde_json::json!(["ok:1"]));
+
+    for native in [false, true] {
+      fixture.write(
+        "c.cjs",
+        "if(globalThis.callEarly)f();const y=1;f();function f(){y;return'ok'}module.exports=y;",
+      )?;
+      let mut options = fixture.options();
+      options.input.as_mut().unwrap()[0].import = "./c.cjs".into();
+      options.preserve_modules = Some(native);
+      options.format = Some(if native { OutputFormat::Esm } else { OutputFormat::Cjs });
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      options.experimental =
+        Some(ExperimentalOptions { resolve_new_url_to_asset: Some(native), ..Default::default() });
+      let mut bundler = Bundler::new(options)?;
+      fixture.output(&bundler.generate().await?)?;
+      if !native {
+        fixture.write("dist/package.json", r#"{"type":"commonjs"}"#)?;
+      }
+      fixture.write("observe.js", "events.push((await import('./dist/main.js')).default)")?;
+      bundler.close().await?;
+      assert_eq!(
+        fixture.execute("./observe.js")?,
+        serde_json::json!([1]),
+        "native={native}, minify={minify}"
+      );
+    }
+  }
+  Ok(())
+}
+
 struct Fixture(PathBuf);
 
 impl Fixture {

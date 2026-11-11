@@ -25,6 +25,12 @@ The order is defined by a small set of rules, in precedence order:
 
 The link-time constant lookup in `refine_stmt_side_effects.rs` therefore rejects imported constants within the same static-import strongly connected component, even if the exporter has a lower `exec_order`. With multiple entries or preserved modules, loading a different entry can reverse the order within the cycle and expose a `const` TDZ failure. These components are computed lazily once and shared with the analyzer reruns in cross-module optimization. An exporter outside the importer's component can still supply a constant when it precedes the importer.
 
+## Lexical reads across wrappers
+
+Execution order alone cannot certify a lexical read inside a hoisted function: a `require()` cycle can call that function before its declaring module reaches the lexical initializer. Strict execution-order wrappers lift those declarations into `var` bindings, so `preserve_temporal_bindings` retains explicit initialization flags even without the native-record protocol.
+
+Preprocessing keeps potentially temporal reads opaque through DCE. Finalization restores native lexical reads or replaces them with checks for lowered bindings. Minified CommonJS modules also need observable checks because chunk compression assumes local reads do not throw; their hoisted bindings and flags stay inside the CommonJS evaluator closure, including when native records hoist the wrapper itself. Initialization flags become true only at the declaration's original execution point. These checks do not enable native routing, records, or HMR.
+
 ## Algorithm
 
 The pass is an **iterative post-order DFS** with an explicit `execution_stack: Vec<Status>`. Using an explicit stack (rather than recursion) avoids stack overflow on deep module graphs, which are common in real-world codebases.
