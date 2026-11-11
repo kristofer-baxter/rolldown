@@ -340,7 +340,10 @@ fn safe_non_temporal_bindings(
       for sym in collect_root_symbol_refs(scopes, root_scope_id, |c| c.visit_class(class)) {
         add_early_ref(sym, &mut early_refs);
       }
-      let sym = class.id.as_ref().map_or(default_export_symbol, |binding| binding.symbol_id());
+      let sym = class
+        .id
+        .as_ref()
+        .map_or(default_export_symbol, oxc::ast::ast::BindingIdentifier::symbol_id);
       if !early_refs.contains(&sym)
         && !scopes.get_resolved_references(sym).any(oxc::semantic::Reference::is_write)
       {
@@ -562,6 +565,10 @@ impl LinkStage<'_> {
       }
     }
 
+    self.reference_temporal_binding_flags();
+  }
+
+  fn reference_temporal_binding_flags(&mut self) {
     let any_temporal_symbols = self.metas.iter().any(|meta| !meta.temporal_symbols.is_empty());
     if !any_temporal_symbols {
       return;

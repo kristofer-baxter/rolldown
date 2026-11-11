@@ -156,7 +156,7 @@ pub fn deferred_records(
 /// callback with which it accepts its own updates: the update then goes on to the modules that
 /// import it, as though it accepted none.
 #[cfg(feature = "experimental")]
-pub(crate) fn calls_hot_invalidate(program: &ast::Program) -> bool {
+pub fn calls_hot_invalidate(program: &ast::Program) -> bool {
   use oxc::ast_visit::{VisitJs, walk_js};
   struct Invalidates(bool);
   impl<'a> VisitJs<'a> for Invalidates {
@@ -544,7 +544,7 @@ fn bundled_observed_imports(
   observed
 }
 
-impl<'any, 'ast> ScopeHoistingFinalizer<'any, 'ast> {
+impl ScopeHoistingFinalizer<'_, '_> {
   fn bundled_exports_need_initial_bindings(&self) -> bool {
     let scoping = self.scope.scoping();
     let root = scoping.root_scope_id();

@@ -143,7 +143,7 @@ impl LinkingMetadata {
     self.dependencies.iter().any(|&dependency_idx| {
       let dependency = &modules[dependency_idx];
       dependency.side_effects().has_side_effects()
-        && !dependency.as_normal().is_some_and(|module| module.id == RUNTIME_MODULE_ID)
+        && dependency.as_normal().is_none_or(|module| module.id != RUNTIME_MODULE_ID)
     })
   }
 

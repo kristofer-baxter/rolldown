@@ -2014,7 +2014,7 @@ impl GenerateStage<'_> {
     module_table: &ModuleTable,
   ) -> bool {
     let mut visited = FxHashSet::default();
-    let mut queue = chunk_graph.chunk_table[chunk_idx].modules.iter().copied().collect::<Vec<_>>();
+    let mut queue = chunk_graph.chunk_table[chunk_idx].modules.clone();
     let mut targets = vec![];
     while let Some(module_idx) = queue.pop() {
       if !visited.insert(module_idx) {

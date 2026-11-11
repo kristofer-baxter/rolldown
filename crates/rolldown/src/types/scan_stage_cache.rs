@@ -648,9 +648,9 @@ impl ScanStageCache {
     *self = Self {
       late_records,
       sourcemap_content_filter,
+      mangle_properties_override,
       omit_reused_chunk_bytes,
       keep_unused_capacity,
-      mangle_properties_override,
       ..Self::default()
     };
   }

@@ -609,7 +609,7 @@ fn donor_graph_verdict(
     }
     state.insert(idx, 1);
     pending.push((idx, true));
-    for dependency in module.import_records.iter() {
+    for dependency in &module.import_records {
       edges += 1;
       if dependency.kind != ImportKind::Import {
         evaluate = true;

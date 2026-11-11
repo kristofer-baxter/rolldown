@@ -15,8 +15,9 @@ use rolldown::{BundleOutput, Bundler, BundlerOptions};
 use rolldown_common::{
   BundleMode, ChunkOptimizationOption, CommentsOptions, ExperimentalOptions, InlineConstOption,
   InputItem, ManglePropertiesPattern, ManglePropertiesPatterns, ModuleDefFormat,
-  OptimizationOption, Output, OutputFormat, PreserveEntrySignatures, RawManglePropertiesOptions,
-  RawMinifyOptions, RawMinifyOptionsDetailed, ScanMode,
+  OptimizationOption, Output, OutputFormat, PreserveEntrySignatures, RawCompressOptions,
+  RawMangleOptions, RawManglePropertiesOptions, RawMinifyOptions, RawMinifyOptionsDetailed,
+  ScanMode,
 };
 use rolldown_plugin::{
   HookGenerateBundleArgs, HookLoadArgs, HookLoadOutput, HookLoadReturn, HookNoopReturn,
@@ -434,7 +435,7 @@ impl Plugin for ReplaceMangledChunk {
         1,
       );
       let chunk = Arc::make_mut(chunk);
-      chunk.code = format!("{rewritten}\n/* hook replacement */").into();
+      chunk.code = format!("{rewritten}\n/* hook replacement */");
       if self.rename {
         chunk.filename = "renamed.js".into();
       }
@@ -480,7 +481,7 @@ async fn shared_property_mangling_allows_metadata_changes_but_rejects_code_repla
               })
             })
           },
-          compress: Some(Default::default()),
+          compress: Some(RawCompressOptions::default()),
           remove_whitespace: true,
           ascii_only: false,
         }));
@@ -1119,6 +1120,67 @@ async fn defines_keep_dotted_proto_children_distinct_from_prototype_setters() ->
 }
 
 #[tokio::test]
+async fn destructured_defines_preserve_object_evaluation_and_inherited_reads() -> Result<()> {
+  for (prelude, value) in [
+    ("", "({used:1,unused:(events.push('unused'),2)})"),
+    ("", "({unused:(()=>{events.push('before');throw Error('unused')})(),used:1})"),
+    ("", "({used:1,unused:missingDefineValue})"),
+    ("", "({used:1,unused:later})"),
+    ("", "({used:1,[(events.push('key'),'unused')]:2})"),
+    ("", "({used:1,['unused']:(events.push('value'),2)})"),
+    ("", "({get used(){events.push('get');return this.unused},unused:7})"),
+    ("", "({__proto__:{get used(){events.push('inherited');return this.unused}},unused:7})"),
+    ("", "({__proto__:null,unused:7})"),
+    (
+      "Object.defineProperty(Object.prototype,'used',{configurable:true,\
+       get(){events.push('inherited');return this.unused}});",
+      "({unused:7})",
+    ),
+    ("", "({used:1,...(events.push('spread'),{other:2}),unused:7})"),
+    ("", "({used:1,unused:'pruned_unused_marker'})"),
+  ] {
+    for target in ["CONFIG", "globalThis.CONFIG", "import.meta.env"] {
+      for assignment in [false, true] {
+        let binding = if assignment {
+          format!("let used;try{{({{used}}={target});events.push(used)}}")
+        } else {
+          format!("try{{const {{used}}={target};events.push(used)}}")
+        };
+        let source =
+          format!("{prelude}{binding}catch(error){{events.push(error.name)}}const later=2;");
+        let fixture = Fixture::new(&[("main.js", &source)])?;
+        fixture.write("reference.js", &source.replace(target, value))?;
+        let expected = fixture.execute("./reference.js")?;
+        for minify in [false, true] {
+          let mut options = fixture.options();
+          options.define = Some(std::iter::once((target.to_owned(), value.to_owned())).collect());
+          options.minify = Some(RawMinifyOptions::Bool(minify));
+          let mut bundler = Bundler::new(options)?;
+          let output = bundler.generate().await?;
+          fixture.output(&output)?;
+          bundler.close().await?;
+          assert_eq!(
+            fixture.execute("./dist/main.js")?,
+            expected,
+            "value={value}, target={target}, assignment={assignment}, minify={minify}"
+          );
+          if value.contains("pruned_unused_marker") {
+            assert!(
+              output.assets.iter().all(|asset| {
+                !String::from_utf8_lossy(asset.content_as_bytes()).contains("pruned_unused_marker")
+              }),
+              "pure unused define property survived: target={target}, assignment={assignment}, \
+               minify={minify}"
+            );
+          }
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn defines_preserve_duplicate_property_evaluations_when_merging_children() -> Result<()> {
   for (parent, child, expected) in [
     (
@@ -1275,7 +1337,7 @@ async fn defines_match_cooked_template_keys_without_decoding_literal_backslashes
   {
     for minify in [false, true] {
       let mut options = fixture.options();
-      options.define = Some([(key.to_owned(), value.to_owned())].into_iter().collect());
+      options.define = Some(std::iter::once((key.to_owned(), value.to_owned())).collect());
       options.minify = Some(RawMinifyOptions::Bool(minify));
       let mut bundler = Bundler::new(options)?;
       fixture.output(&bundler.generate().await?)?;
@@ -1321,9 +1383,9 @@ async fn minify_keep_names_preserves_iife_and_inferred_property_stack_frames() -
       options.keep_names = Some(keep_names);
       options.minify = Some(if detailed {
         RawMinifyOptions::Object(RawMinifyOptionsDetailed {
-          mangle: Some(Default::default()),
+          mangle: Some(RawMangleOptions::default()),
           mangle_properties: None,
-          compress: Some(Default::default()),
+          compress: Some(RawCompressOptions::default()),
           remove_whitespace: true,
           ascii_only: false,
         })
@@ -1423,7 +1485,7 @@ async fn final_output_preserves_annotation_options_independently_of_whitespace()
       options.minify = Some(RawMinifyOptions::Object(RawMinifyOptionsDetailed {
         mangle: None,
         mangle_properties: None,
-        compress: Some(Default::default()),
+        compress: Some(RawCompressOptions::default()),
         remove_whitespace,
         ascii_only: false,
       }));

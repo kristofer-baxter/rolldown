@@ -72,6 +72,11 @@ pub struct HmrStage<'a, Fs: FileSystem + Clone + 'static> {
   reachability: LazyReachability,
 }
 
+struct HmrPatchRenderInputs<'a> {
+  cell_routes: &'a [crate::hmr::native_cell_routes::Route],
+  post_rebuild_renders: &'a FxHashMap<ModuleIdx, String>,
+}
+
 /// What a link of a module table reaches from its user-defined entries and its runtime module
 /// (`LinkStage::exclude_unreachable_modules`), computed on first use: few updates need it.
 #[derive(Default)]
@@ -1392,9 +1397,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           &standby,
           changed_ids.clone(),
           stamp_table,
-          &cell_routes,
           &side_effects,
-          &post_rebuild_renders,
+          &HmrPatchRenderInputs {
+            cell_routes: &cell_routes,
+            post_rebuild_renders: &post_rebuild_renders,
+          },
         )
         .await?;
       if matches!(update, HmrUpdate::Patch(_)) {
@@ -1870,9 +1877,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     standby: &FxHashSet<ModuleIdx>,
     changed_ids: Vec<String>,
     stamp_table: &HmrStampTable,
-    cell_routes: &[crate::hmr::native_cell_routes::Route],
     side_effects: &LinkedSideEffects<'_>,
-    post_rebuild_renders: &FxHashMap<ModuleIdx, String>,
+    render_inputs: &HmrPatchRenderInputs<'_>,
   ) -> BuildResult<HmrUpdate> {
     // Note: the carried set might include external modules. There's no way to "update" them, so we need to remove them.
     carried_modules.retain(|idx| self.module_table().modules[*idx].is_normal());
@@ -1951,7 +1957,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
         if index == 0
           && stamp == 0
           && sourcemap_disabled
-          && let Some(code) = post_rebuild_renders.get(&affected_module_idx)
+          && let Some(code) = render_inputs.post_rebuild_renders.get(&affected_module_idx)
         {
           return (affected_module.idx, Ok(code.clone()));
         }
@@ -2005,7 +2011,14 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
             let stamp = stamp_table.render_time_stamp(
               self.module_table().modules[affected_module_idx].stable_id().as_str(),
             );
-            self.render_module_code(render_input, index, stamp, true, cell_routes, side_effects)
+            self.render_module_code(
+              render_input,
+              index,
+              stamp,
+              true,
+              render_inputs.cell_routes,
+              side_effects,
+            )
           }
         };
 

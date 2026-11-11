@@ -60,6 +60,33 @@ type DevtoolsPackageInfoEntry = (action::PackageInfo, FxIndexSet<String>, FxInde
 /// record (records have a name but no file).
 type ChunkNamingResult = (FxHashMap<ChunkIdx, ArcStr>, Vec<(ChunkIdx, ArcStr)>);
 
+fn shrink_relink_chunk_metadata(chunk_graph: &mut ChunkGraph) {
+  for chunk in chunk_graph.chunk_table.iter_mut() {
+    chunk.bits = rolldown_utils::BitSet::default();
+    chunk.pre_rendered_chunk = None;
+    chunk.canonical_names = FxHashMap::default();
+    chunk.require_binding_names_for_other_chunks = FxHashMap::default();
+    chunk.node_mode_external_ns_names = FxHashMap::default();
+    chunk.insert_map = FxHashMap::default();
+    chunk.remove_map = FxHashMap::default();
+    chunk.module_idx_to_render_concatenated_module = FxHashMap::default();
+    chunk.modules.shrink_to_fit();
+    for items in chunk.imports_from_other_chunks.values_mut() {
+      items.shrink_to_fit();
+    }
+    chunk.imports_from_other_chunks.shrink_to_fit();
+    for names in chunk.exports_to_other_chunks.values_mut() {
+      names.shrink_to_fit();
+    }
+    chunk.exports_to_other_chunks.shrink_to_fit();
+    chunk.cross_chunk_imports.shrink_to_fit();
+    chunk.cross_chunk_dynamic_imports.shrink_to_fit();
+    chunk.direct_imports_from_external_modules.shrink_to_fit();
+    chunk.entry_level_external_module_idx.shrink_to_fit();
+    chunk.import_symbol_from_external_modules.shrink_to_fit();
+  }
+}
+
 /// The names of a preserved module's chunk, from which its file name and `[name]` derive.
 async fn preserve_modules_chunk_name(
   options: &rolldown_common::NormalizedBundlerOptions,
@@ -289,7 +316,7 @@ impl<'a> GenerateStage<'a> {
     cache: Option<&'a mut ScanStageCache>,
   ) -> Self {
     if options.is_dev_mode_enabled() && !crate::utils::native_records::enabled(options) {
-      for meta in link_output.metas.iter_mut() {
+      for meta in &mut link_output.metas {
         meta.bundled_observed_imports = std::sync::OnceLock::new();
       }
     }
@@ -312,6 +339,19 @@ impl<'a> GenerateStage<'a> {
       ast_table[idx] = Some(original_ast);
     }
     ast_table
+  }
+
+  async fn resolve_external_paths(&mut self) {
+    // Pre-resolve paths to avoid synchronous JS callbacks and their deadlock risk (#7280).
+    if let Some(paths) = &self.options.paths {
+      let ids = self
+        .link_output
+        .module_table
+        .modules
+        .iter()
+        .filter_map(|m| m.as_external().map(|e| e.id.as_str()));
+      self.resolved_paths = Some(paths.resolve_all(ids).await);
+    }
   }
 
   #[tracing::instrument(level = "debug", skip_all)]
@@ -377,17 +417,7 @@ impl<'a> GenerateStage<'a> {
     }
     set_emitted_chunk_preliminary_filenames(&self.plugin_driver.file_emitter, &chunk_graph);
 
-    // Pre-resolve paths for external modules to avoid sync JS callbacks during rendering.
-    // This eliminates the need for `invoke_sync` which can cause deadlocks (see #7280).
-    if let Some(paths) = &self.options.paths {
-      let ids = self
-        .link_output
-        .module_table
-        .modules
-        .iter()
-        .filter_map(|m| m.as_external().map(|e| e.id.as_str()));
-      self.resolved_paths = Some(paths.resolve_all(ids).await);
-    }
+    self.resolve_external_paths().await;
 
     // Statement inclusion is final here. Chunk reuse and finalization both read the plan.
     let link_output = &mut *self.link_output;
@@ -520,30 +550,7 @@ impl<'a> GenerateStage<'a> {
       let render_export_items_index_vec =
         oxc_index::index_vec![rolldown_utils::indexmap::FxIndexMap::default(); chunks_len];
       let index_chunk_to_instances = oxc_index::index_vec![FxIndexSet::default(); chunks_len];
-      for chunk in chunk_graph.chunk_table.iter_mut() {
-        chunk.bits = Default::default();
-        chunk.pre_rendered_chunk = None;
-        chunk.canonical_names = FxHashMap::default();
-        chunk.require_binding_names_for_other_chunks = FxHashMap::default();
-        chunk.node_mode_external_ns_names = FxHashMap::default();
-        chunk.insert_map = FxHashMap::default();
-        chunk.remove_map = FxHashMap::default();
-        chunk.module_idx_to_render_concatenated_module = FxHashMap::default();
-        chunk.modules.shrink_to_fit();
-        for items in chunk.imports_from_other_chunks.values_mut() {
-          items.shrink_to_fit();
-        }
-        chunk.imports_from_other_chunks.shrink_to_fit();
-        for names in chunk.exports_to_other_chunks.values_mut() {
-          names.shrink_to_fit();
-        }
-        chunk.exports_to_other_chunks.shrink_to_fit();
-        chunk.cross_chunk_imports.shrink_to_fit();
-        chunk.cross_chunk_dynamic_imports.shrink_to_fit();
-        chunk.direct_imports_from_external_modules.shrink_to_fit();
-        chunk.entry_level_external_module_idx.shrink_to_fit();
-        chunk.import_symbol_from_external_modules.shrink_to_fit();
-      }
+      shrink_relink_chunk_metadata(&mut chunk_graph);
       index_chunk_id_to_name.shrink_to_fit();
       protected_modules.shrink_to_fit();
       decision_dependencies.shrink_to_fit();

@@ -191,7 +191,6 @@ pub fn preserve_temporal_reads<'ast>(
   scoping: &Scoping,
   allocator: &'ast Allocator,
 ) -> bool {
-  let safe_symbols = safe_post_declaration_symbols(program, scoping);
   struct Preserve<'a, 'ast> {
     scoping: &'a Scoping,
     symbols: FxHashSet<oxc::semantic::SymbolId>,
@@ -226,6 +225,7 @@ pub fn preserve_temporal_reads<'ast>(
       self.changed = true;
     }
   }
+  let safe_symbols = safe_post_declaration_symbols(program, scoping);
   let mut symbols: FxHashSet<_> = scoping
     .symbol_ids()
     .filter(|&symbol| {

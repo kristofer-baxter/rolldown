@@ -3944,10 +3944,7 @@ impl oxc::ast_visit::VisitJsMut<'_> for SpanRewriter {
   }
 }
 
-pub(super) fn binding_pattern_into_assignment_target<
-  'ast,
-  B: GetAstBuilder<'ast> + GetAllocator<'ast>,
->(
+pub fn binding_pattern_into_assignment_target<'ast, B: GetAstBuilder<'ast> + GetAllocator<'ast>>(
   pattern: ast::BindingPattern<'ast>,
   builder: &B,
 ) -> ast::AssignmentTarget<'ast> {

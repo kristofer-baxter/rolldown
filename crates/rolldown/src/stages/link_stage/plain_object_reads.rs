@@ -39,7 +39,7 @@ use crate::utils::temporal_reads::temporal_read_argument;
 
 /// The key of `object.key`, `object['key']` or ``object[`key`]``. Other computed keys go through
 /// `ToPropertyKey`, which can run code and yield a different key.
-pub(crate) fn static_read_key<'a>(member: &'a MemberExpression<'a>) -> Option<&'a str> {
+pub fn static_read_key<'a>(member: &'a MemberExpression<'a>) -> Option<&'a str> {
   match member {
     MemberExpression::StaticMemberExpression(member) => Some(member.property.name.as_str()),
     MemberExpression::ComputedMemberExpression(member) => match &member.expression {
@@ -291,7 +291,7 @@ impl LinkStage<'_> {
   ) {
     let mut non_static_importees = FxHashSet::default();
     for module in self.module_table.modules.iter().filter_map(|module| module.as_normal()) {
-      for record in module.import_records.iter() {
+      for record in &module.import_records {
         if record.kind != ImportKind::Import
           && let Some(importee) = record.resolved_module
         {

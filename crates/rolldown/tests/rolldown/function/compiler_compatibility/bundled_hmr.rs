@@ -1,3 +1,4 @@
+use std::fmt::Write as _;
 use std::sync::{Arc, atomic::AtomicU32};
 
 use anyhow::{Result, ensure};
@@ -7,6 +8,7 @@ use rolldown_common::{
   RawMinifyOptions, ScanMode, TreeshakeOptions, WatcherChangeKind,
 };
 use rolldown_utils::indexmap::FxIndexMap;
+use rustc_hash::FxHashSet;
 
 use super::{Fixture, partial_scan};
 
@@ -59,7 +61,7 @@ async fn bundled_hmr_refreshes_wide_import_observation_after_relink() -> Result<
   let fixture = Fixture::new(&[])?;
   let mut imports = String::new();
   for index in 0..64 {
-    imports.push_str(&format!("import {{value as value{index}}} from './leaf{index}.js';"));
+    write!(imports, "import {{value as value{index}}} from './leaf{index}.js';")?;
     fixture.write(
       &format!("leaf{index}.js"),
       &format!("globalThis.leafRuns=(globalThis.leafRuns??0)+1;export const value={index};"),
@@ -315,7 +317,7 @@ async fn bundled_hmr_lazy_factories_read_latest_used_and_unobserved_exports() ->
       &proxy,
       "fixture",
       &shipped,
-      &Default::default(),
+      &FxHashSet::default(),
       &evaluated,
       Some(&evaluated),
       None,

@@ -20,6 +20,8 @@ use oxc_allocator::{Address, Allocator, ArenaBox, GetAddress, ReplaceWith, Unsta
 use oxc_str::{CompactStr, Str};
 use rustc_hash::FxHashMap;
 
+use crate::utils::native_cell_plan::is_primitive_literal;
+
 /// Configuration for [ReplaceGlobalDefines].
 #[derive(Debug, Clone)]
 pub struct ReplaceGlobalDefinesConfig(Arc<ReplaceGlobalDefinesConfigImpl>);
@@ -493,10 +495,7 @@ pub struct ReplaceGlobalDefines<'a> {
 }
 
 /// `{ __proto__ }` defines an own property, unlike `{ __proto__: value }`.
-pub(crate) fn expand_shorthand_property<'a>(
-  prop: &mut ObjectProperty<'a>,
-  allocator: &'a Allocator,
-) {
+pub fn expand_shorthand_property<'a>(prop: &mut ObjectProperty<'a>, allocator: &'a Allocator) {
   prop.shorthand = false;
   if let PropertyKey::StaticIdentifier(key) = &prop.key
     && key.name == "__proto__"
@@ -507,7 +506,7 @@ pub(crate) fn expand_shorthand_property<'a>(
   }
 }
 
-pub(crate) fn expand_changed_shorthand_property<'a>(
+pub fn expand_changed_shorthand_property<'a>(
   prop: &mut ObjectProperty<'a>,
   allocator: &'a Allocator,
 ) {
@@ -1387,10 +1386,32 @@ impl<'a> ReplaceGlobalDefines<'a> {
       _ => return expr,
     };
 
+    let mut defined_keys = Vec::with_capacity(obj.properties.len());
+    for prop in &obj.properties {
+      let ObjectPropertyKind::ObjectProperty(prop) = prop else {
+        return expr;
+      };
+      if prop.kind != PropertyKind::Init || prop.method {
+        return expr;
+      }
+      let Some(key) = Self::static_property_key_name(&prop.key, prop.computed) else {
+        return expr;
+      };
+      if key == "__proto__" && !prop.computed && !prop.shorthand {
+        return expr;
+      }
+      defined_keys.push(key);
+    }
+    // Accessors and inherited reads can observe properties absent from the pattern.
+    if !needed_keys.iter().all(|key| defined_keys.contains(key)) {
+      return expr;
+    }
+
     obj.properties.retain(|prop| match prop {
       ObjectPropertyKind::ObjectProperty(prop) => {
-        Self::static_property_key_name(&prop.key, prop.computed)
-          .is_none_or(|s| needed_keys.iter().any(|k| k == &s))
+        !is_primitive_literal(&prop.value)
+          || Self::static_property_key_name(&prop.key, prop.computed)
+            .is_none_or(|s| needed_keys.iter().any(|k| k == &s))
       }
       ObjectPropertyKind::SpreadProperty(_) => true,
     });

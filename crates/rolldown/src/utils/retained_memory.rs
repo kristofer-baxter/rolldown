@@ -19,6 +19,7 @@ use rolldown_common::{
   EcmaView, ModuleIdx, StmtInfos, SymbolOrMemberExprRef, SymbolRefDbForModule,
 };
 use rolldown_ecmascript::EcmaAst;
+use rolldown_utils::indexmap::FxIndexSet;
 
 use crate::stages::link_stage::LinkStageOutput;
 
@@ -70,7 +71,7 @@ pub fn shrink_scanned_module(
   ecma_view.dynamic_import_called_names.shrink_to_fit();
   symbols.classic_data.raw.shrink_to_fit();
   symbols.flags.shrink_to_fit();
-  for stmt_info in stmt_infos.infos.iter_mut() {
+  for stmt_info in &mut stmt_infos.infos {
     stmt_info.declared_symbols.shrink_to_fit();
     for sym_or_mem in &mut stmt_info.referenced_symbols {
       if let SymbolOrMemberExprRef::MemberExpr(mem) = sym_or_mem {
@@ -155,9 +156,9 @@ pub fn shrink_link_tables(link_output: &mut LinkStageOutput) {
     stmt_infos.infos.raw.shrink_to_fit();
   });
   link_output.metas.raw.par_iter_mut().for_each(|meta| {
-    meta.dependencies = Default::default();
-    meta.load_dependencies = Default::default();
-    meta.execution_dependencies = Default::default();
+    meta.dependencies = FxIndexSet::default();
+    meta.load_dependencies = FxIndexSet::default();
+    meta.execution_dependencies = FxIndexSet::default();
     meta.native_reexport_by_canonical = std::sync::OnceLock::new();
     meta.bundled_observed_imports = std::sync::OnceLock::new();
     meta.resolved_exports.shrink_to_fit();
@@ -180,8 +181,8 @@ pub fn shrink_link_tables(link_output: &mut LinkStageOutput) {
     if let Some(normal) = module.as_normal_mut() {
       // `imported_ids` and `dynamically_imported_ids` are only consumed by `to_module_info` on
       // the scan-stage snapshot, never on `link_output.module_table`.
-      normal.ecma_view.imported_ids = Default::default();
-      normal.ecma_view.dynamically_imported_ids = Default::default();
+      normal.ecma_view.imported_ids = FxIndexSet::default();
+      normal.ecma_view.dynamically_imported_ids = FxIndexSet::default();
       normal.ecma_view.mutations.shrink_to_fit();
     }
   });

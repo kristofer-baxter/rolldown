@@ -873,7 +873,7 @@ impl GenerateStage<'_> {
       try_join_all(futures).await
     };
     for chunk_idx in populated_export_item_chunks {
-      render_export_items_index_vec[chunk_idx] = Default::default();
+      render_export_items_index_vec[chunk_idx] = FxIndexMap::default();
     }
     for result in instantiate_res? {
       match result {

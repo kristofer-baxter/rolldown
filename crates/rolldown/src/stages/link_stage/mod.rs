@@ -49,7 +49,7 @@ mod generate_lazy_export;
 mod patch_module_dependencies;
 mod plain_object_reads;
 pub use plain_object_reads::PlainObjectReads;
-pub(crate) use plain_object_reads::static_read_key;
+pub use plain_object_reads::static_read_key;
 mod reference_needed_symbols;
 mod refine_stmt_side_effects;
 mod sort_modules;

@@ -165,10 +165,8 @@ pub fn route_split_chunk_name(id: &str) -> Option<String> {
     &before_query[idx + "/routes/".len()..]
   } else if let Some(rest) = before_query.strip_prefix("src/routes/") {
     rest
-  } else if let Some(rest) = before_query.strip_prefix("routes/") {
-    rest
   } else {
-    return None;
+    before_query.strip_prefix("routes/")?
   };
   let route_file = route_rel
     .strip_suffix(".tsx")

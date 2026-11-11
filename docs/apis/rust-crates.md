@@ -51,6 +51,8 @@ No source synchronization script, independent compiler patch inventory, or regen
 
 These are unstable Rust APIs. `ReplaceGlobalDefines` and its configuration are exported for AST-based define replacement. Merging dotted children into an object define preserves prototype setters separately from computed or shorthand `__proto__` own properties, including nested objects. A dotted `__proto__` child creates an own property without replacing the prototype setter. Duplicate own properties retain their evaluation order, side effects, and exceptions; dotted children merge into the last matching own property without changing existing parent-versus-child conflict precedence. The fork follows the current Oxc allocator and AST APIs; older consumers must update together rather than mix AST families.
 
+Destructuring object-valued defines preserves initializer effects, exceptions, and accessor or inherited reads. Pruning removes only unused primitive values when every requested key is an own data property. Objects with accessors, methods, spreads, dynamic keys, or prototype setters remain intact.
+
 The experimental bundler API also exposes `has_native_cells`, `static_import_edges`, `last_standby`, `link_decisions_generation`, and `last_link_decisions_unchanged` for native-record and incremental-update coordination. Topology configuration includes `GroupNamingPolicy::ByConsumers { prefix }` and the `standalone_runtime_chunk` and `consumer_shared_chunk_names` fields. `Bundle::set_mangle_properties` accepts the current Oxc `ManglePropertiesOptions`; its global mapping implementation uses public Oxc APIs and does not require downstream-only option fields or constructors.
 
 ### Native runtime fixture

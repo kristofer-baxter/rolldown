@@ -555,6 +555,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       self.cache.mangle_properties_override = None;
     }
     if bundle_output.is_ok() {
+      static NEXT_LINK_DECISIONS_GENERATION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1);
       self.cache.inlined_commonjs_constants =
         Some(crate::stages::link_stage::inlined_commonjs_constants(&link_stage_output));
       self.cache.split_json_defaults =
@@ -566,8 +568,6 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         ));
       self.cache.commonjs_interop =
         Some(crate::stages::link_stage::commonjs_interop(&link_stage_output));
-      static NEXT_LINK_DECISIONS_GENERATION: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(1);
       self.cache.link_decisions_generation =
         NEXT_LINK_DECISIONS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -663,7 +663,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     }
 
     if let Err(errors) =
-      GenerateStage::validate_mangle_properties_output(&pre_emit_chunks, &output.assets)
+      GenerateStage::validate_mangle_properties_output(pre_emit_chunks.as_ref(), &output.assets)
     {
       self.cache.invalidate_native_relink();
       return Err(self.handle_render_error(errors).await);
@@ -999,6 +999,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       && self.cache.commonjs_evaluations.is_some()
       && self.cache.commonjs_interop.is_some();
     if !decisions_unchanged {
+      static NEXT_FAST_LINK_DECISIONS_GENERATION: std::sync::atomic::AtomicU64 =
+        std::sync::atomic::AtomicU64::new(1_000_000_000);
       self.cache.inlined_commonjs_constants = self
         .cache
         .cached_native_relink
@@ -1020,8 +1022,6 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         .cached_native_relink
         .as_ref()
         .map(|cached| crate::stages::link_stage::commonjs_interop(&cached.link_output));
-      static NEXT_FAST_LINK_DECISIONS_GENERATION: std::sync::atomic::AtomicU64 =
-        std::sync::atomic::AtomicU64::new(1_000_000_000);
       self.cache.link_decisions_generation =
         NEXT_FAST_LINK_DECISIONS_GENERATION.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
@@ -1053,7 +1053,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     }
 
     if let Err(errors) =
-      GenerateStage::validate_mangle_properties_output(&pre_emit_chunks, &output.assets)
+      GenerateStage::validate_mangle_properties_output(pre_emit_chunks.as_ref(), &output.assets)
     {
       self.cache.invalidate_native_relink();
       return Some(Err(self.handle_render_error(errors).await));
