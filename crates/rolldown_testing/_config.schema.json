@@ -988,6 +988,16 @@
             "null"
           ]
         },
+        "defineObjectDestructuring": {
+          "description": "Exact define keys synthesized from property-wise structured objects by an adapter.\n\nStatic destructuring may omit unrequested property expressions, including through one\ndirect `await`. This is a macro contract, not JavaScript expression substitution.\nWhole-object reads, rest patterns, and observed assignment results remain complete.\nDo not mark user-supplied JavaScript expression strings. Each key must have an explicit\nobject-valued define with unique static own data properties; invalid entries are errors.\nNested structured prefixes must be listed separately. Metadata is scoped to this build.",
+          "type": [
+            "array",
+            "null"
+          ],
+          "items": {
+            "type": "string"
+          }
+        },
         "resolveNewUrlToAsset": {
           "type": [
             "boolean",

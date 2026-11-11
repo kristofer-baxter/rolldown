@@ -70,6 +70,15 @@ impl ChunkOptimizationOption {
 )]
 pub struct ExperimentalOptions {
   pub vite_mode: Option<bool>,
+  /// Exact define keys synthesized from property-wise structured objects by an adapter.
+  ///
+  /// Static destructuring may omit unrequested property expressions, including through one
+  /// direct `await`. This is a macro contract, not JavaScript expression substitution.
+  /// Whole-object reads, rest patterns, and observed assignment results remain complete.
+  /// Do not mark user-supplied JavaScript expression strings. Each key must have an explicit
+  /// object-valued define with unique static own data properties; invalid entries are errors.
+  /// Nested structured prefixes must be listed separately. Metadata is scoped to this build.
+  pub define_object_destructuring: Option<Vec<String>>,
   pub resolve_new_url_to_asset: Option<bool>,
   pub incremental_build: Option<bool>,
   pub dev_mode: Option<DevModeOptions>,

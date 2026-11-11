@@ -573,6 +573,14 @@ export interface InputOptions {
      */
     resolveNewUrlToAsset?: boolean;
     /**
+     * Exact define keys synthesized from property-wise structured objects by an adapter.
+     * Static destructuring may omit unrequested property expressions, including through one
+     * direct await. Whole-object reads, rest patterns and observed assignment results stay complete.
+     * Do not mark JavaScript expression strings. Each key needs an explicit object-valued define
+     * with unique static own data properties. Nested structured prefixes need separate entries.
+     */
+    defineObjectDestructuring?: string[];
+    /**
      * Dev mode related options.
      * @hidden not ready for public usage yet
      */

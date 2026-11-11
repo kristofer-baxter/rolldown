@@ -122,6 +122,23 @@ A second frontend that produces `BundlerOptions` (the JSON test config) is the
 concrete proof that the convergence point is `BundlerOptions`, not the NAPI
 binding.
 
+### Adapter-owned structured object defines
+
+`experimental.defineObjectDestructuring` (`define_object_destructuring` in Rust)
+is an exact, build-local list of object definitions synthesized from an adapter's
+known property-wise structure. It follows the same JS → NAPI → raw → normalized
+pipeline. The module loader validates this metadata together with `define` when
+constructing `ReplaceGlobalDefinesConfig`; missing definitions and unsupported
+object shapes fail with invalid-define diagnostics. Ordinary expression defines
+never acquire this contract from their parsed shape.
+
+The transformer records the exact RHS node eligible for property selection, not
+an ambient traversal permission. Static destructuring may omit expressions only
+at that node, including through one direct `await`. Observed assignment results,
+whole-object reads, rest patterns and unrelated nested expressions retain their
+full objects. See [the Rust API contract](../../docs/apis/rust-crates.md#structured-defineplugin-objects)
+for the reference-tested context boundaries.
+
 ## Unresolved Questions
 
 - The intent doc comment on `NormalizedBundlerOptions` references

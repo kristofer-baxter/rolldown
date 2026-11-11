@@ -30,6 +30,8 @@ use tokio::{sync::Notify, task::JoinHandle};
 #[cfg(feature = "experimental")]
 mod bundled_hmr;
 
+mod structured_defines;
+
 struct Fixture(PathBuf);
 
 impl Fixture {

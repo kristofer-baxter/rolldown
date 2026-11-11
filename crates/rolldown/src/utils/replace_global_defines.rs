@@ -18,7 +18,7 @@ use oxc::syntax::node::NodeId;
 use oxc::syntax::reference::Reference;
 use oxc_allocator::{Address, Allocator, ArenaBox, GetAddress, ReplaceWith, UnstableAddress};
 use oxc_str::{CompactStr, Str};
-use rustc_hash::FxHashMap;
+use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::utils::native_cell_plan::is_primitive_literal;
 
@@ -36,6 +36,7 @@ struct IdentifierDefine {
 
 #[derive(Debug)]
 struct ReplaceGlobalDefinesConfigImpl {
+  structured_objects: Vec<DotDefine>,
   identifier: IdentifierDefine,
   dot: FxHashMap<CompactStr, Vec<DotDefine>>,
   meta_property: FxHashMap<CompactStr, Vec<MetaPropertyDefine>>,
@@ -293,7 +294,75 @@ impl ReplaceGlobalDefinesConfig {
   /// * value has a syntax error
   #[inline(never)]
   pub fn new<S: AsRef<str>>(defines: &[(S, S)]) -> Result<Self, Diagnostics> {
+    Self::new_with_object_destructuring(defines, &[])
+  }
+
+  /// Configure exact adapter-synthesized object defines eligible for property-wise destructuring.
+  ///
+  /// # Errors
+  /// Rejects invalid defines and metadata without a matching, explicit plain object definition.
+  pub fn new_with_object_destructuring<S: AsRef<str>>(
+    defines: &[(S, S)],
+    structured_keys: &[String],
+  ) -> Result<Self, Diagnostics> {
     let allocator = Allocator::default();
+    let mut structured_objects = Vec::with_capacity(structured_keys.len());
+    let mut seen = FxHashSet::default();
+    for key in structured_keys {
+      let invalid = || {
+        vec![OxcDiagnostic::error(format!(
+          "experimental.define_object_destructuring entry `{key}` must name a unique explicit \
+           object define with unique static own data properties."
+        ))]
+        .into()
+      };
+      if !seen.insert(key.as_str())
+        || key == "this"
+        || !matches!(
+          Self::check_key(key),
+          Ok(
+            IdentifierType::Identifier
+              | IdentifierType::DotDefines { .. }
+              | IdentifierType::ImportMeta(false)
+              | IdentifierType::ImportMetaWithParts { postfix_wildcard: false, .. }
+          )
+        )
+      {
+        return Err(invalid());
+      }
+      let Some((_, raw_value)) = defines.iter().find(|(candidate, _)| candidate.as_ref() == key)
+      else {
+        return Err(invalid());
+      };
+      let merged = merge_dotted_keys_into_object(&allocator, key, raw_value.as_ref(), defines);
+      let value = merged.as_deref().unwrap_or_else(|| raw_value.as_ref());
+      let expression = Parser::new(&allocator, value, SourceType::default()).parse_expression()?;
+      let Expression::ObjectExpression(object) = expression.without_parentheses() else {
+        return Err(invalid());
+      };
+      let mut property_names = FxHashSet::default();
+      for property in &object.properties {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+          return Err(invalid());
+        };
+        let Some(name) =
+          ReplaceGlobalDefines::static_property_key_name(&property.key, property.computed)
+        else {
+          return Err(invalid());
+        };
+        if property.kind != PropertyKind::Init
+          || property.method
+          || (name == "__proto__" && !property.computed && !property.shorthand)
+          || !property_names.insert(name)
+        {
+          return Err(invalid());
+        }
+      }
+      structured_objects.push(DotDefine::new(
+        key.split('.').map(CompactStr::new).collect(),
+        CompactStr::new(value),
+      ));
+    }
     let mut identifier_defines: FxHashMap<CompactStr, CompactStr> = FxHashMap::default();
     let mut dot_defines: FxHashMap<CompactStr, Vec<DotDefine>> = FxHashMap::default();
     let mut typeof_defines = vec![];
@@ -398,6 +467,7 @@ impl ReplaceGlobalDefinesConfig {
     }
 
     Ok(Self(Arc::new(ReplaceGlobalDefinesConfigImpl {
+      structured_objects,
       identifier: IdentifierDefine { identifier_defines, has_this_expr_define },
       dot: dot_defines,
       meta_property,
@@ -492,6 +562,12 @@ pub struct ReplaceGlobalDefines<'a> {
   non_arrow_function_depth: u32,
   class_this_depth: u32,
   destructuring_keys: Option<Vec<CompactStr>>,
+  structured_destructuring: Option<StructuredDestructuring>,
+}
+
+struct StructuredDestructuring {
+  target: Address,
+  keys: Vec<CompactStr>,
 }
 
 /// `{ __proto__ }` defines an own property, unlike `{ __proto__: value }`.
@@ -537,6 +613,7 @@ impl<'a> VisitJsMut<'a> for ReplaceGlobalDefines<'a> {
     };
     self.visit_expression(&mut stmt.expression);
     self.destructuring_keys = None;
+    self.structured_destructuring = None;
   }
 
   fn visit_object_property(&mut self, prop: &mut ObjectProperty<'a>) {
@@ -567,6 +644,7 @@ impl<'a> VisitJsMut<'a> for ReplaceGlobalDefines<'a> {
     self.prepare_assignment_destructuring(&node.left, &node.right, outer_keys);
     self.visit_expression(&mut node.right);
     self.destructuring_keys = None;
+    self.structured_destructuring = None;
   }
 
   fn visit_function(&mut self, func: &mut Function<'a>, flags: ScopeFlags) {
@@ -606,11 +684,13 @@ impl<'a> VisitJsMut<'a> for ReplaceGlobalDefines<'a> {
       return;
     }
     self.destructuring_keys = None;
+    self.structured_destructuring = None;
     self.visit_binding_pattern(&mut declarator.id);
     if let Some(init) = &mut declarator.init {
       self.prepare_declarator_destructuring(&declarator.id, init);
       self.visit_expression(init);
       self.destructuring_keys = None;
+      self.structured_destructuring = None;
     }
   }
 }
@@ -626,6 +706,7 @@ impl<'a> ReplaceGlobalDefines<'a> {
       non_arrow_function_depth: 0,
       class_this_depth: 0,
       destructuring_keys: None,
+      structured_destructuring: None,
     }
   }
 
@@ -640,8 +721,8 @@ impl<'a> ReplaceGlobalDefines<'a> {
         }
         _ => false,
       };
-    let is_replaced = (!self.config.0.typeof_defines.is_empty()
-      && self.replace_typeof_defines(expr))
+    let is_replaced = self.replace_structured_destructuring(expr)
+      || (!self.config.0.typeof_defines.is_empty() && self.replace_typeof_defines(expr))
       || self.replace_identifier_defines(expr)
       || self.replace_dot_defines(expr)
       || (has_destructuring && self.replace_destructuring_prefix_defines(expr));
@@ -703,9 +784,11 @@ impl<'a> ReplaceGlobalDefines<'a> {
     right: &Expression<'a>,
     outer_keys: Option<Vec<CompactStr>>,
   ) {
+    self.structured_destructuring = None;
+    let structured_target = self.structured_rhs_target(right);
     if let Some(outer) = outer_keys
       && let AssignmentTarget::ObjectAssignmentTarget(pat) = left
-      && self.can_destructure_rhs(right)
+      && (self.can_destructure_rhs(right) || structured_target.is_some())
     {
       if let Some(mut keys) = Self::collect_object_assignment_keys(pat) {
         for k in outer {
@@ -713,6 +796,8 @@ impl<'a> ReplaceGlobalDefines<'a> {
             keys.push(k);
           }
         }
+        self.structured_destructuring =
+          structured_target.map(|target| StructuredDestructuring { target, keys: keys.clone() });
         self.destructuring_keys = Some(keys);
       } else {
         self.destructuring_keys = None;
@@ -724,13 +809,79 @@ impl<'a> ReplaceGlobalDefines<'a> {
 
   #[inline(never)]
   fn prepare_declarator_destructuring(&mut self, id: &BindingPattern<'a>, init: &Expression<'a>) {
+    self.structured_destructuring = None;
+    let structured_target = self.structured_rhs_target(init);
     if let BindingPattern::ObjectPattern(pat) = id
-      && self.can_destructure_rhs(init)
+      && (self.can_destructure_rhs(init) || structured_target.is_some())
     {
       self.destructuring_keys = Self::collect_object_pattern_keys(pat);
+      if let Some(keys) = &self.destructuring_keys {
+        self.structured_destructuring =
+          structured_target.map(|target| StructuredDestructuring { target, keys: keys.clone() });
+      }
     } else {
       self.destructuring_keys = None;
     }
+  }
+
+  fn structured_object_value(&self, expr: &Expression<'a>) -> Option<&str> {
+    self.config.0.structured_objects.iter().find_map(|define| {
+      let matches = match expr {
+        Expression::Identifier(identifier) => {
+          define.parts.len() == 1
+            && define.parts[0] == identifier.name
+            && Self::is_global_or_ambient_reference(self.scoping(), identifier)
+        }
+        Expression::StaticMemberExpression(member) if define.parts.len() > 1 => {
+          Self::is_dot_define_parts(
+            self.scoping(),
+            self.current_scope_flags(),
+            &define.parts,
+            DotDefineMemberExpression::StaticMemberExpression(member),
+          )
+        }
+        Expression::ComputedMemberExpression(member) if define.parts.len() > 1 => {
+          Self::is_dot_define_parts(
+            self.scoping(),
+            self.current_scope_flags(),
+            &define.parts,
+            DotDefineMemberExpression::ComputedMemberExpression(member),
+          )
+        }
+        Expression::ImportMeta(_) => {
+          define.parts.len() == 2 && define.parts[0] == "import" && define.parts[1] == "meta"
+        }
+        _ => false,
+      };
+      matches.then_some(define.value.as_str())
+    })
+  }
+
+  fn structured_rhs_target(&self, expr: &Expression<'a>) -> Option<Address> {
+    if self.config.0.structured_objects.is_empty() {
+      return None;
+    }
+    let mut target = expr.without_parentheses();
+    // DefinePlugin propagates a pattern through one direct await, not calls, sequences,
+    // conditionals, a second await, or an observed assignment result.
+    if let Expression::AwaitExpression(awaited) = target {
+      target = awaited.argument.without_parentheses();
+    }
+    self.structured_object_value(target).map(|_| target.address())
+  }
+
+  fn replace_structured_destructuring(&mut self, expr: &mut Expression<'a>) -> bool {
+    if self.structured_destructuring.as_ref().is_none_or(|plan| plan.target != expr.address()) {
+      return false;
+    }
+    let Some(plan) = self.structured_destructuring.take() else {
+      return false;
+    };
+    let Some(value) = self.structured_object_value(expr).map(str::to_owned) else {
+      return false;
+    };
+    *expr = self.parse_value_with_selection(&value, Some(&plan.keys));
+    true
   }
 
   fn collect_object_pattern_keys(pat: &ObjectPattern<'a>) -> Option<Vec<CompactStr>> {
@@ -807,9 +958,31 @@ impl<'a> ReplaceGlobalDefines<'a> {
   }
 
   fn parse_value(&mut self, source_text: &str) -> Expression<'a> {
+    self.parse_value_with_selection(source_text, None)
+  }
+
+  fn parse_value_with_selection(
+    &mut self,
+    source_text: &str,
+    selected_keys: Option<&[CompactStr]>,
+  ) -> Expression<'a> {
     let source_text = self.allocator.alloc_str(source_text);
     let mut expr =
       Parser::new(self.allocator, source_text, SourceType::default()).parse_expression().unwrap();
+
+    if let Some(keys) = selected_keys
+      && let Expression::ObjectExpression(object) = expr.without_parentheses_mut()
+    {
+      // Only validated, explicitly marked objects enter this path. Remove values before
+      // registering references so omitted expressions leave no semantic state behind.
+      object.properties.retain(|property| match property {
+        ObjectPropertyKind::ObjectProperty(property) => {
+          Self::static_property_key_name(&property.key, property.computed)
+            .is_some_and(|key| keys.contains(&key))
+        }
+        ObjectPropertyKind::SpreadProperty(_) => true,
+      });
+    }
 
     let scoping = self.scoping.as_mut().unwrap();
     UpdateReplacedExpression { scoping }.visit_expression(&mut expr);
@@ -1098,10 +1271,26 @@ impl<'a> ReplaceGlobalDefines<'a> {
     member: &ComputedMemberExpression<'a>,
   ) -> Option<Expression<'a>> {
     let leaf = static_property_name_of_computed_expr(member)?;
-    let value = self.find_dot_define_value(
-      leaf.as_str(),
-      DotDefineMemberExpression::ComputedMemberExpression(member),
-    )?;
+    let value = self
+      .find_dot_define_value(
+        leaf.as_str(),
+        DotDefineMemberExpression::ComputedMemberExpression(member),
+      )
+      .or_else(|| {
+        self.config.0.meta_property.get(leaf.as_str())?.iter().find_map(|define| {
+          let parts = [CompactStr::new("import"), CompactStr::new("meta")]
+            .into_iter()
+            .chain(define.parts.iter().cloned())
+            .collect::<Vec<_>>();
+          Self::is_dot_define_parts(
+            self.scoping(),
+            self.current_scope_flags(),
+            &parts,
+            DotDefineMemberExpression::ComputedMemberExpression(member),
+          )
+          .then(|| define.value.clone())
+        })
+      })?;
     Some(self.parse_value(&value))
   }
 

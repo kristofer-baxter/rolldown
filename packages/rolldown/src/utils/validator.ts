@@ -680,6 +680,7 @@ const InputOptionsSchema = v.strictObject({
     v.strictObject({
       viteMode: v.optional(v.boolean()),
       resolveNewUrlToAsset: v.optional(v.boolean()),
+      defineObjectDestructuring: v.optional(v.array(v.string())),
       devMode: v.optional(DevModeSchema),
       chunkModulesOrder: v.optional(v.union([v.literal('module-id'), v.literal('exec-order')])),
       attachDebugInfo: v.optional(

@@ -4,6 +4,7 @@ use napi::bindgen_prelude::Either;
 #[derive(Debug, Default)]
 pub struct BindingExperimentalOptions {
   pub vite_mode: Option<bool>,
+  pub define_object_destructuring: Option<Vec<String>>,
   pub resolve_new_url_to_asset: Option<bool>,
   pub dev_mode: Option<BindingExperimentalDevModeOptions>,
   pub attach_debug_info: Option<BindingAttachDebugInfo>,
@@ -22,6 +23,7 @@ impl TryFrom<BindingExperimentalOptions> for rolldown_common::ExperimentalOption
   fn try_from(value: BindingExperimentalOptions) -> Result<Self, Self::Error> {
     Ok(Self {
       vite_mode: value.vite_mode,
+      define_object_destructuring: value.define_object_destructuring,
       resolve_new_url_to_asset: value.resolve_new_url_to_asset,
       incremental_build: value.incremental_build,
       dev_mode: value.dev_mode.map(Into::into),
