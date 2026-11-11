@@ -227,6 +227,7 @@ impl LinkStage<'_> {
                 symbols: &self.symbols,
                 stmt_infos: &self.stmt_infos,
                 constants: constant_symbol_map,
+                plain_objects: &FxHashMap::default(),
               };
               lookup.is_initialized(canonical_ref).then_some(value)
             }),
@@ -449,6 +450,8 @@ impl<'a, 'ast: 'a> VisitJs<'ast> for CrossModuleOptimizationRunnerContext<'a, 'a
           symbols: self.immutable_ctx.symbols,
           stmt_infos: self.immutable_ctx.stmt_infos,
           constants: self.immutable_ctx.constant_symbol_map,
+          // Collected after this pass.
+          plain_objects: &FxHashMap::default(),
         };
         let stmt_eval_facts = StmtEvalAnalyzer::new(
           self.immutable_ctx.ast_scope,

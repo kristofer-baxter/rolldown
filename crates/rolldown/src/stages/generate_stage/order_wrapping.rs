@@ -956,6 +956,23 @@ impl GenerateStage<'_> {
     }
   }
 
+  /// The build's only root: the single module that a user-defined or emitted entry names. Every
+  /// other chunk is reachable only through a dynamic import that this root's program runs.
+  /// Preserved modules are each a public output that a consumer can import on its own, so a build
+  /// that preserves them has no sole root.
+  pub(super) fn sole_root_entry(&self) -> Option<ModuleIdx> {
+    if self.options.preserve_modules {
+      return None;
+    }
+    let mut roots = self
+      .link_output
+      .entries
+      .iter()
+      .filter(|(_, entries)| entries.iter().any(|entry| !entry.kind.is_dynamic_import()));
+    let (&root, _) = roots.next()?;
+    roots.next().is_none().then_some(root)
+  }
+
   /// Entries whose inline `init_E()` trigger might have to move into a facade — an order-wrapped
   /// entry, or an interop-wrapped one, whether or not anything imports it.
   ///
@@ -1056,9 +1073,20 @@ impl GenerateStage<'_> {
     // candidate sources are gated by it. It used to be asked only of interop entries, and only in
     // on-demand mode; an order-wrapped entry always split, which cost one extra chunk per entry
     // (including every dynamic entry) even when nothing but the entry itself could load the chunk.
+    //
+    // A build with a single root (one user-defined or emitted entry) loads every other chunk
+    // through that root's program. Without top-level await the root's chunk finishes evaluating
+    // synchronously, so any later load that imports it finds it already evaluated and its trigger
+    // already run. A facade would only add a synchronous hop to the boot path.
+    let sole_root = self.sole_root_entry();
     let mut entries_to_split = facade_candidates
       .into_iter()
       .filter(|entry_module_idx| {
+        if sole_root == Some(*entry_module_idx)
+          && !self.link_output.metas[*entry_module_idx].is_tla_or_contains_tla_dependency
+        {
+          return false;
+        }
         chunk_graph.entry_module_to_entry_chunk.get(entry_module_idx).is_some_and(
           |entry_chunk_idx| {
             imported_chunks.contains(entry_chunk_idx)
@@ -1493,15 +1521,11 @@ impl GenerateStage<'_> {
         runtime_chunk_idx,
         runtime_idx,
       );
-      let mut new_runtime_chunk = Chunk::new(
-        Some("rolldown-runtime".into()),
-        None,
-        bits,
-        vec![],
-        ChunkKind::Common,
-        input_base,
-        None,
-      );
+      let standalone_rt_name = crate::utils::topology_config::get(self.options)
+        .and_then(|cfg| cfg.standalone_runtime_chunk.clone());
+      let rt_chunk_name = standalone_rt_name.as_deref().unwrap_or("rolldown-runtime").into();
+      let mut new_runtime_chunk =
+        Chunk::new(Some(rt_chunk_name), None, bits, vec![], ChunkKind::Common, input_base, None);
       let runtime_chunk_bits = new_runtime_chunk.bits.clone();
       new_runtime_chunk.add_creation_reason(
         ChunkCreationReason::CommonChunk {
@@ -1532,7 +1556,11 @@ impl GenerateStage<'_> {
       return false;
     };
 
-    if self.options.code_splitting.is_disabled() || live_chunk_indices.len() == 1 {
+    let standalone_rt_name = crate::utils::topology_config::get(self.options)
+      .and_then(|cfg| cfg.standalone_runtime_chunk.clone());
+    if self.options.code_splitting.is_disabled()
+      || (live_chunk_indices.len() == 1 && standalone_rt_name.is_none())
+    {
       let chunk = &mut chunk_graph.chunk_table[first_chunk_idx];
       chunk.modules.insert(0, runtime_idx);
       chunk_graph.module_to_chunk[runtime_idx] = Some(first_chunk_idx);
@@ -1546,15 +1574,9 @@ impl GenerateStage<'_> {
     }
 
     let input_base = chunk_graph.chunk_table[first_chunk_idx].input_base.clone();
-    let mut runtime_chunk = Chunk::new(
-      Some("rolldown-runtime".into()),
-      None,
-      bits,
-      vec![],
-      ChunkKind::Common,
-      input_base,
-      None,
-    );
+    let rt_chunk_name = standalone_rt_name.as_deref().unwrap_or("rolldown-runtime").into();
+    let mut runtime_chunk =
+      Chunk::new(Some(rt_chunk_name), None, bits, vec![], ChunkKind::Common, input_base, None);
     let runtime_chunk_bits = runtime_chunk.bits.clone();
     runtime_chunk.add_creation_reason(
       ChunkCreationReason::CommonChunk { bits: &runtime_chunk_bits, link_output: self.link_output },
@@ -1586,7 +1608,10 @@ impl GenerateStage<'_> {
     order_state: &OrderWrapState,
     used_symbol_refs_builder: &UsedSymbolRefsBuilder,
   ) {
-    if !matches!(self.options.format, OutputFormat::Esm) {
+    if !matches!(self.options.format, OutputFormat::Esm)
+      || crate::utils::topology_config::get(self.options)
+        .is_some_and(|cfg| cfg.standalone_runtime_chunk.is_some())
+    {
       return;
     }
     let order_consumers = order_state.runtime_helper_consumer_chunks(&chunk_graph.module_to_chunk);
@@ -1594,6 +1619,30 @@ impl GenerateStage<'_> {
       chunk_graph,
       Some(&order_consumers),
       RuntimeMergeCascade::SingleConsumerOnly,
+      used_symbol_refs_builder,
+    );
+    let runtime_idx = self.link_output.runtime.id();
+    let Some(root) = self
+      .sole_root_entry()
+      .filter(|root| !self.link_output.metas[*root].is_tla_or_contains_tla_dependency)
+    else {
+      return;
+    };
+    let Some(&root_chunk_idx) = chunk_graph.entry_module_to_entry_chunk.get(&root) else {
+      return;
+    };
+    // Only a root chunk that hosts the root's own program, not a facade of another chunk, runs
+    // first on every load.
+    if chunk_graph.module_to_chunk[runtime_idx] == Some(root_chunk_idx)
+      || !chunk_graph.chunk_is_live(root_chunk_idx)
+      || !chunk_graph.chunk_table[root_chunk_idx].modules.contains(&root)
+    {
+      return;
+    }
+    self.try_merge_runtime_chunk(
+      chunk_graph,
+      Some(&order_consumers),
+      RuntimeMergeCascade::SoleRootEntry(root_chunk_idx),
       used_symbol_refs_builder,
     );
   }

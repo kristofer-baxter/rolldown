@@ -130,6 +130,8 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
     ast.program.with_mut(move |fields| {
       let (oxc_program, alloc) = (fields.program, fields.allocator);
 
+      prune_object_properties(oxc_program, &self.linking_info.pruned_object_properties);
+
       let module_namespace_included = self.linking_info.namespace_included;
 
       let need_inline_json_prop = self.linking_info.inlines_json_keys(self.module);
@@ -228,5 +230,52 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
 
       (finalizer.transferred_import_record, diagnostics)
     })
+  }
+}
+
+/// Drops the properties that `plain_object_reads` found unread from the module's top-level
+/// `const` object literals.
+fn prune_object_properties(
+  program: &mut oxc::ast::ast::Program<'_>,
+  pruned: &FxHashMap<oxc::semantic::SymbolId, FxHashSet<oxc_str::CompactStr>>,
+) {
+  use oxc::ast::ast::{
+    BindingPattern, Declaration, Expression, ObjectPropertyKind, PropertyKey, Statement,
+  };
+
+  if pruned.is_empty() {
+    return;
+  }
+  for stmt in &mut program.body {
+    let declaration = match stmt {
+      Statement::VariableDeclaration(declaration) => declaration,
+      Statement::ExportDeclaration(export) => match &mut export.declaration {
+        Declaration::VariableDeclaration(declaration) => declaration,
+        _ => continue,
+      },
+      _ => continue,
+    };
+    for declarator in &mut declaration.declarations {
+      let BindingPattern::BindingIdentifier(id) = &declarator.id else {
+        continue;
+      };
+      let Some(keys) = id.symbol_id.get().and_then(|symbol_id| pruned.get(&symbol_id)) else {
+        continue;
+      };
+      let Some(Expression::ObjectExpression(object)) = &mut declarator.init else {
+        continue;
+      };
+      object.properties.retain(|property| {
+        let ObjectPropertyKind::ObjectProperty(property) = property else {
+          return true;
+        };
+        let name = match &property.key {
+          PropertyKey::StaticIdentifier(name) => Some(name.name.as_str()),
+          PropertyKey::StringLiteral(literal) => literal.value.as_str(),
+          _ => None,
+        };
+        name.is_none_or(|name| !keys.contains(name))
+      });
+    }
   }
 }

@@ -612,12 +612,31 @@ impl ManualSplitter<'_> {
     };
 
     let chunk_name = if entries_aware {
-      derive_entries_aware_chunk_name(
-        &group.name,
-        chunk_bits,
-        &self.flattened_entries,
-        self.link_output,
-      )
+      let use_consumers = self.topology_config.as_ref().is_some_and(|cfg| {
+        cfg.consumer_shared_chunk_names
+          || cfg.group_rules.get(group.match_group_index).is_some_and(|rule| {
+            matches!(
+              rule.naming,
+              Some(crate::utils::topology_config::GroupNamingPolicy::ByConsumers { .. })
+            )
+          })
+      });
+      if use_consumers {
+        derive_consumer_shared_chunk_name(
+          &group.name,
+          chunk_bits,
+          &self.flattened_entries,
+          &self.link_output.module_table.modules,
+        )
+        .unwrap_or_else(|| group.name.clone())
+      } else {
+        derive_entries_aware_chunk_name(
+          &group.name,
+          chunk_bits,
+          &self.flattened_entries,
+          self.link_output,
+        )
+      }
     } else {
       group.name.clone()
     };
@@ -1174,6 +1193,7 @@ fn resolve_group_naming(
       };
       Some(format!("{prefix}-{bucket}"))
     }
+    GroupNamingPolicy::ByConsumers { prefix } => Some(prefix.clone()),
   }
 }
 
@@ -1335,6 +1355,37 @@ pub fn pick_relevance_split_index_with_target(
   let left_size = prefix_sizes[split_index];
   let right_size = total_size - left_size;
   Some((split_index, left_size, right_size))
+}
+
+pub(super) fn derive_consumer_shared_chunk_name(
+  group_name: &str,
+  bits: &BitSet,
+  flattened_entries: &[&EntryPoint],
+  modules: &rolldown_common::IndexModules,
+) -> Option<ArcStr> {
+  let labels: Vec<String> = bits
+    .index_of_one()
+    .filter_map(|index| {
+      let idx = index as usize;
+      let entry_point = *flattened_entries.get(idx)?;
+      if let Some(name) = &entry_point.name {
+        return Some(name.to_string());
+      }
+      let module = &modules[entry_point.idx];
+      if let Some(route_name) =
+        crate::utils::topology_config::route_split_chunk_name(module.id().as_str())
+      {
+        return Some(route_name);
+      }
+      Path::new(module.stable_id().as_str())
+        .file_stem()
+        .and_then(|s| s.to_str())
+        .map(sanitize_chunk_segment)
+        .filter(|s| !s.is_empty())
+    })
+    .collect();
+  crate::utils::topology_config::format_consumer_shared_chunk_name(group_name, labels)
+    .map(ArcStr::from)
 }
 
 fn derive_entries_aware_chunk_name(

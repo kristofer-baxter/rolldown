@@ -9,7 +9,7 @@ use rolldown_common::{
   InstantiatedChunk, InstantiationKind, MinifyOptions, NormalizedBundlerOptions, Output,
 };
 use rolldown_ecmascript::EcmaCompiler;
-use rolldown_error::{BuildDiagnostic, BuildResult, InvalidOptionType};
+use rolldown_error::BuildResult;
 use rolldown_sourcemap::collapse_sourcemaps;
 use rolldown_utils::rayon::{IntoParallelRefMutIterator, ParallelIterator};
 use rustc_hash::FxHashSet;
@@ -17,6 +17,9 @@ use rustc_hash::FxHashSet;
 use crate::type_alias::IndexInstantiatedChunks;
 
 use super::GenerateStage;
+
+type ChunkMinifyResult =
+  Option<(rolldown_common::ChunkIdx, [u8; 32], Vec<String>, arcstr::ArcStr, bool)>;
 
 impl GenerateStage<'_> {
   #[tracing::instrument(level = "debug", skip_all)]
@@ -26,19 +29,20 @@ impl GenerateStage<'_> {
     skip_sourcemap_chunks: &FxHashSet<rolldown_common::ChunkIdx>,
   ) -> BuildResult<Option<BTreeMap<String, Option<String>>>> {
     let options = self.options;
-    let Some((compress, minify_options, remove_whitespace, ascii_only)) =
+    let Some((compress, base_minify_options, remove_whitespace, ascii_only)) =
       chunk_minify_options(&options.minify)
     else {
       return Ok(None);
     };
-    if minify_options.mangle_properties.is_some()
-      && chunks.iter().filter(|chunk| is_minifiable_ecma_chunk(chunk)).take(2).count() > 1
-    {
-      return Err(
-        BuildDiagnostic::invalid_option(InvalidOptionType::ManglePropertiesWithMultipleChunks)
-          .into(),
-      );
-    }
+    let minify_options = OxcMinifierOptions {
+      mangle: base_minify_options.mangle.clone(),
+      compress: base_minify_options.compress.clone(),
+      mangle_properties: self
+        .cache
+        .as_ref()
+        .and_then(|c| c.mangle_properties_override.clone())
+        .or_else(|| base_minify_options.mangle_properties.clone()),
+    };
     let allocator_pool = AllocatorPool::new(rayon::current_num_threads());
     let source_type = options.format.source_type().with_jsx(true);
     let eval_modules = self
@@ -51,6 +55,15 @@ impl GenerateStage<'_> {
       .collect::<FxHashSet<_>>();
 
     let property_mangle_cache = OnceLock::new();
+    let cache_ref = self.cache.as_deref();
+    let shared_mangle_properties = collect_shared_mangle_properties(
+      chunks,
+      minify_options.mangle_properties.as_ref(),
+      source_type,
+    )?;
+    if let Some(shared_opts) = &shared_mangle_properties {
+      let _ = property_mangle_cache.set(shared_opts.cache.clone());
+    }
     let deferred_modules = self
       .link_output
       .module_table
@@ -60,12 +73,9 @@ impl GenerateStage<'_> {
       .map(|module| module.id.as_str())
       .collect::<FxHashSet<_>>();
     let can_cache_minify = minify_options.mangle_properties.is_none();
-    let cache_ref = self.cache.as_deref();
-    type MinifyResultItem =
-      Option<(rolldown_common::ChunkIdx, [u8; 32], Vec<String>, arcstr::ArcStr, bool)>;
-    let minify_results: Vec<MinifyResultItem> = chunks
+    let minify_results: Vec<ChunkMinifyResult> = chunks
       .par_iter_mut()
-      .map(|chunk| -> BuildResult<MinifyResultItem> {
+      .map(|chunk| -> BuildResult<ChunkMinifyResult> {
         if !is_minifiable_ecma_chunk(chunk) {
           return Ok(None);
         }
@@ -128,6 +138,9 @@ impl GenerateStage<'_> {
           None
         };
         let mut minify_options = minify_options.clone();
+        if let Some(shared_mangle_props) = &shared_mangle_properties {
+          minify_options.mangle_properties = Some(shared_mangle_props.clone());
+        }
         if let InstantiationKind::Ecma(meta) = &chunk.kind
           && meta.rendered_chunk.module_ids.iter().any(|id| eval_modules.contains(id.as_str()))
         {
@@ -177,9 +190,7 @@ impl GenerateStage<'_> {
               codegen_options,
             )?;
           if let Some(cache) = chunk_property_mangle_cache {
-            property_mangle_cache
-              .set(cache)
-              .expect("property mangling is limited to one JavaScript chunk");
+            let _ = property_mangle_cache.set(cache);
           }
           let collapsed_map = match (&chunk.map, &new_map) {
             (Some(origin_map), Some(new_map)) => Some(collapse_sourcemaps(&[origin_map, new_map])),
@@ -216,33 +227,126 @@ impl GenerateStage<'_> {
     }))
   }
 
-  /// Checks the final output after `generateBundle`.
-  ///
-  /// Plugins can emit prebuilt chunks after `minify_chunks`, so the early check alone is not
-  /// enough.
-  pub(crate) fn validate_mangle_properties_output(
+  /// Captures code identity before hooks, only when shared property mangling requires it.
+  pub(crate) fn snapshot_mangled_chunks(
     options: &NormalizedBundlerOptions,
+    has_mangle_override: bool,
+    outputs: &[Output],
+  ) -> Option<FxHashSet<String>> {
+    let mangle_active = has_mangle_override
+      || chunk_minify_options(&options.minify)
+        .is_some_and(|(_, minify_options, _, _)| minify_options.mangle_properties.is_some());
+    mangle_active.then(|| {
+      outputs
+        .iter()
+        .filter_map(|output| match output {
+          Output::Chunk(chunk) => Some(chunk.code.clone()),
+          Output::Asset(_) => None,
+        })
+        .collect()
+    })
+  }
+
+  /// Rejects JavaScript code that bypassed the shared property map, regardless of filename.
+  pub(crate) fn validate_mangle_properties_output(
+    minified_chunks: Option<&FxHashSet<String>>,
     outputs: &[Output],
   ) -> BuildResult<()> {
-    let Some((_, minify_options, _, _)) = chunk_minify_options(&options.minify) else {
-      return Ok(());
-    };
-    if minify_options.mangle_properties.is_some()
-      && outputs
-        .iter()
-        .filter(|output| {
-          matches!(output, Output::Chunk(chunk) if !test_d_ts_pattern(chunk.filename.as_str()))
-        })
-        .take(2)
-        .count()
-        > 1
+    if let Some(minified_chunks) = minified_chunks
+      && let Some(changed) = outputs.iter().find_map(|output| {
+        let Output::Chunk(chunk) = output else { return None };
+        (!test_d_ts_pattern(chunk.filename.as_str()) && !minified_chunks.contains(&chunk.code))
+          .then_some(&chunk.filename)
+      })
     {
       return Err(
-        BuildDiagnostic::invalid_option(InvalidOptionType::ManglePropertiesWithMultipleChunks)
-          .into(),
+        rolldown_error::BuildDiagnostic::invalid_option(
+          rolldown_error::InvalidOptionType::ManglePropertiesWithLateChunkChanges(
+            changed.to_string(),
+          ),
+        )
+        .into(),
       );
     }
     Ok(())
+  }
+}
+
+fn collect_shared_mangle_properties(
+  chunks: &IndexInstantiatedChunks,
+  mangle_properties: Option<&oxc::minifier::ManglePropertiesOptions>,
+  source_type: oxc::span::SourceType,
+) -> BuildResult<Option<oxc::minifier::ManglePropertiesOptions>> {
+  let Some(mangle_properties) = mangle_properties else {
+    return Ok(None);
+  };
+  let prop_allocator = oxc::allocator::Allocator::default();
+  let mut mangle_props = mangle_properties.clone();
+  let mut programs = Vec::new();
+  for chunk in chunks.iter().filter(|chunk| is_minifiable_ecma_chunk(chunk)) {
+    let pre_str = chunk.content.try_as_inner_str()?;
+    let parsed = oxc::parser::Parser::new(&prop_allocator, pre_str, source_type)
+      .with_options(oxc::parser::ParseOptions {
+        preserve_parens: false,
+        ..oxc::parser::ParseOptions::default()
+      })
+      .parse();
+    if parsed.fatal_error || !parsed.diagnostics.is_empty() {
+      return Err(
+        anyhow::anyhow!(
+          "failed to parse chunk {} for shared property mangling",
+          chunk.preliminary_filename.as_str()
+        )
+        .into(),
+      );
+    }
+    if !mangle_props.mangle_quoted {
+      use oxc::ast_visit::Visit;
+      QuotedPropertyReservations(&mut mangle_props.reserved).visit_program(&parsed.program);
+    }
+    programs.push(parsed.program);
+  }
+  let mut prop_mangler =
+    oxc::minifier::PropertyMangler::new_in(mangle_props.clone(), &prop_allocator);
+  for program in &programs {
+    prop_mangler.collect(program);
+  }
+  let mut accepted_names: Vec<String> =
+    prop_mangler.assign().keys().map(|key| regex::escape(key.as_str())).collect();
+  accepted_names.sort_unstable();
+  let shared_cache = prop_mangler.into_cache();
+  // Freeze global eligibility so an occupied name cannot become a new local candidate.
+  let pattern = if accepted_names.is_empty() {
+    r"\b\B".to_string()
+  } else {
+    format!("^(?:{})$", accepted_names.join("|"))
+  };
+  mangle_props.include = oxc::minifier::ManglePropertiesOptions::from_pattern(&pattern)
+    .map_err(anyhow::Error::msg)?
+    .include;
+  mangle_props.cache = shared_cache;
+  Ok(Some(mangle_props))
+}
+
+/// Oxc's occupied-name set protects generated targets, not source names. A string that is
+/// deliberately not rewritten must also reserve its original spelling across all chunks.
+struct QuotedPropertyReservations<'a>(&'a mut FxHashSet<oxc::str::CompactStr>);
+
+impl<'ast> oxc::ast_visit::Visit<'ast> for QuotedPropertyReservations<'_> {
+  fn visit_string_literal(&mut self, literal: &oxc::ast::ast::StringLiteral<'ast>) {
+    if let Some(value) = literal.value.as_str() {
+      self.0.insert(value.into());
+    }
+  }
+
+  fn visit_template_literal(&mut self, literal: &oxc::ast::ast::TemplateLiteral<'ast>) {
+    if literal.expressions.is_empty()
+      && let [quasi] = literal.quasis.as_slice()
+      && let Some(value) = quasi.value.cooked.and_then(oxc_str::JSStr::as_str)
+    {
+      self.0.insert(value.into());
+    }
+    oxc::ast_visit::walk::walk_template_literal(self, literal);
   }
 }
 

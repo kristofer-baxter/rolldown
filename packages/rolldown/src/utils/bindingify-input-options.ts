@@ -196,6 +196,7 @@ function bindingifyExperimental(
   return {
     viteMode: experimental?.viteMode,
     resolveNewUrlToAsset: experimental?.resolveNewUrlToAsset,
+    defineObjectDestructuring: experimental?.defineObjectDestructuring,
     devMode: bindingifyDevMode(experimental?.devMode),
     attachDebugInfo: bindingifyAttachDebugInfo(experimental?.attachDebugInfo),
     chunkModulesOrder,

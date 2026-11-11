@@ -231,19 +231,30 @@ mod tests {
 
   #[test]
   fn object_all_true_equals_bool_true() {
-    let options = NormalizedBundlerOptions::default();
+    for keep_names in [false, true] {
+      let options = NormalizedBundlerOptions { keep_names, ..Default::default() };
 
-    let from_bool = RawMinifyOptions::Bool(true).normalize(&options);
-    let from_object = RawMinifyOptions::Object(RawMinifyOptionsDetailed {
-      mangle: Some(RawMangleOptions::default()),
-      mangle_properties: None,
-      compress: Some(RawCompressOptions::default()),
-      remove_whitespace: true,
-      ascii_only: false,
-    })
-    .normalize(&options);
+      let from_bool = RawMinifyOptions::Bool(true).normalize(&options);
+      let from_object = RawMinifyOptions::Object(RawMinifyOptionsDetailed {
+        mangle: Some(RawMangleOptions::default()),
+        mangle_properties: None,
+        compress: Some(RawCompressOptions::default()),
+        remove_whitespace: true,
+        ascii_only: false,
+      })
+      .normalize(&options);
 
-    assert_eq!(format!("{from_bool:?}"), format!("{from_object:?}"));
+      assert_eq!(format!("{from_bool:?}"), format!("{from_object:?}"));
+      let MinifyOptions::Enabled(minify) = from_bool else {
+        panic!("full minification must be enabled");
+      };
+      let compress = minify.options.compress.expect("full compression options");
+      let mangle = minify.options.mangle.expect("full identifier mangling options");
+      assert_eq!(compress.keep_names.function, keep_names);
+      assert_eq!(compress.keep_names.class, keep_names);
+      assert_eq!(mangle.keep_names.function, keep_names);
+      assert_eq!(mangle.keep_names.class, keep_names);
+    }
   }
 }
 

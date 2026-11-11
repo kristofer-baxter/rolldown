@@ -135,6 +135,51 @@ enum ContextLoadCompletionState {
   Completed,
 }
 
+#[cfg(test)]
+mod completion_tests {
+  use std::{
+    future::Future,
+    pin::pin,
+    task::{Context, Poll, Waker},
+  };
+
+  use super::ContextLoadCompletionManager;
+  use rolldown_common::ModuleId;
+
+  #[test]
+  fn completion_survives_cancelled_receivers_and_invalidation() {
+    let manager = ContextLoadCompletionManager::default();
+    let id = ModuleId::new("cancelled.js");
+    let mut context = Context::from_waker(Waker::noop());
+    {
+      let mut waiter = pin!(manager.wait_for_completion(id.clone()));
+      assert!(waiter.as_mut().poll(&mut context).is_pending());
+    }
+    manager.mark_completion(id.clone());
+    let mut completed = pin!(manager.wait_for_completion(id.clone()));
+    assert_eq!(completed.as_mut().poll(&mut context), Poll::Ready(()));
+    manager.invalidate(&id);
+    let mut retry = pin!(manager.wait_for_completion(id.clone()));
+    assert!(retry.as_mut().poll(&mut context).is_pending());
+    manager.mark_completion(id);
+    assert_eq!(retry.as_mut().poll(&mut context), Poll::Ready(()));
+  }
+
+  #[test]
+  fn completion_wakes_all_live_receivers() {
+    let manager = ContextLoadCompletionManager::default();
+    let id = ModuleId::new("live.js");
+    let mut context = Context::from_waker(Waker::noop());
+    let mut first = pin!(manager.wait_for_completion(id.clone()));
+    let mut second = pin!(manager.wait_for_completion(id.clone()));
+    assert!(first.as_mut().poll(&mut context).is_pending());
+    assert!(second.as_mut().poll(&mut context).is_pending());
+    manager.mark_completion(id);
+    assert_eq!(first.as_mut().poll(&mut context), Poll::Ready(()));
+    assert_eq!(second.as_mut().poll(&mut context), Poll::Ready(()));
+  }
+}
+
 impl ContextLoadCompletionManager {
   pub async fn wait_for_completion(&self, module_id: ModuleId) {
     let mut rx = match self.notifiers.entry(module_id) {
@@ -169,9 +214,9 @@ impl ContextLoadCompletionManager {
       }
       dashmap::Entry::Occupied(mut guard) => match guard.get_mut() {
         ContextLoadCompletionState::Pending(sender) => {
-          sender.send(()).expect(
-            "PluginDriver: failed to send completion notification - receiver was dropped before wait_for_completion was called, indicating a race condition in module loading"
-          );
+          if sender.send(()).is_err() {
+            tracing::debug!("Module load completed after its context-load waiters were cancelled");
+          }
           *guard.get_mut() = ContextLoadCompletionState::Completed;
         }
         ContextLoadCompletionState::Completed => {

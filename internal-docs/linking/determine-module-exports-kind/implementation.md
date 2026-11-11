@@ -73,6 +73,8 @@ The top-level `this` of a CommonJS module creates an implicit reference to `expo
 
 A module without module syntax gets `ExportsKind::None` from the scanner, which maps its top-level `this` to `ThisExprReplaceKind::Context`. When this pass promotes such a module to `CommonJs` (the `Require` and no-split `DynamicImport` arms), `promote_to_commonjs` switches those entries to `ThisExprReplaceKind::Exports`, sets `ExportsRef` and creates `cjs_this_ref`, as the scanner does for a module with CommonJS syntax. Node runs the module as CommonJS, so its top-level `this` is `module.exports` (#11269).
 
+HMR finalization reads the scan-stage AST and its original replacement map, not that mutated link-stage view. It must apply the rendered CommonJS kind to recorded top-level `this` expressions as well. Otherwise a syntax-free module required by a CommonJS driver loses exports assigned through `this` in its replacement factory, changing the dynamic-import namespace after a patch. ESM retains its configured context (or `void 0`), and ordinary functions and class receivers remain outside the top-level replacement map.
+
 > **Why "lazy export" is excluded from the `Import` + `None` arm:**
 > Lazy-export modules are deferred ESM facades; promoting them here would short-circuit the dedicated lazy-export pass that runs later (`generate_lazy_export`), which performs additional restructuring that a naive `None → Esm` promotion would skip.
 

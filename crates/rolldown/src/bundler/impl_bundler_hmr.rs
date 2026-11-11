@@ -127,7 +127,7 @@ impl Bundler {
   /// walk skips both, as the HMR stage's demand check does.
   /// An import that the scan decides as a native cell bypass evaluates only the cells and
   /// literal records of the bindings that its module reads, also when its donor only forwards
-  /// them through re-exports (`native_cell_routes::evaluation_routes`).
+  /// them through re-exports (`native_cell_routes::routes`).
   /// An import whose native cell bypass the scan cannot decide
   /// (`native_cell_routes::Verdict::Uncertain`) is excluded for the same reason: the
   /// full build may have bound the importer straight to the cells, without evaluating
@@ -176,13 +176,14 @@ impl Bundler {
   /// decide, but not past an `import defer`, whose targets the third value names.
   /// A record imports a module that has a record of its own also where it binds nothing of it,
   /// through an unused import that development output drops, which the first walk skips above,
-  /// an `import.meta.hot.accept()` of it or a `new URL()` of it (`compute_cross_chunk_links`
-  /// imports what any record but an `import()` names), and evaluates the module as it loads. A
-  /// page of an output that gave the module no record ran nothing of it, so the walks count such
-  /// a module as one that the records may or may not have run where they ran or may have run its
-  /// importer, hold where they hold its importer, and may run later where they may run its
-  /// importer later, unless `recorded`, the modules that the outputs that pages may have loaded
-  /// gave records of their own ([`Self::recorded_modules`]), lacks it.
+  /// or a `new URL()` of it (`compute_cross_chunk_links` imports what any record but an
+  /// `import()` or an `import.meta.hot.accept()` names, `native_records::accept_only`), and
+  /// evaluates the module as it loads. A page of an output that gave the module no record ran
+  /// nothing of it, so the walks count such a module as one that the records may or may not have
+  /// run where they ran or may have run its importer, hold where they hold its importer, and may
+  /// run later where they may run its importer later, unless `recorded`, the modules that the
+  /// outputs that pages may have loaded gave records of their own ([`Self::recorded_modules`]),
+  /// lacks it.
   pub fn compute_entry_evaluated_modules(
     &self,
     stamp_table: &HmrStampTable,
@@ -309,14 +310,9 @@ impl Bundler {
     let routes = if !self.cache.native_cell_modules.is_empty()
       && crate::utils::native_records::enabled(&self.bundle_factory.options)
     {
-      crate::hmr::native_cell_routes::evaluation_routes(
-        modules,
-        &snapshot.stmt_infos,
-        &snapshot.index_ecma_ast,
-        &snapshot.user_defined_entry_modules,
-      )
+      self.cache.cell_routes()
     } else {
-      Vec::new()
+      &[]
     };
     let undecidable = routes
       .iter()
@@ -330,16 +326,18 @@ impl Bundler {
     let mut holds = FxHashMap::default();
     // Each importer's routes, which the walk of every entry reads.
     let mut importer_routes: FxHashMap<_, Vec<_>> = FxHashMap::default();
-    for route in routes {
+    for route in routes.iter().cloned() {
       importer_routes.entry(route.importer).or_default().push(route);
     }
-    let deferred_by_module: FxHashMap<_, _> = modules
+    let deferred_by_module: FxHashMap<_, _> = self
+      .cache
+      .deferred_import_modules
       .iter()
-      .filter_map(Module::as_normal)
-      .filter_map(|module| {
-        let ast = snapshot.index_ecma_ast[module.idx].as_ref()?;
+      .filter_map(|&idx| {
+        let module = modules.get(idx)?.as_normal()?;
+        let ast = snapshot.index_ecma_ast.get(idx)?.as_ref()?;
         let records = crate::hmr::utils::deferred_records(module, ast.program());
-        (!records.is_empty()).then_some((module.idx, records))
+        (!records.is_empty()).then_some((idx, records))
       })
       .collect();
     let has_deferred_imports = !deferred_by_module.is_empty();
@@ -421,7 +419,9 @@ impl Bundler {
             {
               if deferred_imports.is_some_and(|records| records.contains(&rec_idx)) {
                 later.push(dep_idx);
-              } else if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) {
+              } else if pure(dep_idx)
+                && crate::hmr::utils::drops_import(module, rec_idx, |_| true, scoping)
+              {
                 bypassable.insert(modules[dep_idx].id().as_arc_str().clone());
                 unbound.push(dep_idx);
               } else {
@@ -443,6 +443,7 @@ impl Bundler {
             {
               dynamic.push(dep_idx);
             } else if matches!(rec.kind, ImportKind::HotAccept | ImportKind::NewUrl)
+              && !crate::utils::native_records::accept_only(options, rec.kind)
               && let Some(dep_idx) = rec.resolved_module
             {
               unbound.push(dep_idx);
@@ -473,13 +474,12 @@ impl Bundler {
               .import_records
               .iter_enumerated()
               .flat_map(|(rec_idx, rec)| {
-                bypassed
-                  .get(&rec_idx)
-                  .copied()
-                  .into_iter()
-                  .flatten()
-                  .copied()
-                  .chain(rec.resolved_module.filter(|_| rec.kind != ImportKind::DynamicImport))
+                bypassed.get(&rec_idx).copied().into_iter().flatten().copied().chain(
+                  rec.resolved_module.filter(|_| {
+                    rec.kind != ImportKind::DynamicImport
+                      && !crate::utils::native_records::accept_only(options, rec.kind)
+                  }),
+                )
               })
               .collect::<Vec<_>>()
           });
@@ -561,13 +561,17 @@ impl Bundler {
               }
               // The record imports bare a target that has a record of its own, or may.
               ImportKind::Import
-                if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) =>
+                if pure(dep_idx)
+                  && crate::hmr::utils::drops_import(module, rec_idx, |_| true, scoping) =>
               {
                 if !recordless(dep_idx) {
                   required.push(dep_idx);
                 }
               }
-              ImportKind::HotAccept | ImportKind::NewUrl if !recordless(dep_idx) => {
+              ImportKind::HotAccept | ImportKind::NewUrl
+                if !recordless(dep_idx)
+                  && !crate::utils::native_records::accept_only(options, rec.kind) =>
+              {
                 required.push(dep_idx);
               }
               ImportKind::Import if omitted_star(module, rec_idx) != Some(true) => {
@@ -592,7 +596,9 @@ impl Bundler {
         bypassable.insert(module.id.as_arc_str().clone());
         later.extend(module.import_records.iter().filter_map(|rec| match rec.kind {
           ImportKind::Import | ImportKind::Require => rec.resolved_module,
-          ImportKind::HotAccept | ImportKind::NewUrl => {
+          ImportKind::HotAccept | ImportKind::NewUrl
+            if !crate::utils::native_records::accept_only(options, rec.kind) =>
+          {
             rec.resolved_module.filter(|&idx| !recordless(idx))
           }
           ImportKind::DynamicImport => {
@@ -665,7 +671,9 @@ impl Bundler {
               {
                 if deferred_imports.is_some_and(|records| records.contains(&rec_idx)) {
                   route_later.push(dep_idx);
-                } else if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) {
+                } else if pure(dep_idx)
+                  && crate::hmr::utils::drops_import(module, rec_idx, |_| true, scoping)
+                {
                   bypassable.insert(modules[dep_idx].id().as_arc_str().clone());
                   unbound.push(dep_idx);
                 } else {
@@ -686,6 +694,7 @@ impl Bundler {
               {
                 dynamic.push(dep_idx);
               } else if matches!(rec.kind, ImportKind::HotAccept | ImportKind::NewUrl)
+                && !crate::utils::native_records::accept_only(options, rec.kind)
                 && let Some(dep_idx) = rec.resolved_module
               {
                 unbound.push(dep_idx);
@@ -725,13 +734,17 @@ impl Bundler {
                   route_later.push(dep_idx);
                 }
                 ImportKind::Import
-                  if crate::hmr::utils::drops_import(module, rec_idx, pure, scoping) =>
+                  if pure(dep_idx)
+                    && crate::hmr::utils::drops_import(module, rec_idx, |_| true, scoping) =>
                 {
                   if !recordless(dep_idx) {
                     route_required.push(dep_idx);
                   }
                 }
-                ImportKind::HotAccept | ImportKind::NewUrl if !recordless(dep_idx) => {
+                ImportKind::HotAccept | ImportKind::NewUrl
+                  if !recordless(dep_idx)
+                    && !crate::utils::native_records::accept_only(options, rec.kind) =>
+                {
                   route_required.push(dep_idx);
                 }
                 ImportKind::Import if omitted_star(module, rec_idx) != Some(true) => {
@@ -757,7 +770,9 @@ impl Bundler {
           bypassable.insert(module.id.as_arc_str().clone());
           route_later.extend(module.import_records.iter().filter_map(|rec| match rec.kind {
             ImportKind::Import | ImportKind::Require => rec.resolved_module,
-            ImportKind::HotAccept | ImportKind::NewUrl => {
+            ImportKind::HotAccept | ImportKind::NewUrl
+              if !crate::utils::native_records::accept_only(options, rec.kind) =>
+            {
               rec.resolved_module.filter(|&idx| !recordless(idx))
             }
             ImportKind::DynamicImport => {
@@ -807,34 +822,15 @@ impl Bundler {
     )
   }
 
-  /// The modules, by module id, that name each module, by its module id, in an
-  /// `import.meta.hot.accept()`, whose records import it bare where the output gives it a record
-  /// of its own ([`Self::recorded_modules`]).
-  pub fn hot_accepting_modules(&self) -> FxHashMap<ArcStr, Vec<ArcStr>> {
-    let mut accepting: FxHashMap<ArcStr, Vec<ArcStr>> = FxHashMap::default();
-    let Some(snapshot) = self.cache.snapshot() else {
-      return accepting;
-    };
-    let modules = &snapshot.module_table.modules;
-    for module in modules.iter().filter_map(Module::as_normal) {
-      for rec in module.import_records.iter().filter(|rec| rec.kind == ImportKind::HotAccept) {
-        if let Some(target) = rec.resolved_module {
-          accepting
-            .entry(modules[target].id().as_arc_str().clone())
-            .or_default()
-            .push(module.id.as_arc_str().clone());
-        }
-      }
-    }
-    accepting
-  }
-
   /// Whether any of these modules (by stable id) uses top-level await. Such a module cannot
   /// run as a synchronous registry factory.
   pub fn uses_top_level_await<'a>(&self, stable_ids: impl IntoIterator<Item = &'a str>) -> bool {
     let Some(snapshot) = self.cache.snapshot() else {
       return false;
     };
+    if snapshot.tla_module_count == 0 {
+      return false;
+    }
     stable_ids.into_iter().any(|stable_id| {
       self.cache.module_idx_by_stable_id.get(stable_id).is_some_and(|idx| {
         snapshot.module_table.modules[*idx].as_normal().is_some_and(|module| {
@@ -842,6 +838,11 @@ impl Bundler {
         })
       })
     })
+  }
+
+  /// Whether a module of the current scan is a native cell (`native_records::is_native_cell`).
+  pub fn has_native_cells(&self) -> bool {
+    self.cache.has_snapshot() && !self.cache.native_cell_modules.is_empty()
   }
 
   /// The module ids this module (by stable id) loads with `import()`.
@@ -871,14 +872,7 @@ impl Bundler {
   /// (`hmr::utils::deferred_records`), also one that a plugin wrote where the module's source
   /// holds none.
   pub fn has_deferred_imports(&self) -> bool {
-    let Some(snapshot) = self.cache.snapshot() else {
-      return false;
-    };
-    snapshot.module_table.modules.iter().filter_map(Module::as_normal).any(|module| {
-      snapshot.index_ecma_ast[module.idx]
-        .as_ref()
-        .is_some_and(|ast| !crate::hmr::utils::deferred_records(module, ast.program()).is_empty())
-    })
+    self.cache.has_snapshot() && !self.cache.deferred_import_modules.is_empty()
   }
 
   /// The imports of each of these modules (by stable id) that a factory of the module may run, as
@@ -909,6 +903,32 @@ impl Bundler {
     .static_import_phases(stable_ids)
   }
 
+  /// [`Self::static_import_phases`] without whether each static import is kept as used.
+  pub fn static_import_edges<'a>(
+    &mut self,
+    stable_ids: impl IntoIterator<Item = &'a str>,
+  ) -> Vec<(ArcStr, ArcStr, ImportKind, bool)> {
+    if !self.cache.has_snapshot() {
+      return Vec::new();
+    }
+    let Some(plugin_driver) =
+      self.last_bundle_handle.as_ref().map(|ctx| Arc::clone(&ctx.plugin_driver))
+    else {
+      return Vec::new();
+    };
+    let mut lost_hmr_update = false;
+    HmrStage::new(HmrStageInput {
+      fs: self.bundle_factory.fs.clone(),
+      options: Arc::clone(&self.bundle_factory.options),
+      resolver: Arc::clone(&self.bundle_factory.resolver),
+      plugin_driver,
+      cache: &mut self.cache,
+      next_hmr_patch_id: Arc::default(),
+      lost_hmr_update: &mut lost_hmr_update,
+    })
+    .static_import_edges(stable_ids)
+  }
+
   /// Compile a lazy entry module and return compiled code plus the pending-payload
   /// entry the delivery-time ship-map write consumes.
   ///
@@ -918,7 +938,7 @@ impl Bundler {
   #[expect(clippy::too_many_arguments)]
   pub async fn compile_lazy_entry(
     &mut self,
-    module_id: String,
+    module_id: impl AsRef<str>,
     client_id: &str,
     shipped: &FxHashMap<ArcStr, u32>,
     rerun: &FxHashSet<ArcStr>,
@@ -948,7 +968,7 @@ impl Bundler {
     });
     hmr_stage
       .compile_lazy_entry(
-        &module_id,
+        module_id.as_ref(),
         client_id,
         shipped,
         rerun,

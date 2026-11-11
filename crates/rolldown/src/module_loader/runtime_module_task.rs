@@ -471,3 +471,39 @@ impl<Fs: FileSystem + Clone + 'static> RuntimeModuleTask<Fs> {
     Ok((ast, scan_result))
   }
 }
+
+#[cfg(test)]
+mod runtime_fixture_tests {
+  use std::{fs, path::Path};
+
+  const FIXTURE_PATH: &str =
+    concat!(env!("CARGO_MANIFEST_DIR"), "/tests/fixtures/runtime/native-runtime-base.js");
+
+  #[test]
+  fn native_runtime_fixture_matches_assembly() {
+    for block in [super::UPSTREAM_ESM_HELPERS, super::UPSTREAM_EXPORT_AND_INTEROP_HELPERS] {
+      assert_eq!(
+        super::RUNTIME_BASE_JS.matches(block).count(),
+        1,
+        "the native runtime substitution must match exactly once"
+      );
+    }
+    let fixture = fs::read_to_string(FIXTURE_PATH)
+      .expect("regenerate the committed fixture with regenerate_native_runtime_fixture");
+    assert_eq!(fixture, super::get_runtime_base_js(true), "native runtime fixture drifted");
+  }
+
+  #[test]
+  fn ordinary_runtime_base_is_unmodified() {
+    assert_eq!(super::get_runtime_base_js(false), super::RUNTIME_BASE_JS);
+  }
+
+  #[test]
+  #[ignore = "explicitly regenerates the committed native runtime fixture"]
+  fn regenerate_native_runtime_fixture() {
+    let path = Path::new(FIXTURE_PATH);
+    fs::create_dir_all(path.parent().expect("runtime fixture directory"))
+      .expect("create runtime fixture directory");
+    fs::write(path, super::get_runtime_base_js(true)).expect("write native runtime fixture");
+  }
+}

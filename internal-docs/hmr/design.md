@@ -33,6 +33,28 @@ Vite client subclasses it and installs the HMR hooks
 itself lives in Vite's `BundledDevHMRClient`
 (`packages/vite/src/client/bundledDevHmrClient.ts`).
 
+### Initial bundled binding ownership
+
+The experimental native-runtime protocol can give a scope-hoisted startup
+module writable export cells without making it a separate native record.
+Only modules whose original bindings remain observable need those cells:
+entry and cross-chunk exports, live imported bindings and re-exports,
+escaped local readers, writes, and direct `eval` all keep ownership. An
+unused binding import alone does not. Constants that cannot safely become
+writable keep their read-only cells; written bindings retain their
+reload-only marker. Omitting cells must not relax either restriction.
+
+`hmr/utils.rs` indexes each importer's observed targets once, in
+`LinkingMetadata::bundled_observed_imports`, rather than searching a wide
+importer's full binding table for every export owner. The generation stage
+resets this scratch index before parallel finalization. Native symbol
+renaming invalidates it, and retained-memory compaction discards it.
+
+Binding ownership is independent of evaluation readiness. Wrapped bundled
+records expose their evaluator and need no temporal descriptor. Unwrapped
+records still expose initialization flags, even without binding cells, so
+a client cannot treat pending or failed initialization as complete.
+
 This document records the reasons. The main question: why boundary
 computation is on the client, not the server. For the step order of the
 server pipeline, see

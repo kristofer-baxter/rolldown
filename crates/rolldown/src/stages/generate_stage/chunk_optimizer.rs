@@ -38,6 +38,12 @@ pub(super) enum RuntimeMergeCascade {
   /// host past sibling imports, and a bitset host can gain a brand-new consumer edge — while a
   /// sole-consumer merge only removes that consumer's edge to the runtime-only chunk.
   SingleConsumerOnly,
+  /// Only the given chunk, the chunk of the build's sole root entry, which nothing evaluates
+  /// before it and which every other chunk loads after it has run (see
+  /// `GenerateStage::sole_root_entry`). A consumer that gains an import of the root therefore
+  /// finds it already evaluated, so the edge cannot reorder anything. Without the merge, the root
+  /// would load the runtime chunk as an extra synchronous hop before it could run.
+  SoleRootEntry(ChunkIdx),
 }
 
 struct FacadeChunkElimination {
@@ -1311,7 +1317,10 @@ impl GenerateStage<'_> {
     // `experimentalInlineCommonChunks` registers registry demand on the files that read records
     // after every merge proof below has run, so a merged runtime could end up imported by files
     // the proof never counted. The runtime stays a standalone chunk while the feature is on.
-    if self.options.inline_common_chunks.is_some() {
+    if self.options.inline_common_chunks.is_some()
+      || crate::utils::topology_config::get(self.options)
+        .is_some_and(|cfg| cfg.standalone_runtime_chunk.is_some())
+    {
       return;
     }
     let runtime_module_idx = self.link_output.runtime.id();
@@ -1360,6 +1369,31 @@ impl GenerateStage<'_> {
       // synthetic all-live-union bits (minted as a universal source), and folding those in would
       // widen the host's bits — visible through bits-derived chunk names.
       (RuntimeMergeCascade::SingleConsumerOnly, _) => (single_consumer, None),
+      // The root's bits are kept for the same reason as a sole consumer's.
+      (RuntimeMergeCascade::SoleRootEntry(root_chunk_idx), _) => {
+        let every_static_import = LazyCell::new(|| {
+          StaticChunkReachability::new(chunk_graph, |module_idx, targets| {
+            Self::push_static_import_targets(module_table, module_idx, targets);
+          })
+        });
+        let host = Some(root_chunk_idx).filter(|&host| {
+          Self::runtime_merge_target_is_allowed(chunk_graph, host)
+            && self.runtime_target_is_tla_safe(chunk_graph, host, &consumer_chunks)
+            && self.runtime_merge_preserves_target_signature(chunk_graph, host, &consumer_chunks)
+            && !Self::runtime_target_would_create_static_cycle(
+              host,
+              &consumer_chunks,
+              &every_static_import,
+            )
+            && !Self::chunk_statically_loads_another_chunk(
+              host,
+              runtime_chunk_idx,
+              chunk_graph,
+              module_table,
+            )
+        });
+        (host, None)
+      }
       // `runtime_bits_covering_consumers` returns the runtime bits plus some bits of the sole
       // consumer. The host already has the bits of the consumer, so the runtime bits are sufficient.
       (RuntimeMergeCascade::Full, Some(consumer)) => {
@@ -1964,6 +1998,38 @@ impl GenerateStage<'_> {
       consumer_chunk_idx != target_chunk_idx
         && every_static_import.reaches(target_chunk_idx, consumer_chunk_idx)
     })
+  }
+
+  /// Whether `chunk_idx` can statically load a chunk other than itself and the runtime's chunk.
+  ///
+  /// The root's chunk takes the runtime only while it imports no other chunk, since every other
+  /// chunk may need the runtime's helpers at its top level and so must not run before the root's
+  /// chunk. The walk follows every static import record, also one that tree shaking drops, and goes
+  /// on through a module without a chunk, such as a re-exporting barrel that tree shaking removed
+  /// while its importers still import what it re-exports from another chunk.
+  fn chunk_statically_loads_another_chunk(
+    chunk_idx: ChunkIdx,
+    runtime_chunk_idx: ChunkIdx,
+    chunk_graph: &ChunkGraph,
+    module_table: &ModuleTable,
+  ) -> bool {
+    let mut visited = FxHashSet::default();
+    let mut queue = chunk_graph.chunk_table[chunk_idx].modules.clone();
+    let mut targets = vec![];
+    while let Some(module_idx) = queue.pop() {
+      if !visited.insert(module_idx) {
+        continue;
+      }
+      Self::push_static_import_targets(module_table, module_idx, &mut targets);
+      for target in targets.drain(..) {
+        match chunk_graph.module_to_chunk[target] {
+          Some(target_chunk) if target_chunk == chunk_idx || target_chunk == runtime_chunk_idx => {}
+          Some(_) => return true,
+          None => queue.push(target),
+        }
+      }
+    }
+    false
   }
 
   /// Pushes the target of every static import record of a module, also a record that tree shaking

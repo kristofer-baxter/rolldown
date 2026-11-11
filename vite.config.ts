@@ -122,6 +122,7 @@ export default defineConfig({
       'CHANGELOG-*.md',
       'CHANGELOG.md',
       'crates/rolldown/src/runtime',
+      'crates/rolldown/tests/fixtures/runtime',
       'crates/rolldown/tests/esbuild',
       '!crates/rolldown/tests/esbuild/**/_config.json',
       'crates/rolldown/tests/rolldown/errors',

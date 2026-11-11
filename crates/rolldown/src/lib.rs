@@ -36,6 +36,7 @@ pub use rolldown_common::bundler_options::*;
 pub use utils::native_cell_plan;
 pub use utils::native_record_ast;
 pub use utils::native_records::{NATIVE_JSON_NAMESPACE_PREFIX, NATIVE_JSON_RECORD_PREFIX};
+pub use utils::replace_global_defines::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
 pub use utils::topology_config;
 
 pub use rolldown_resolver::ResolveOptions;

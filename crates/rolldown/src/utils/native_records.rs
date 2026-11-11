@@ -69,6 +69,13 @@ pub fn runtime_module_semantics_enabled(options: &NormalizedBundlerOptions) -> b
       || options.experimental.is_incremental_build_enabled())
 }
 
+/// Whether a native record leaves out the target of a record of `kind`, which names a module in
+/// `import.meta.hot.accept()` without importing it: accepting a module never runs it, as in a
+/// production build, which has no `import.meta.hot`, and so no patch has to run it either.
+pub fn accept_only(options: &NormalizedBundlerOptions, kind: rolldown_common::ImportKind) -> bool {
+  kind == rolldown_common::ImportKind::HotAccept && enabled(options)
+}
+
 pub fn has_native_namespace(
   options: &NormalizedBundlerOptions,
   module: &NormalModule,

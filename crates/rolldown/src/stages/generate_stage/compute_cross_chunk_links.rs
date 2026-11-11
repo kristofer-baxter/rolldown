@@ -2176,6 +2176,7 @@ impl GenerateStage<'_> {
                 .iter_enumerated()
                 .filter(|(_, rec)| {
                   rec.kind != ImportKind::DynamicImport
+                    && !crate::utils::native_records::accept_only(self.options, rec.kind)
                     && (rec.kind != ImportKind::Import
                       || rec.resolved_module.and_then(|m| chunk_graph.module_to_chunk[m])
                         == Some(chunk_id))
@@ -2207,7 +2208,10 @@ impl GenerateStage<'_> {
               entry_module
                 .import_records
                 .iter_enumerated()
-                .filter(|(_, rec)| rec.kind != ImportKind::DynamicImport)
+                .filter(|(_, rec)| {
+                  rec.kind != ImportKind::DynamicImport
+                    && !crate::utils::native_records::accept_only(self.options, rec.kind)
+                })
                 .filter(|(record_idx, _)| {
                   !crate::utils::native_records::omittable_star_evaluation(
                     self.options,

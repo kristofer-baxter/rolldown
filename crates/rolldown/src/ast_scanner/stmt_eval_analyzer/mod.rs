@@ -136,6 +136,13 @@ impl BitOrAssign for StmtEvalFacts {
 /// not always run. An implementation must also refuse a `const` that is still in its TDZ.
 pub trait ConstantSymbolLookup {
   fn constant_value(&self, symbol_id: SymbolId) -> Option<&ConstantValue>;
+
+  /// Whether reading `property` from the binding `symbol_id` cannot run code or throw: the
+  /// binding is initialized when the statement runs and holds a plain object whose own data
+  /// property `property` nothing can replace with an accessor.
+  fn is_side_effect_free_property_read(&self, _symbol_id: SymbolId, _property: &str) -> bool {
+    false
+  }
 }
 
 /// The scanner adds its module-local constants in statement order, so a statement sees only the
@@ -292,6 +299,27 @@ impl<'a> StmtEvalAnalyzer<'a> {
     })
   }
 
+  /// `object.key` or `object['key']` where `constant_symbols` knows `object` holds a plain object
+  /// with the own data property `key`. The read cannot run code.
+  fn is_plain_object_property_read(&self, member_expr: &ast::MemberExpression) -> bool {
+    let Some(lookup) = self.constant_symbols else {
+      return false;
+    };
+    let Some(property) = crate::stages::link_stage::static_read_key(member_expr) else {
+      return false;
+    };
+    let object =
+      utils::temporal_reads::temporal_read_argument(member_expr.object().get_inner_expression());
+    let Expression::Identifier(ident) = object.get_inner_expression() else {
+      return false;
+    };
+    ident
+      .reference_id
+      .get()
+      .and_then(|ref_id| self.scope.symbol_id_for(ref_id))
+      .is_some_and(|symbol_id| lookup.is_side_effect_free_property_read(symbol_id, property))
+  }
+
   fn analyze_member_expr(&self, member_expr: &ast::MemberExpression) -> StmtEvalFacts {
     if self.is_expr_manual_pure_functions(member_expr.object()) {
       let mut facts = self.analyze_eager_chain_children(member_expr.object());
@@ -310,6 +338,9 @@ impl<'a> StmtEvalAnalyzer<'a> {
       };
     }
     if Self::is_side_effect_free_import_meta_access(member_expr) {
+      return StmtEvalFacts::default();
+    }
+    if self.is_plain_object_property_read(member_expr) {
       return StmtEvalFacts::default();
     }
     let is_global = self.is_member_expr_root_global(member_expr);
@@ -403,17 +434,19 @@ impl<'a> StmtEvalAnalyzer<'a> {
     // has bundler-specific overrides (e.g. import.meta.url is side-effect-free).
     // Oxc's pure-call handling would still check args via its own may_have_side_effects,
     // which doesn't know about these overrides.
-    let has_side_effect = if is_pure_annotated || self.is_fresh_object_freeze_call(expr) {
-      false
-    } else {
-      expr.may_have_side_effects(self)
-    };
+    let is_fresh_freeze = self.is_fresh_object_freeze_call(expr);
+    let has_side_effect =
+      if is_pure_annotated || is_fresh_freeze { false } else { expr.may_have_side_effects(self) };
 
     let is_global_call = !has_side_effect
+      && !is_fresh_freeze
       && matches!(&expr.callee, Expression::Identifier(id) if self.is_unresolved_reference(id));
 
     let mut facts = StmtEvalFacts::from_tree_shaking_side_effect(has_side_effect);
-    facts.set_order_sensitive_reason(StmtOrderSensitiveReasons::PureAnnotation, is_pure_annotated);
+    facts.set_order_sensitive_reason(
+      StmtOrderSensitiveReasons::PureAnnotation,
+      is_pure_annotated && !is_fresh_freeze,
+    );
     facts.set_order_sensitive_reason(StmtOrderSensitiveReasons::GlobalVarAccess, is_global_call);
 
     if !has_side_effect {
@@ -530,6 +563,27 @@ impl<'a> StmtEvalAnalyzer<'a> {
       // loses its annotation at the catch-all and the bundler emits the
       // module's var-init at top level rather than wrapping it.
       // See rolldown/rolldown#9425.
+      // Without a spread or a computed key, an object literal only evaluates its values, so fold
+      // the values' facts directly. Bundler overrides such as plain-object property reads then
+      // reach a value nested in the literal, which oxc's whole-expression gate cannot see. A
+      // spread reads properties of its argument and a computed key converts its value to a
+      // property key, which can run code, so both still go through the oxc gate.
+      Expression::ObjectExpression(obj)
+        if obj.properties.iter().all(
+          |prop| matches!(prop, ast::ObjectPropertyKind::ObjectProperty(p) if !p.computed),
+        ) =>
+      {
+        let mut facts = StmtEvalFacts::default();
+        for prop in &obj.properties {
+          if let ast::ObjectPropertyKind::ObjectProperty(p) = prop {
+            facts |= self.analyze_expr(&p.value);
+            if facts.has_side_effect_for_tree_shaking() {
+              break;
+            }
+          }
+        }
+        facts
+      }
       Expression::ObjectExpression(obj) => self.fold_compound(
         expr,
         // `p.computed == true` => `p.key` is always an Expression variant
@@ -2874,6 +2928,25 @@ let remove15 = class {
       get_stmt_order_sensitivity("class C { m() { return Math.max(1, 2) } }"),
       vec![false]
     );
+  }
+
+  #[test]
+  fn test_fresh_object_integrity_calls_are_pure_but_order_sensitive() {
+    let options = Arc::new(NormalizedBundlerOptions::default());
+    for method in ["freeze", "seal", "preventExtensions"] {
+      for argument in ["{}", "[]"] {
+        for code in [
+          format!("const value = Object.{method}({argument})"),
+          format!("class C {{ static value = /* @__PURE__ */ Object.{method}({argument}) }}"),
+        ] {
+          assert_eq!(
+            get_stmt_eval_with_options(&code, &options),
+            vec![(StmtEvalFlags::empty(), true)],
+            "{code}"
+          );
+        }
+      }
+    }
   }
 
   // The whole-class Oxc gate owns tree-shaking flags. The separate definition-time walk must

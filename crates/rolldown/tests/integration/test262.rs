@@ -638,7 +638,7 @@ async fn test262_module_code() {
         };
 
         let integration_test = IntegrationTest::new(test_meta, test_folder.to_path_buf());
-        let actual = match integration_test.bundle(options).await {
+        let actual = match Box::pin(integration_test.bundle(options)).await {
           Ok(output) => {
             if expected.should_evaluate() {
               let evaluator = RuntimeEvaluator::new(test262_root.clone(), frontmatter);

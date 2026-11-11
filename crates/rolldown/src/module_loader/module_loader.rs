@@ -3,13 +3,13 @@ use std::collections::hash_map::Entry;
 use std::path::Path;
 use std::sync::Arc;
 
+use crate::utils::replace_global_defines::ReplaceGlobalDefinesConfig;
 use arcstr::ArcStr;
 use futures::future::join_all;
 use itertools::Itertools;
 use oxc::semantic::NodeId;
 use oxc::semantic::{ScopeId, Scoping};
 use oxc::span::Span;
-use oxc::transformer_plugins::ReplaceGlobalDefinesConfig;
 use oxc_index::IndexVec;
 use rolldown_common::dynamic_import_usage::DynamicImportExportsUsage;
 use rolldown_common::{
@@ -212,10 +212,17 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     let flat_options = FlatOptions::from_shared_options(&options);
     let symbol_ref_db = SymbolRefDb::new();
     let meta = TaskContextMeta {
-      replace_global_define_config: if options.define.is_empty() {
+      replace_global_define_config: if options.define.is_empty()
+        && options.experimental.define_object_destructuring.as_ref().is_none_or(Vec::is_empty)
+      {
         None
       } else {
-        ReplaceGlobalDefinesConfig::new(&options.define).map(Some).map_err(|errs| {
+        ReplaceGlobalDefinesConfig::new_with_object_destructuring(
+          &options.define,
+          options.experimental.define_object_destructuring.as_deref().unwrap_or_default(),
+        )
+        .map(Some)
+        .map_err(|errs| {
           errs
             .into_iter()
             .map(|err| BuildDiagnostic::invalid_define_config(err.message.to_string()))
@@ -1035,9 +1042,14 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       && self.unreached(self.failed_tasks(), &user_defined_entry_ids);
 
     if errors.is_empty()
-      && crate::utils::native_records::runtime_module_semantics_enabled(
+      && (crate::utils::native_records::runtime_module_semantics_enabled(
         &self.shared_context.options,
-      )
+      ) || !self
+        .shared_context
+        .deferred_resolution_targets
+        .lock()
+        .expect("resolution failure state poisoned")
+        .is_empty())
     {
       // Keep the recovery scanner's large future out of every caller's build future.
       match Box::pin(self.isolate_dynamic_parse_errors(&user_defined_entry_ids)).await {
@@ -1104,6 +1116,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           // The `dynamic_importers/importers` should be added after `module_parsed` hook.
           let importers = &self.intermediate_normal_modules.importers[idx];
           module.ecma_view.rebuild_importer_sets(importers);
+          if self.shared_context.compact_module_arenas {
+            crate::utils::retained_memory::shrink_ecma_view_importers(&mut module.ecma_view);
+          }
           if !importers.is_empty() {
             idx_of_module_info_need_update.push(idx);
           }
@@ -1618,7 +1633,15 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         failures.entry(state.idx()).or_default().push(diagnostic.clone().into_diagnostic());
       }
     }
-    let link_failures = self.scanned_link_failures(&failures);
+    // Explicit deferred-resolution diagnostics must fail closed in ordinary builds too.
+    // Recovering arbitrary parse/link failures remains an opt-in native runtime protocol.
+    let link_failures = if crate::utils::native_records::runtime_module_semantics_enabled(
+      &self.shared_context.options,
+    ) {
+      self.scanned_link_failures(&failures)
+    } else {
+      FxHashMap::default()
+    };
     let link_messages = link_failures
       .iter()
       .map(|(&idx, diagnostics)| {

@@ -462,6 +462,12 @@ impl LinkStage<'_> {
     if used_external_symbols.has_interop_use() {
       depended_runtime_helper |= RuntimeHelper::ToEsm;
     }
+    if depended_runtime_helper.is_empty()
+      && crate::utils::topology_config::get(self.options)
+        .is_some_and(|cfg| cfg.standalone_runtime_chunk.is_some())
+    {
+      depended_runtime_helper |= RuntimeHelper::Esm;
+    }
     let context = &mut IncludeContext::new(
       &self.module_table.modules,
       &self.stmt_infos,

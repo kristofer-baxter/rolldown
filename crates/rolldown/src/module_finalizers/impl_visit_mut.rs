@@ -21,6 +21,9 @@ use rolldown_ecmascript_utils::{
 };
 use rolldown_error::EmptyImportMetaKind;
 
+use crate::utils::replace_global_defines::{
+  expand_changed_shorthand_property, expand_shorthand_property,
+};
 use crate::{
   module_finalizers::{FinalizedExprProcessHint, KeepNameId, ModuleWrapperMode, TraverseState},
   utils::renamer::cjs_wrapper_fixed_params,
@@ -462,6 +465,27 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         let (commonjs_ref_expr, _) = self.finalized_expr_for_symbol_ref(commonjs_ref, false, false);
 
         let mut stmts_inside_closure = allocator::Vec::new_in(self);
+        if !self.top_level_var_bindings.is_empty() {
+          // Guarded CommonJS lexicals belong to the evaluator's scope, not the chunk.
+          // Their flags must be declared even when native records hoist the wrapper.
+          let declarations = self.top_level_var_bindings.iter().map(|name| {
+            ast::VariableDeclarator::new(
+              SPAN,
+              ast::BindingPattern::new_binding_identifier(SPAN, *name, self),
+              None,
+              None,
+              false,
+              self,
+            )
+          });
+          stmts_inside_closure.push(Statement::new_variable_declaration(
+            SPAN,
+            ast::VariableDeclarationKind::Var,
+            allocator::Vec::from_iter_in(declarations, self),
+            false,
+            self,
+          ));
+        }
         stmts_inside_closure.append(&mut program.body);
 
         program.body.push(Statement::new_commonjs_wrapper_stmt(
@@ -1082,7 +1106,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         match self.generate_finalized_expr_for_reference(id_ref, false) {
           Some(expr) => {
             prop.value = expr;
-            prop.shorthand = false;
+            expand_shorthand_property(prop, self.allocator());
           }
           None => {
             id_ref.reference_id.get_mut().take();
@@ -1092,6 +1116,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
     }
 
     walk_js_mut::walk_object_property(self, prop);
+    expand_changed_shorthand_property(prop, self.allocator());
   }
 
   fn visit_object_pattern(&mut self, pat: &mut ast::ObjectPattern<'ast>) {

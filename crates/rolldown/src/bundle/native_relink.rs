@@ -307,6 +307,22 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let mut dirty_modules: Vec<ModuleIdx> =
       self.cache.dirty_native_modules.iter().copied().filter(|idx| idx.index() < old_len).collect();
     dirty_modules.sort_unstable();
+    // Newly added edges can introduce readers that the previous link never guarded.
+    let plain_reads = &cached.link_output.plain_object_reads;
+    if let Some(&idx) = dirty_modules.iter().chain(&added).find(|&&idx| {
+      plain_reads.guards(idx)
+        || plain_reads.guards_new_imports(
+          snapshot.module_table.modules[idx]
+            .import_records()
+            .iter()
+            .filter_map(|record| record.resolved_module),
+        )
+    }) {
+      reject_with!(
+        "plain_object_reads",
+        snapshot.module_table.modules[idx].stable_id().to_string()
+      );
+    }
     // A module that the graph reaches only through records that order no execution, an
     // `import.meta.hot.accept()` dependency and what only such modules import, has no record, so
     // the relink prepares nothing of it, while linking reads its records as any module's (#660).
@@ -1754,14 +1770,6 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
 
       let mut meta = LinkingMetadata::default();
-      meta.dependencies = module
-        .import_records
-        .iter()
-        .filter_map(|rec| match rec.kind {
-          ImportKind::DynamicImport | ImportKind::Require | ImportKind::HotAccept => None,
-          _ => rec.resolved_module,
-        })
-        .collect();
       meta.resolved_exports = module
         .named_exports
         .iter()
@@ -3934,6 +3942,7 @@ pub(super) fn apply_native_renames(
   rename_keys(&mut meta.named_import_to_cjs_module, idx, &rename);
   rename_keys(&mut meta.import_record_ns_to_cjs_module, idx, &rename);
   meta.native_reexport_by_canonical = std::sync::OnceLock::new();
+  meta.bundled_observed_imports = std::sync::OnceLock::new();
   meta.reexports_commonjs_property_cache.store(0, std::sync::atomic::Ordering::Relaxed);
   let retained = renamed
     .iter()

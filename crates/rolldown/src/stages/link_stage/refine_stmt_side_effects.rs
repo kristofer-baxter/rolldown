@@ -15,7 +15,7 @@ use crate::{
   type_alias::IndexStmtInfos,
 };
 
-use super::LinkStage;
+use super::{LinkStage, plain_object_reads::PlainObject};
 
 /// Static-import components, shared by the link-time analyzer runs. Build them only when a
 /// lookup needs to check an imported constant, and use iterative DFS to handle deep graphs.
@@ -71,6 +71,8 @@ pub(super) struct LinkedConstantLookup<'a> {
   pub symbols: &'a SymbolRefDb,
   pub stmt_infos: &'a IndexStmtInfos,
   pub constants: &'a FxHashMap<SymbolRef, ConstExportMeta>,
+  /// Objects whose own data properties only static reads reach; see `plain_object_reads`.
+  pub plain_objects: &'a FxHashMap<SymbolRef, PlainObject>,
 }
 
 impl LinkedConstantLookup<'_> {
@@ -126,6 +128,12 @@ impl ConstantSymbolLookup for LinkedConstantLookup<'_> {
     let (canonical_ref, value) = self.canonical_constant((self.module_idx, symbol_id).into())?;
     self.is_initialized(canonical_ref).then_some(value)
   }
+
+  fn is_side_effect_free_property_read(&self, symbol_id: SymbolId, property: &str) -> bool {
+    let canonical_ref = self.symbols.canonical_ref_for((self.module_idx, symbol_id).into());
+    self.plain_objects.get(&canonical_ref).is_some_and(|object| object.keys.contains_key(property))
+      && self.is_initialized(canonical_ref)
+  }
 }
 
 impl LinkStage<'_> {
@@ -136,7 +144,10 @@ impl LinkStage<'_> {
   /// rebuilds their verdicts before `reference_needed_symbols` runs.
   #[tracing::instrument(level = "debug", skip_all)]
   pub(super) fn refine_stmt_side_effects_with_imported_constants(&mut self) {
-    if self.options.treeshake.is_none() || self.global_constant_symbol_map.is_empty() {
+    let plain_object_reads = &self.plain_object_reads;
+    if self.options.treeshake.is_none()
+      || (self.global_constant_symbol_map.is_empty() && plain_object_reads.objects.is_empty())
+    {
       return;
     }
 
@@ -154,22 +165,31 @@ impl LinkStage<'_> {
           symbols: &self.symbols,
           stmt_infos: &self.stmt_infos,
           constants: &self.global_constant_symbol_map,
+          plain_objects: &plain_object_reads.objects,
         };
-        // Most modules import no constant. Skip them without a walk.
+        // Most modules import no constant and read no plain object. Skip them without a walk.
         let module_lookup = lookup_for_stmt(StmtInfoIdx::from_raw_unchecked(0));
-        if !module.named_imports.keys().any(|local| module_lookup.is_imported_constant(*local)) {
+        let object_reads = plain_object_reads
+          .reads
+          .get(&module.idx)
+          .map(|reads| reads.iter().map(|(stmt_idx, _, _)| *stmt_idx).collect::<FxHashSet<_>>())
+          .unwrap_or_default();
+        if object_reads.is_empty()
+          && !module.named_imports.keys().any(|local| module_lookup.is_imported_constant(*local))
+        {
           return None;
         }
         let candidates = self.stmt_infos[module.idx]
           .iter_enumerated_without_namespace_stmt()
-          .filter(|(_, stmt_info)| {
+          .filter(|(stmt_idx, stmt_info)| {
             stmt_info.eval_flags.contains(StmtEvalFlags::UnknownSideEffect)
-              && stmt_info.referenced_symbols.iter().any(|referenced| match referenced {
-                SymbolOrMemberExprRef::Symbol(symbol_ref) => {
-                  module_lookup.is_imported_constant(*symbol_ref)
-                }
-                SymbolOrMemberExprRef::MemberExpr(_) => false,
-              })
+              && (object_reads.contains(stmt_idx)
+                || stmt_info.referenced_symbols.iter().any(|referenced| match referenced {
+                  SymbolOrMemberExprRef::Symbol(symbol_ref) => {
+                    module_lookup.is_imported_constant(*symbol_ref)
+                  }
+                  SymbolOrMemberExprRef::MemberExpr(_) => false,
+                }))
           })
           .map(|(stmt_idx, _)| stmt_idx)
           .collect::<Vec<_>>();

@@ -276,8 +276,9 @@ napi = { version = "3", features = ["async", "anyhow", "tracing", "object_indexm
 napi-build = { version = "2" }
 napi-derive = { version = "3", default-features = false, features = ["type-def", "tracing"] }
 
-# oxc crates with the same version
-oxc = { version = "0.158.0", features = [
+# The coupled compiler family, including NAPI, comes from one immutable maintained fork.
+# Direct Git dependencies also apply downstream, where this workspace's root patches do not.
+oxc = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152", features = [
   "ast_visit",
   "transformer",
   "minifier",
@@ -288,14 +289,14 @@ oxc = { version = "0.158.0", features = [
   "isolated_declarations",
   "regular_expression",
 ] }
-oxc_allocator = { version = "0.158.0", features = ["pool"] }
-oxc_ecmascript = { version = "0.158.0" }
-oxc_napi = { version = "0.158.0" }
-oxc_str = { version = "0.158.0" }
-oxc_minify_napi = { version = "0.158.0" }
-oxc_parser_napi = { version = "0.158.0" }
-oxc_transform_napi = { version = "0.158.0" }
-oxc_traverse = { version = "0.158.0" }
+oxc_allocator = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152", features = ["pool"] }
+oxc_ecmascript = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
+oxc_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
+oxc_str = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
+oxc_minify_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
+oxc_parser_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
+oxc_transform_napi = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
+oxc_traverse = { version = "0.158.0", git = "https://github.com/kristofer-baxter/oxc", rev = "b91f273abfe34735e142a1d0d962d01ead6e2152" }
 
 # oxc crates in their own repos
 # Versions must be relaxed for usage in oxc.

@@ -4,7 +4,7 @@ use oxc::{
   span::SPAN,
 };
 use oxc_traverse::Traverse;
-use rolldown_common::{EcmaModuleAstUsage, ThisExprReplaceKind};
+use rolldown_common::{EcmaModuleAstUsage, ExportsKind, ThisExprReplaceKind};
 use rolldown_ecmascript::{
   CJS_EXPORTS_REF_STR, CJS_MODULE_REF_STR, CJS_ROLLDOWN_EXPORTS_REF,
   CJS_ROLLDOWN_EXPORTS_REF_IDENT, CJS_ROLLDOWN_MODULE_REF, CJS_ROLLDOWN_MODULE_REF_IDENT,
@@ -16,6 +16,7 @@ use crate::hmr::{
   hmr_ast_finalizer::HmrAstFinalizer,
   utils::{HmrAstBuilder, MODULE_ID_PARAM_FOR_HMR},
 };
+use crate::utils::replace_global_defines::expand_changed_shorthand_property;
 
 impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
   fn exit_object_property(
@@ -23,6 +24,7 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
     node: &mut ast::ObjectProperty<'ast>,
     _ctx: &mut oxc_traverse::TraverseCtx<'ast, ()>,
   ) {
+    expand_changed_shorthand_property(node, self.allocator());
     if self.module.module_type == rolldown_common::ModuleType::Json
       && self.module.meta.has_lazy_export()
       && node.key.static_name().is_some_and(|key| key.as_str() == Some("__proto__"))
@@ -395,21 +397,21 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
   ) {
     crate::utils::temporal_reads::unwrap_temporal_read(node);
     // Rewrite top-level `this` as the main build does, by the kind that the scan decided
-    // (`this_expr_replace_map`, which leaves `this` inside classes and functions alone): the
-    // module's `exports` for a module that the scan found CommonJS, and otherwise the
-    // `context` option, or `void 0` without one, also for a module that the link makes
-    // CommonJS. A factory runs as its record's method, whose `this` is the record.
+    // (`this_expr_replace_map`, which leaves `this` inside classes and functions alone).
+    // The scan's map predates link-time CommonJS promotion; honor the rendered kind as
+    // `promote_to_commonjs` does in the main build, rather than exposing the factory record.
+    // See internal-docs/linking/determine-module-exports-kind/implementation.md.
     if let ast::Expression::ThisExpression(this_expr) = node
       && let Some(kind) = self.module.ecma_view.this_expr_replace_map.get(&this_expr.node_id())
     {
-      *node = match kind {
-        ThisExprReplaceKind::Exports => {
-          Expression::new_id_ref_expr(SPAN, CJS_ROLLDOWN_EXPORTS_REF, self)
-        }
-        ThisExprReplaceKind::Context if self.context.is_empty() => {
-          ast::Expression::new_void_0(SPAN, self)
-        }
-        ThisExprReplaceKind::Context => Expression::new_id_ref_expr(SPAN, self.context, self),
+      *node = if self.exports_kind == ExportsKind::CommonJs
+        || matches!(kind, ThisExprReplaceKind::Exports)
+      {
+        Expression::new_id_ref_expr(SPAN, CJS_ROLLDOWN_EXPORTS_REF, self)
+      } else if self.context.is_empty() {
+        ast::Expression::new_void_0(SPAN, self)
+      } else {
+        Expression::new_id_ref_expr(SPAN, self.context, self)
       };
       return;
     }

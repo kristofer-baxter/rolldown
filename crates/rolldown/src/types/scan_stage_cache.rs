@@ -18,6 +18,32 @@ use crate::{
   stages::scan_stage::{NormalizedScanStageOutput, ScanStageOutput},
 };
 
+#[cfg(all(test, feature = "experimental"))]
+mod certificate_tests {
+  use std::sync::Arc;
+
+  use rolldown_common::{DeferSyncScanDataOption, NormalizedBundlerOptions};
+  use rustc_hash::FxHashSet;
+
+  use super::ScanStageCache;
+
+  #[tokio::test]
+  async fn deferred_sync_invalidates_cell_certificates_without_relink_state() {
+    let mut cache = ScanStageCache::default();
+    cache.cached_cell_routes.set(Vec::new()).expect("empty route cache");
+    cache.cached_cell_resident.set(FxHashSet::default()).expect("empty resident cache");
+    let options = Arc::new(NormalizedBundlerOptions {
+      defer_sync_scan_data: Some(DeferSyncScanDataOption::new(|| {
+        Box::pin(async { Ok(Vec::new()) })
+      })),
+      ..Default::default()
+    });
+    cache.update_defer_sync_data(&options).await.expect("empty synchronization");
+    assert!(cache.cached_cell_routes.get().is_none());
+    assert!(cache.cached_cell_resident.get().is_none());
+  }
+}
+
 #[derive(Clone, Debug)]
 pub struct CachedChunkNaming {
   pub scan_generation: u64,
@@ -516,14 +542,20 @@ pub struct ScanStageCache {
   pub module_idx_by_stable_id: FxHashMap<StableModuleId, ModuleIdx>,
   pub native_cell_modules: FxHashSet<ModuleIdx>,
   pub export_star_modules: FxHashSet<ModuleIdx>,
+  pub deferred_import_modules: FxHashSet<ModuleIdx>,
+  pub json_modules: FxHashSet<ModuleIdx>,
+  #[cfg(feature = "experimental")]
+  pub cached_cell_routes: std::sync::OnceLock<Vec<crate::hmr::native_cell_routes::Route>>,
+  #[cfg(feature = "experimental")]
+  pub cached_cell_resident: std::sync::OnceLock<FxHashSet<ModuleIdx>>,
   /// Whether a scan of this cache ever held a module through whose records a page may load a
-  /// record that it never prunes: one that names a dependency in an `import.meta.hot.accept()`
-  /// call, whose record the page loads with no edge to it, one with an `import()`, which a
-  /// loader that the page saved can call after an update dropped the import, past the roots of
-  /// the page's first patch, or one with an `import defer`, whose target's record a read of the
-  /// namespace that the page saved runs as late. Such a page may hold a module's record after an
-  /// update retires it, which a page otherwise prunes (#732). It never resets, not even for a
-  /// full scan: a page may hold records of any earlier revision.
+  /// record that it never prunes: one with an `import()`, which a loader that the page saved can
+  /// call after an update dropped the import, past the roots of the page's first patch, or one
+  /// with an `import defer`, whose target's record a read of the namespace that the page saved
+  /// runs as late. Such a page may hold a module's record after an update retires it, which a
+  /// page otherwise prunes. A dependency `import.meta.hot.accept()` loads no target's
+  /// record (`native_records::accept_only`). It never resets, not even for a full scan: a
+  /// page may hold records of any earlier revision.
   pub late_records: bool,
   pub revision_url_modules: FxHashSet<ModuleIdx>,
   pub asset_emitter_modules: FxHashSet<ModuleIdx>,
@@ -545,6 +577,7 @@ pub struct ScanStageCache {
   pub current_multi_module_chunk_keys: FxHashSet<[u128; 2]>,
   pub sourcemap_content_filter: Option<SourcemapContentFilterHolder>,
   pub pre_redacted_maps: FxHashSet<ArcStr>,
+  pub mangle_properties_override: Option<oxc::minifier::ManglePropertiesOptions>,
   /// The lazy chunk of each lazy entry, by module id ([`CachedLazyChunk`]).
   pub cached_lazy_chunks: FxHashMap<String, CachedLazyChunk>,
   /// How the factories that patches and lazy chunks shipped since the session last cleared it
@@ -553,6 +586,9 @@ pub struct ScanStageCache {
   /// of the same update can decide otherwise, as one that adds an importer of a module's default
   /// (`HmrStage::changed_commonjs_read`).
   pub commonjs_reads: FxHashSet<(ModuleIdx, ModuleIdx, bool)>,
+  /// The stable ids of the factories that the last HMR update's patches list for their clients to
+  /// hold aside until an update passes on to their modules (`HmrStage::collect_client_update_superset`).
+  pub last_standby: FxHashSet<ArcStr>,
   pub runtime_rendered_chunk: Option<Arc<RollupRenderedChunk>>,
   pub omit_reused_chunk_bytes: bool,
   /// Keeps each module's AST and scope tree in the arenas that its scan built, and the capacity
@@ -561,6 +597,8 @@ pub struct ScanStageCache {
   pub keep_unused_capacity: bool,
   pub last_reused_chunk_filenames: FxHashSet<ArcStr>,
   pub last_fast_native_relink: bool,
+  pub last_link_decisions_unchanged: bool,
+  pub link_decisions_generation: u64,
   /// Why the last generation linked the whole graph rather than relinking what the update
   /// changed: the label of the check that rejected the fast native relink, or of what kept the
   /// generation from trying one.
@@ -604,11 +642,13 @@ impl ScanStageCache {
     let omit_reused_chunk_bytes = self.omit_reused_chunk_bytes;
     let keep_unused_capacity = self.keep_unused_capacity;
     let sourcemap_content_filter = self.sourcemap_content_filter.take();
+    let mangle_properties_override = self.mangle_properties_override.take();
     // Pages that loaded an earlier revision's records keep them past a full scan.
     let late_records = self.late_records;
     *self = Self {
       late_records,
       sourcemap_content_filter,
+      mangle_properties_override,
       omit_reused_chunk_bytes,
       keep_unused_capacity,
       ..Self::default()
@@ -639,6 +679,17 @@ impl ScanStageCache {
 
   pub fn has_valid_native_relink(&self) -> bool {
     self.snapshot.is_some() && self.cached_native_relink.is_some()
+  }
+
+  pub fn retained_relink_export_item_maps(&self) -> usize {
+    self.cached_native_relink.as_ref().map_or(0, |cached| {
+      cached
+        .generate_state
+        .render_export_items_index_vec
+        .iter()
+        .filter(|map| !map.is_empty() || map.capacity() > 0)
+        .count()
+    })
   }
 
   pub fn invalidate_native_relink(&mut self) {
@@ -844,6 +895,9 @@ impl ScanStageCache {
     self.runtime_rendered_chunk = None;
     self.last_reused_chunk_filenames.clear();
     self.last_fast_native_relink = false;
+    self.last_link_decisions_unchanged = false;
+    self.link_decisions_generation = 0;
+    self.clear_cell_route_cache();
     self.last_native_relink_fallback = None;
     self.last_rebuilt_chunk_filenames.clear();
     self.last_rebuilt_chunk_outputs.clear();
@@ -856,15 +910,68 @@ impl ScanStageCache {
     self.snapshot = Some(cache);
   }
 
+  #[inline]
+  fn clear_cell_route_cache(&mut self) {
+    #[cfg(feature = "experimental")]
+    {
+      self.cached_cell_routes.take();
+      self.cached_cell_resident.take();
+    }
+  }
+
   /// # Panic
   /// - if the snapshot is unset
   pub fn get_snapshot_mut(&mut self) -> &mut NormalizedScanStageOutput {
+    self.clear_cell_route_cache();
     self.snapshot.as_mut().unwrap()
   }
 
   /// Useful when workarounding rustc borrow rules
   pub fn take_snapshot(&mut self) -> Option<NormalizedScanStageOutput> {
+    self.clear_cell_route_cache();
     self.snapshot.take()
+  }
+
+  #[cfg(feature = "experimental")]
+  pub fn cell_routes(&self) -> &[crate::hmr::native_cell_routes::Route] {
+    if self.native_cell_modules.is_empty() {
+      return &[];
+    }
+    let Some(snapshot) = self.snapshot() else {
+      return &[];
+    };
+    self
+      .cached_cell_routes
+      .get_or_init(|| {
+        crate::hmr::native_cell_routes::routes(
+          &snapshot.module_table.modules,
+          &snapshot.stmt_infos,
+          &snapshot.index_ecma_ast,
+          &snapshot.user_defined_entry_modules,
+        )
+      })
+      .as_slice()
+  }
+
+  #[cfg(feature = "experimental")]
+  pub fn cell_resident(&self) -> &FxHashSet<ModuleIdx> {
+    static EMPTY: std::sync::OnceLock<FxHashSet<ModuleIdx>> = std::sync::OnceLock::new();
+    if self.native_cell_modules.is_empty() {
+      return EMPTY.get_or_init(FxHashSet::default);
+    }
+    let Some(snapshot) = self.snapshot() else {
+      return EMPTY.get_or_init(FxHashSet::default);
+    };
+    let routes = self.cell_routes();
+    self.cached_cell_resident.get_or_init(|| {
+      crate::hmr::native_cell_routes::resident(
+        &snapshot.module_table.modules,
+        &snapshot.stmt_infos,
+        &snapshot.index_ecma_ast,
+        &snapshot.user_defined_entry_modules,
+        routes,
+      )
+    })
   }
 
   pub async fn update_defer_sync_data(&mut self, options: &SharedOptions) -> BuildResult<()> {
@@ -872,26 +979,31 @@ impl ScanStageCache {
       return Ok(());
     }
     self.invalidate_native_relink();
-    if let Some(mut snapshot) = self.take_snapshot() {
-      // `defer_sync_scan_data` mutates `snapshot` in place; restore it on every
-      // outcome. Bailing with `?` would drop it, leaving `self.snapshot == None`
-      // and panicking the next HMR cycle's `get_snapshot()`. A partially-synced
-      // snapshot is recoverable; a missing one is not.
+    self.clear_cell_route_cache();
+    if let Some(snapshot) = self.snapshot.as_mut() {
+      // Borrow the snapshot in place so failed synchronization cannot drop the graph.
       // See internal-docs/bundler-data-lifecycle/implementation.md ("Cache integrity on a failed build").
-      let result = defer_sync_scan_data(options, &self.module_id_to_idx, &mut snapshot).await;
+      let result = Self::defer_sync_scan_data(options, &self.module_id_to_idx, snapshot).await;
+      let modules_len = snapshot.module_table.modules.len();
       self.next_scan_generation = self.next_scan_generation.wrapping_add(1).max(1);
       let generation = self.next_scan_generation;
-      self.module_scan_generations =
-        IndexVec::from_vec(vec![generation; snapshot.module_table.modules.len()]);
+      self.module_scan_generations = IndexVec::from_vec(vec![generation; modules_len]);
       self.cached_native_chunks.clear();
       self.cached_finalized_modules.clear();
       self.current_rendered_sources.clear();
       self.cached_multi_module_chunks.clear();
       self.cached_lazy_chunks.clear();
-      self.snapshot = Some(snapshot);
       result?;
     }
     Ok(())
+  }
+
+  pub async fn defer_sync_scan_data(
+    options: &SharedOptions,
+    module_id_to_idx: &FxHashMap<ModuleId, VisitState>,
+    scan_stage_output: &mut NormalizedScanStageOutput,
+  ) -> BuildResult<()> {
+    defer_sync_scan_data(options, module_id_to_idx, scan_stage_output).await
   }
 
   /// # Panic
@@ -953,8 +1065,11 @@ impl ScanStageCache {
       })
     }
 
+    self.clear_cell_route_cache();
     let Some(ref mut cache) = self.snapshot else {
       self.last_fast_native_relink = false;
+      self.last_link_decisions_unchanged = false;
+      self.link_decisions_generation = 0;
       self.last_native_relink_fallback = None;
       self.last_rebuilt_chunk_filenames.clear();
       self.last_rebuilt_chunk_outputs.clear();
@@ -970,6 +1085,7 @@ impl ScanStageCache {
       return Ok(());
     };
     self.last_fast_native_relink = false;
+    self.last_link_decisions_unchanged = false;
     self.last_native_relink_fallback = None;
     self.last_rebuilt_chunk_filenames.clear();
     self.last_rebuilt_chunk_outputs.clear();
@@ -1038,12 +1154,10 @@ impl ScanStageCache {
     }
     fn module_loads_late_records(module: &Module) -> bool {
       module.as_normal().is_some_and(|normal| {
-        normal.import_records.iter().any(|rec| {
-          matches!(
-            rec.kind,
-            rolldown_common::ImportKind::HotAccept | rolldown_common::ImportKind::DynamicImport
-          )
-        })
+        normal
+          .import_records
+          .iter()
+          .any(|rec| rec.kind == rolldown_common::ImportKind::DynamicImport)
       })
     }
     // An `import defer` declaration links its target's record without evaluating it, which a
@@ -1114,10 +1228,20 @@ impl ScanStageCache {
         } else {
           self.export_star_modules.remove(&new_module_idx);
         }
-        self.late_records |= module_loads_late_records(&new_module)
-          || defers_imports(
-            scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref),
-          );
+        let has_deferred = defers_imports(
+          scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref),
+        );
+        if has_deferred {
+          self.deferred_import_modules.insert(new_module_idx);
+        } else {
+          self.deferred_import_modules.remove(&new_module_idx);
+        }
+        if new_module.as_normal().is_some_and(crate::utils::import_options::is_json_module) {
+          self.json_modules.insert(new_module_idx);
+        } else {
+          self.json_modules.remove(&new_module_idx);
+        }
+        self.late_records |= module_loads_late_records(&new_module) || has_deferred;
         if module_has_revision_url(&new_module) {
           self.revision_url_modules.insert(new_module_idx);
         } else {
@@ -1174,10 +1298,19 @@ impl ScanStageCache {
       } else {
         self.export_star_modules.remove(&idx);
       }
-      self.late_records |= module_loads_late_records(&new_module)
-        || defers_imports(
-          scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref),
-        );
+      let has_deferred =
+        defers_imports(scan_stage_output.index_ecma_ast.try_get(new_idx).and_then(Option::as_ref));
+      if has_deferred {
+        self.deferred_import_modules.insert(idx);
+      } else {
+        self.deferred_import_modules.remove(&idx);
+      }
+      if new_module.as_normal().is_some_and(crate::utils::import_options::is_json_module) {
+        self.json_modules.insert(idx);
+      } else {
+        self.json_modules.remove(&idx);
+      }
+      self.late_records |= module_loads_late_records(&new_module) || has_deferred;
       if module_has_revision_url(&new_module) {
         self.revision_url_modules.insert(idx);
       } else {
@@ -1351,6 +1484,9 @@ impl ScanStageCache {
     self.module_idx_by_stable_id.clear();
     self.native_cell_modules.clear();
     self.export_star_modules.clear();
+    self.deferred_import_modules.clear();
+    self.json_modules.clear();
+    self.clear_cell_route_cache();
     self.revision_url_modules.clear();
     self.asset_emitter_modules.clear();
 
@@ -1362,19 +1498,17 @@ impl ScanStageCache {
         if crate::utils::native_records::is_native_cell(normal_module.id.as_str()) {
           self.native_cell_modules.insert(module_idx);
         }
+        if crate::utils::import_options::is_json_module(normal_module) {
+          self.json_modules.insert(module_idx);
+        }
         if normal_module.import_records.iter().any(|rec| {
           rec.kind == rolldown_common::ImportKind::Import
             && rec.meta.contains(rolldown_common::ImportRecordMeta::IsExportStar)
         }) {
           self.export_star_modules.insert(module_idx);
         }
-        self.late_records |=
-          normal_module.import_records.iter().any(|rec| {
-            matches!(
-              rec.kind,
-              rolldown_common::ImportKind::HotAccept | rolldown_common::ImportKind::DynamicImport
-            )
-          }) || build_snapshot.index_ecma_ast.get(module_idx).and_then(Option::as_ref).is_some_and(
+        let has_deferred =
+          build_snapshot.index_ecma_ast.get(module_idx).and_then(Option::as_ref).is_some_and(
             |ast| {
               ast.program().body.iter().any(|statement| {
                 matches!(
@@ -1385,6 +1519,14 @@ impl ScanStageCache {
               })
             },
           );
+        if has_deferred {
+          self.deferred_import_modules.insert(module_idx);
+        }
+        self.late_records |= normal_module
+          .import_records
+          .iter()
+          .any(|rec| rec.kind == rolldown_common::ImportKind::DynamicImport)
+          || has_deferred;
         {
           let mut rest = normal_module.ecma_view.source.as_str();
           while let Some(pos) = rest.find("/r/") {
