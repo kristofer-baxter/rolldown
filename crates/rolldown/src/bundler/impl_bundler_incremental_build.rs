@@ -26,6 +26,7 @@ impl Bundler {
     // installed above, making the next HMR cycle panic in `get_snapshot()`.
     // See internal-docs/bundler-data-lifecycle/implementation.md ("Cache integrity on a failed build").
     let ret = with_fn(&mut bundle).await;
+    bundle.set_mangle_properties(None);
     self.cache = bundle.cache;
     ret
   }

@@ -1449,6 +1449,43 @@ async fn final_output_preserves_annotation_options_independently_of_whitespace()
   Ok(())
 }
 
+#[tokio::test]
+async fn property_mangling_override_ends_after_scan_only_operations() -> Result<()> {
+  let fixture = Fixture::new(&[])?;
+  let mut options = fixture.options();
+  options.minify = Some(RawMinifyOptions::Bool(true));
+  options.experimental =
+    Some(ExperimentalOptions { incremental_build: Some(true), ..Default::default() });
+  let mut bundler = Bundler::new(options)?;
+  let source = "globalThis.value={shared_:7};events.push(globalThis.value.shared_);";
+  for fail_scan in [true, false] {
+    fixture.write("main.js", if fail_scan { "import './missing.js';" } else { source })?;
+    let result = bundler
+      .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
+        bundle.set_mangle_properties(Some(
+          oxc::minifier::ManglePropertiesOptions::from_pattern("_$").expect("valid pattern"),
+        ));
+        bundle.scan_modules(ScanMode::Full).await?;
+        Ok(())
+      })
+      .await;
+    ensure!(result.is_err() == fail_scan, "scan outcome: {result:?}");
+    fixture.write("main.js", source)?;
+    let output = bundler.incremental_generate(ScanMode::Full).await?;
+    ensure!(
+      output
+        .assets
+        .iter()
+        .any(|asset| { String::from_utf8_lossy(asset.content_as_bytes()).contains("shared_") }),
+      "a completed scan-only operation must not leave a property-mangling override"
+    );
+    fixture.output(&output)?;
+    assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!([7]));
+  }
+  bundler.close().await?;
+  Ok(())
+}
+
 #[derive(Debug)]
 struct LateChunk(Arc<AtomicBool>);
 
