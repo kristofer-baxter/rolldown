@@ -2,9 +2,9 @@ use std::sync::Arc;
 
 use oxc::ast::ast::{
   AccessorProperty, AssignmentExpression, AssignmentTarget, AssignmentTargetProperty,
-  BindingPattern, ChainElement, ComputedMemberExpression, Expression, Function,
-  IdentifierReference, MemberExpression, ObjectAssignmentTarget, ObjectPattern, ObjectProperty,
-  ObjectPropertyKind, Program, PropertyDefinition, PropertyKey, PropertyKind,
+  BindingPattern, ChainElement, ComputedMemberExpression, Expression, ExpressionStatement,
+  Function, IdentifierReference, MemberExpression, ObjectAssignmentTarget, ObjectPattern,
+  ObjectProperty, ObjectPropertyKind, Program, PropertyDefinition, PropertyKey, PropertyKind,
   SimpleAssignmentTarget, Span, StaticBlock, StaticMemberExpression, UnaryOperator,
   VariableDeclarator,
 };
@@ -522,6 +522,23 @@ pub fn expand_changed_shorthand_property<'a>(
 }
 
 impl<'a> VisitJsMut<'a> for ReplaceGlobalDefines<'a> {
+  fn visit_expression_statement(&mut self, stmt: &mut ExpressionStatement<'a>) {
+    if self.ast_node_lock.is_some() {
+      return;
+    }
+    // An empty key set proves the assignment result is discarded, not an observable object.
+    self.destructuring_keys = match stmt.expression.get_inner_expression() {
+      Expression::AssignmentExpression(assign)
+        if matches!(assign.left, AssignmentTarget::ObjectAssignmentTarget(_)) =>
+      {
+        Some(Vec::new())
+      }
+      _ => None,
+    };
+    self.visit_expression(&mut stmt.expression);
+    self.destructuring_keys = None;
+  }
+
   fn visit_object_property(&mut self, prop: &mut ObjectProperty<'a>) {
     walk_js_mut::walk_object_property(self, prop);
     expand_changed_shorthand_property(prop, self.allocator);
@@ -617,7 +634,7 @@ impl<'a> ReplaceGlobalDefines<'a> {
     let has_destructuring = self.destructuring_keys.is_some();
     let keep_destructuring = has_destructuring
       && match expr {
-        Expression::ParenthesizedExpression(_) | Expression::AwaitExpression(_) => true,
+        Expression::ParenthesizedExpression(_) => true,
         Expression::AssignmentExpression(assign) => {
           matches!(assign.left, AssignmentTarget::ObjectAssignmentTarget(_))
         }
@@ -654,7 +671,6 @@ impl<'a> ReplaceGlobalDefines<'a> {
     loop {
       match expr {
         Expression::ParenthesizedExpression(paren) => expr = &paren.expression,
-        Expression::AwaitExpression(await_expr) => expr = &await_expr.argument,
         Expression::AssignmentExpression(assign)
           if matches!(assign.left, AssignmentTarget::ObjectAssignmentTarget(_)) =>
         {
@@ -687,15 +703,14 @@ impl<'a> ReplaceGlobalDefines<'a> {
     right: &Expression<'a>,
     outer_keys: Option<Vec<CompactStr>>,
   ) {
-    if let AssignmentTarget::ObjectAssignmentTarget(pat) = left
+    if let Some(outer) = outer_keys
+      && let AssignmentTarget::ObjectAssignmentTarget(pat) = left
       && self.can_destructure_rhs(right)
     {
       if let Some(mut keys) = Self::collect_object_assignment_keys(pat) {
-        if let Some(outer) = outer_keys {
-          for k in outer {
-            if !keys.contains(&k) {
-              keys.push(k);
-            }
+        for k in outer {
+          if !keys.contains(&k) {
+            keys.push(k);
           }
         }
         self.destructuring_keys = Some(keys);

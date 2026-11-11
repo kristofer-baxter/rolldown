@@ -13,8 +13,8 @@ use std::{
 use anyhow::{Context, Result, ensure};
 use rolldown::{BundleOutput, Bundler, BundlerOptions};
 use rolldown_common::{
-  BundleMode, ChunkOptimizationOption, CommentsOptions, ExperimentalOptions, InlineConstOption,
-  InputItem, ManglePropertiesPattern, ManglePropertiesPatterns, ModuleDefFormat,
+  BundleMode, ChunkModulesOrderBy, ChunkOptimizationOption, CommentsOptions, ExperimentalOptions,
+  InlineConstOption, InputItem, ManglePropertiesPattern, ManglePropertiesPatterns, ModuleDefFormat,
   OptimizationOption, Output, OutputFormat, PreserveEntrySignatures, RawCompressOptions,
   RawMangleOptions, RawManglePropertiesOptions, RawMinifyOptions, RawMinifyOptionsDetailed,
   ScanMode,
@@ -1003,8 +1003,9 @@ async fn defines_preserve_shorthand_proto_own_properties_and_destructured_prefix
   let fixture = Fixture::new(&[(
     "main.js",
     "const value={__proto__};const {MODE}=process.env;\
+     let assigned;({MODE:assigned}=process.env);\
      events.push(Object.hasOwn(value,'__proto__'),\
-     Object.getPrototypeOf(value)===Object.prototype,value.__proto__,MODE);",
+     Object.getPrototypeOf(value)===Object.prototype,value.__proto__,MODE,assigned);",
   )])?;
   for minify in [false, true] {
     let mut options = fixture.options();
@@ -1022,7 +1023,7 @@ async fn defines_preserve_shorthand_proto_own_properties_and_destructured_prefix
     bundler.close().await?;
     assert_eq!(
       fixture.execute("./dist/main.js")?,
-      serde_json::json!([true, true, 7, "test"]),
+      serde_json::json!([true, true, 7, "test", "test"]),
       "minify={minify}"
     );
   }
@@ -1115,6 +1116,117 @@ async fn defines_keep_dotted_proto_children_distinct_from_prototype_setters() ->
       serde_json::json!([true, true, "configured", "extra"]),
       "minify={minify}"
     );
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn awaited_destructuring_defines_preserve_inherited_then_reads() -> Result<()> {
+  for target in ["CONFIG", "globalThis.CONFIG", "import.meta.env"] {
+    for assignment in [false, true] {
+      let binding = if assignment {
+        format!("let used;({{used}}=await {target});events.push(used)")
+      } else {
+        format!("const {{used}}=await {target};events.push(used)")
+      };
+      let source = format!(
+        "Object.defineProperty(Object.prototype,'then',{{configurable:true,\
+         get(){{events.push(this.unused);return undefined}}}});\
+         try{{{binding}}}finally{{delete Object.prototype.then}}"
+      );
+      let value = "({used:1,unused:2})";
+      let fixture = Fixture::new(&[("main.js", &source)])?;
+      fixture.write("reference.js", &source.replace(target, value))?;
+      let expected = fixture.execute("./reference.js")?;
+      assert_eq!(expected, serde_json::json!([2, 1]));
+      for minify in [false, true] {
+        let mut options = fixture.options();
+        options.define = Some(std::iter::once((target.to_owned(), value.to_owned())).collect());
+        options.minify = Some(RawMinifyOptions::Bool(minify));
+        let mut bundler = Bundler::new(options)?;
+        fixture.output(&bundler.generate().await?)?;
+        bundler.close().await?;
+        assert_eq!(
+          fixture.execute("./dist/main.js")?,
+          expected,
+          "target={target}, assignment={assignment}, minify={minify}"
+        );
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn defines_preserve_observed_destructuring_assignment_values() -> Result<()> {
+  for target in ["CONFIG", "globalThis.CONFIG", "import.meta.env"] {
+    for body in [
+      format!("const all=({{used}}={target});events.push(used,all.unused)"),
+      format!("events.push((value=>value)(({{used}}={target})).unused,used)"),
+      format!("events.push((()=>({{used}}={target}))().unused,used)"),
+      format!("events.push(Object.keys(({{used}}={target})),used)"),
+      format!("const all=(0,({{used}}={target}));events.push(used,all.unused)"),
+      format!("const all=true?({{used}}={target}):null;events.push(used,all.unused)"),
+      format!("const {{unused:other}}=({{used}}={target});events.push(used,other)"),
+      format!("const all=({{used}}=({{unused}}={target}));events.push(used,unused,all.unused)"),
+      format!(
+        "const all=({{...rest}}=({{used}}={target}));events.push(used,rest.unused,all.unused)"
+      ),
+    ] {
+      let source = format!("let used,unused,rest;{body};");
+      let fixture = Fixture::new(&[("main.js", &source)])?;
+      let value = "({used:1,unused:2})";
+      fixture.write("reference.js", &source.replace(target, value))?;
+      let expected = fixture.execute("./reference.js")?;
+      for minify in [false, true] {
+        let mut options = fixture.options();
+        options.define = Some(std::iter::once((target.to_owned(), value.to_owned())).collect());
+        options.minify = Some(RawMinifyOptions::Bool(minify));
+        let mut bundler = Bundler::new(options)?;
+        fixture.output(&bundler.generate().await?)?;
+        bundler.close().await?;
+        assert_eq!(
+          fixture.execute("./dist/main.js")?,
+          expected,
+          "target={target}, body={body}, minify={minify}"
+        );
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn fresh_object_integrity_calls_preserve_import_evaluation_order() -> Result<()> {
+  for method in ["freeze", "seal", "preventExtensions"] {
+    for argument in ["{}", "[]"] {
+      let fixture = Fixture::new(&[
+        ("main.js", "import './patch.js';import {value} from './leaf.js';events.push(value);"),
+        ("patch.js", &format!("Object.{method}=()=>{{events.push('patched');return 'changed'}};")),
+        ("leaf.js", &format!("export const value=Object.{method}({argument});")),
+      ])?;
+      let expected = fixture.execute("./main.js")?;
+      assert_eq!(expected, serde_json::json!(["patched", "changed"]));
+      for strict in [false, true] {
+        for minify in [false, true] {
+          let mut options = fixture.options();
+          options.strict_execution_order = Some(strict);
+          options.experimental = Some(ExperimentalOptions {
+            chunk_modules_order: Some(ChunkModulesOrderBy::ModuleId),
+            ..Default::default()
+          });
+          options.minify = Some(RawMinifyOptions::Bool(minify));
+          let mut bundler = Bundler::new(options)?;
+          fixture.output(&bundler.generate().await?)?;
+          bundler.close().await?;
+          assert_eq!(
+            fixture.execute("./dist/main.js")?,
+            expected,
+            "method={method}, argument={argument}, strict={strict}, minify={minify}"
+          );
+        }
+      }
+    }
   }
   Ok(())
 }

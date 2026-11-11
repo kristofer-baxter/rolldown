@@ -452,9 +452,7 @@ impl<'a> StmtEvalAnalyzer<'a> {
     if !has_side_effect {
       // The call itself is known pure/safe; keep the callee's order-sensitive reasons while
       // discarding its unknown side-effect marker.
-      if !is_fresh_freeze {
-        facts |= self.analyze_expr(&expr.callee).without_unknown_side_effect();
-      }
+      facts |= self.analyze_expr(&expr.callee).without_unknown_side_effect();
 
       if is_pure_annotated {
         // Pure-annotated calls bypass Oxc's arg checking, so we must check args
@@ -1120,13 +1118,6 @@ impl<'ast> VisitJs<'ast> for EagerEvaluationOrderReasonCollector<'_, '_> {
   }
 
   fn visit_call_expression(&mut self, call: &CallExpression<'ast>) {
-    if self.analyzer.is_fresh_object_freeze_call(call) {
-      for arg in &call.arguments {
-        self.visit_argument(arg);
-      }
-      return;
-    }
-
     let is_pure_annotated = !self.analyzer.flat_options.ignore_annotations()
       && (call.pure || self.analyzer.is_call_expr_marked_pure(call));
     let is_manual_pure =
@@ -2937,6 +2928,25 @@ let remove15 = class {
       get_stmt_order_sensitivity("class C { m() { return Math.max(1, 2) } }"),
       vec![false]
     );
+  }
+
+  #[test]
+  fn test_fresh_object_integrity_calls_are_pure_but_order_sensitive() {
+    let options = Arc::new(NormalizedBundlerOptions::default());
+    for method in ["freeze", "seal", "preventExtensions"] {
+      for argument in ["{}", "[]"] {
+        for code in [
+          format!("const value = Object.{method}({argument})"),
+          format!("class C {{ static value = /* @__PURE__ */ Object.{method}({argument}) }}"),
+        ] {
+          assert_eq!(
+            get_stmt_eval_with_options(&code, &options),
+            vec![(StmtEvalFlags::empty(), true)],
+            "{code}"
+          );
+        }
+      }
+    }
   }
 
   // The whole-class Oxc gate owns tree-shaking flags. The separate definition-time walk must
