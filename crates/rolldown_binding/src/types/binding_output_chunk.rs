@@ -188,6 +188,7 @@ pub fn update_output_chunk(
   } else {
     let old_chunk = Arc::as_ref(chunk);
     *chunk = Arc::new(rolldown_common::OutputChunk {
+      emitted_reference_id: old_chunk.emitted_reference_id.clone(),
       name: old_chunk.name.clone(),
       is_entry: js_chunk.is_entry, // used by nuxt
       is_dynamic_entry: old_chunk.is_dynamic_entry,

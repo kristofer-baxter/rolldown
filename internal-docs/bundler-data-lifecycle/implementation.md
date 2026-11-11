@@ -128,9 +128,12 @@ from the same reference replaces its pending bytes; distinct references with the
 same filename fail closed.
 
 After each successful `generateBundle` or `writeBundle` hook, pending emissions
-capture the exposed bundle values, including removals, before draining new
-emissions. This retains one-shot hook edits if a later hook, validation, write or
-cleanup fails, while a newer emission from the same reference still takes precedence.
+capture the exposed bundle values, including removals and renames, before draining
+new emissions. Emitted assets and prebuilt chunks carry their stable emitter
+reference through clones and binding edits, independently of bundle order or
+filename. This retains one-shot hook edits if a later hook, validation, write or
+cleanup fails, while a newer emission from the same reference still takes precedence
+and replaces the renamed output rather than leaving both names in the bundle.
 
 The scan cache preserves `native_commonjs_records` across full scans, independently
 of its graph snapshot. Failed native output invalidates both the retained link and

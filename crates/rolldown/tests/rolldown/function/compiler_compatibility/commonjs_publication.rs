@@ -354,6 +354,7 @@ impl rolldown_plugin::Plugin for AssetPlugin {
         "dep.js.cjs-factory.js.map"
       };
       args.bundle.push(rolldown_common::Output::Asset(Arc::new(rolldown_common::OutputAsset {
+        emitted_reference_id: None,
         filename: filename.into(),
         source: "late asset".to_owned().into(),
         names: Vec::new(),
@@ -626,6 +627,7 @@ impl rolldown_plugin::Plugin for ManifestPlugin {
       && !matches!(self.scenario, Scenario::CleanupFailure | Scenario::WriteFailure)
     {
       args.bundle.push(rolldown_common::Output::Asset(Arc::new(rolldown_common::OutputAsset {
+        emitted_reference_id: None,
         filename: "entry.js.cjs-factory.js".into(),
         source: "collision".to_owned().into(),
         names: Vec::new(),
@@ -785,12 +787,35 @@ async fn native_commonjs_output_failures_preserve_emitted_asset_updates() -> Res
 
 #[tokio::test]
 async fn native_commonjs_retries_preserve_one_shot_output_hook_edits() -> Result<()> {
-  check_one_shot_output_hook_retry(false).await
+  check_one_shot_output_hook_retry(OutputHookEdit::Mutate).await
 }
 
 #[tokio::test]
 async fn native_commonjs_retries_preserve_one_shot_output_hook_removals() -> Result<()> {
-  check_one_shot_output_hook_retry(true).await
+  check_one_shot_output_hook_retry(OutputHookEdit::Remove).await
+}
+
+#[tokio::test]
+async fn native_commonjs_retries_preserve_one_shot_output_hook_renames() -> Result<()> {
+  check_one_shot_output_hook_retry(OutputHookEdit::Rename).await?;
+  check_one_shot_output_hook_retry(OutputHookEdit::RenamePrebuilt).await
+}
+
+#[tokio::test]
+async fn native_commonjs_output_hook_renames_allow_newer_emissions_and_reject_other_owners()
+-> Result<()> {
+  check_one_shot_output_hook_retry(OutputHookEdit::RenameReemit).await?;
+  check_one_shot_output_hook_retry(OutputHookEdit::RenameCollision).await
+}
+
+#[derive(Debug, Clone, Copy)]
+enum OutputHookEdit {
+  Mutate,
+  Remove,
+  Rename,
+  RenamePrebuilt,
+  RenameReemit,
+  RenameCollision,
 }
 
 #[derive(Debug)]
@@ -798,26 +823,71 @@ struct OneShotOutputEditPlugin {
   armed: Arc<AtomicBool>,
   emitted: AtomicBool,
   edited: AtomicBool,
-  remove: bool,
+  edit: OutputHookEdit,
   at_write: bool,
 }
 impl OneShotOutputEditPlugin {
-  fn edit(&self, bundle: &mut Vec<rolldown_common::Output>) {
+  fn edit(
+    &self,
+    ctx: &rolldown_plugin::PluginContext,
+    bundle: &mut Vec<rolldown_common::Output>,
+  ) -> rolldown_plugin::HookNoopReturn {
     if !self.armed.load(Ordering::Relaxed) || self.edited.swap(true, Ordering::Relaxed) {
-      return;
+      return Ok(());
     }
-    if self.remove {
+    if matches!(self.edit, OutputHookEdit::Remove) {
       bundle.retain(|output| output.filename() != "manifest.json");
     } else {
-      let asset = bundle
+      let output = bundle
         .iter_mut()
-        .find_map(|output| match output {
-          rolldown_common::Output::Asset(asset) if asset.filename == "manifest.json" => Some(asset),
-          _ => None,
-        })
+        .find(|output| output.filename() == "manifest.json")
         .expect("one-shot emission must reach the output hook");
-      Arc::make_mut(asset).source = "v2".to_owned().into();
+      let rename = matches!(
+        self.edit,
+        OutputHookEdit::Rename
+          | OutputHookEdit::RenamePrebuilt
+          | OutputHookEdit::RenameReemit
+          | OutputHookEdit::RenameCollision
+      );
+      match output {
+        rolldown_common::Output::Asset(asset) => {
+          let asset = Arc::make_mut(asset);
+          asset.source = "v2".to_owned().into();
+          if rename {
+            asset.filename = "renamed.json".into();
+          }
+        }
+        rolldown_common::Output::Chunk(chunk) => {
+          let chunk = Arc::make_mut(chunk);
+          "v2".clone_into(&mut chunk.code);
+          if rename {
+            chunk.filename = "renamed.json".into();
+          }
+        }
+      }
+      if rename {
+        bundle.reverse();
+      }
+      if matches!(self.edit, OutputHookEdit::RenameReemit | OutputHookEdit::RenameCollision) {
+        ctx.emit_file(
+          rolldown_common::EmittedAsset {
+            file_name: Some(
+              if matches!(self.edit, OutputHookEdit::RenameReemit) {
+                "manifest.json"
+              } else {
+                "renamed.json"
+              }
+              .into(),
+            ),
+            source: "v3".to_owned().into(),
+            ..Default::default()
+          },
+          None,
+          None,
+        )?;
+      }
     }
+    Ok(())
   }
 }
 impl rolldown_plugin::Plugin for OneShotOutputEditPlugin {
@@ -835,35 +905,52 @@ impl rolldown_plugin::Plugin for OneShotOutputEditPlugin {
     _: &rolldown_plugin::HookBuildStartArgs<'_>,
   ) -> rolldown_plugin::HookNoopReturn {
     if self.armed.load(Ordering::Relaxed) && !self.emitted.swap(true, Ordering::Relaxed) {
-      ctx.emit_file(
-        rolldown_common::EmittedAsset {
-          file_name: Some("manifest.json".into()),
-          source: "v1".to_owned().into(),
-          ..Default::default()
-        },
-        None,
-        None,
-      )?;
+      if matches!(self.edit, OutputHookEdit::RenamePrebuilt) {
+        let rolldown_plugin::PluginContext::Native(ctx) = ctx else {
+          anyhow::bail!("prebuilt fixture requires a native context");
+        };
+        ctx.emit_prebuilt_chunk(rolldown_common::EmittedPrebuiltChunk {
+          file_name: "manifest.json".into(),
+          code: "v1".to_owned(),
+          name: None,
+          exports: Vec::new(),
+          map: None,
+          sourcemap_filename: None,
+          facade_module_id: None,
+          is_entry: false,
+          is_dynamic_entry: false,
+        });
+      } else {
+        ctx.emit_file(
+          rolldown_common::EmittedAsset {
+            file_name: Some("manifest.json".into()),
+            source: "v1".to_owned().into(),
+            ..Default::default()
+          },
+          None,
+          None,
+        )?;
+      }
     }
     Ok(())
   }
   async fn generate_bundle(
     &self,
-    _: &rolldown_plugin::PluginContext,
+    ctx: &rolldown_plugin::PluginContext,
     args: &mut rolldown_plugin::HookGenerateBundleArgs<'_>,
   ) -> rolldown_plugin::HookNoopReturn {
     if !self.at_write {
-      self.edit(args.bundle);
+      self.edit(ctx, args.bundle)?;
     }
     Ok(())
   }
   async fn write_bundle(
     &self,
-    _: &rolldown_plugin::PluginContext,
+    ctx: &rolldown_plugin::PluginContext,
     args: &mut rolldown_plugin::HookWriteBundleArgs<'_>,
   ) -> rolldown_plugin::HookNoopReturn {
     if self.at_write {
-      self.edit(args.bundle);
+      self.edit(ctx, args.bundle)?;
     }
     Ok(())
   }
@@ -889,6 +976,7 @@ impl rolldown_plugin::Plugin for FailAfterOutputEditPlugin {
     if self.fail.load(Ordering::Relaxed) {
       if self.validation {
         args.bundle.push(rolldown_common::Output::Asset(Arc::new(rolldown_common::OutputAsset {
+          emitted_reference_id: None,
           filename: "entry.js.cjs-factory.js".into(),
           source: "collision".to_owned().into(),
           names: Vec::new(),
@@ -909,7 +997,7 @@ impl rolldown_plugin::Plugin for FailAfterOutputEditPlugin {
     Ok(())
   }
 }
-async fn check_one_shot_output_hook_retry(remove: bool) -> Result<()> {
+async fn check_one_shot_output_hook_retry(edit: OutputHookEdit) -> Result<()> {
   for force_full_link in [false, true] {
     for (at_write, failure) in [
       (false, "generate"),
@@ -954,7 +1042,7 @@ async fn check_one_shot_output_hook_retry(remove: bool) -> Result<()> {
           armed: Arc::clone(&armed),
           emitted: AtomicBool::new(false),
           edited: AtomicBool::new(false),
-          remove,
+          edit,
           at_write,
         },
       )];
@@ -997,8 +1085,16 @@ async fn check_one_shot_output_hook_retry(remove: bool) -> Result<()> {
           bundler.incremental_generate(scan).await
         };
         let case = format!(
-          "round={round}, failure={failure}, at_write={at_write}, remove={remove}, full={force_full_link}"
+          "round={round}, failure={failure}, at_write={at_write}, edit={edit:?}, full={force_full_link}"
         );
+        if round > 0 && matches!(edit, OutputHookEdit::RenameCollision) {
+          let error = result.err().with_context(|| format!("{case}: expected owner collision"))?;
+          assert!(
+            format!("{error:?}").contains("conflicting native record output filename"),
+            "{case}: {error:?}"
+          );
+          continue;
+        }
         if matches!(round, 1 | 2) {
           let error = result.err().with_context(|| format!("{case}: expected failure"))?;
           let expected = match failure {
@@ -1011,11 +1107,21 @@ async fn check_one_shot_output_hook_retry(remove: bool) -> Result<()> {
           continue;
         }
         let output = result.map_err(|error| anyhow::anyhow!("{case}: {error:?}"))?;
-        let manifest = output.assets.iter().find(|output| output.filename() == "manifest.json");
-        if round == 3 && !remove {
-          assert_eq!(manifest.context(case.clone())?.content_as_bytes(), b"v2", "{case}");
+        let filename = if matches!(edit, OutputHookEdit::Rename | OutputHookEdit::RenamePrebuilt) {
+          assert!(output.assets.iter().all(|asset| asset.filename() != "manifest.json"), "{case}");
+          "renamed.json"
+        } else {
+          "manifest.json"
+        };
+        let manifest = output.assets.iter().find(|output| output.filename() == filename);
+        if round == 3 && !matches!(edit, OutputHookEdit::Remove) {
+          let expected = if matches!(edit, OutputHookEdit::RenameReemit) { b"v3" } else { b"v2" };
+          assert_eq!(manifest.context(case.clone())?.content_as_bytes(), expected, "{case}");
+          if matches!(edit, OutputHookEdit::RenameReemit) {
+            assert!(output.assets.iter().all(|asset| asset.filename() != "renamed.json"), "{case}");
+          }
           if writing {
-            assert_eq!(fs::read(published.0.as_path().join("manifest.json"))?, b"v2", "{case}");
+            assert_eq!(fs::read(published.0.as_path().join(filename))?, expected, "{case}");
           }
         } else {
           assert!(manifest.is_none(), "{case}: removed or committed emission was replayed");

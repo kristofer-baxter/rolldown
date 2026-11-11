@@ -52,6 +52,7 @@ fn rendered_shebang(code: &str) -> Option<ArcStr> {
 
 fn omit_chunk_bytes(chunk: &OutputChunk) -> OutputChunk {
   OutputChunk {
+    emitted_reference_id: chunk.emitted_reference_id.clone(),
     name: chunk.name.clone(),
     filename: chunk.filename.clone(),
     code: String::new(),
@@ -193,6 +194,7 @@ impl GenerateStage<'_> {
           let code = code.try_into_string()?;
           let rendered_chunk = ecma_meta.rendered_chunk;
           let mut chunk = OutputChunk {
+            emitted_reference_id: None,
             name: rendered_chunk.name.clone(),
             filename: filename.clone(),
             code,
@@ -223,6 +225,7 @@ impl GenerateStage<'_> {
         }
         InstantiationKind::Sourcemap(sourcemap_meta) => {
           let asset_arc = Arc::new(OutputAsset {
+            emitted_reference_id: None,
             filename: filename.clone(),
             source: code,
             original_file_names: sourcemap_meta.original_file_names,
@@ -237,6 +240,7 @@ impl GenerateStage<'_> {
         }
         InstantiationKind::None => {
           output.push(Output::Asset(Arc::new(OutputAsset {
+            emitted_reference_id: None,
             filename: filename.clone(),
             source: code,
             original_file_names: vec![],
@@ -390,6 +394,7 @@ impl GenerateStage<'_> {
       code.push_str("export default requireCommonJs();\n");
       exports.push("default".into());
       facades.push(Output::Chunk(Arc::new(OutputChunk {
+        emitted_reference_id: None,
         name: definition_chunk.name.clone(),
         filename: filename.into(),
         code,
@@ -1109,6 +1114,7 @@ impl GenerateStage<'_> {
           let definition =
             originate_from.filter(|idx| chunk_graph.native_commonjs_definitions.contains_key(idx));
           let chunk_arc = Arc::new(OutputChunk {
+            emitted_reference_id: None,
             name: rendered_chunk.name.clone(),
             filename: filename.clone(),
             code,
@@ -1137,6 +1143,7 @@ impl GenerateStage<'_> {
         }
         InstantiationKind::Sourcemap(sourcemap_meta) => {
           let asset_arc = Arc::new(OutputAsset {
+            emitted_reference_id: None,
             filename: filename.clone(),
             source: code,
             original_file_names: sourcemap_meta.original_file_names,
@@ -1146,6 +1153,7 @@ impl GenerateStage<'_> {
         }
         InstantiationKind::None => {
           extra_assets.push(Output::Asset(Arc::new(OutputAsset {
+            emitted_reference_id: None,
             filename: filename.clone(),
             source: code,
             original_file_names: vec![],
@@ -1173,6 +1181,7 @@ impl GenerateStage<'_> {
         if let Some(decision_hash) = chunk_decisions.get(chunk_idx).and_then(|d| *d) {
           let module_idx = chunk_graph.chunk_table[chunk_idx].modules[0];
           let cached_chunk = Arc::new(OutputChunk {
+            emitted_reference_id: chunk_arc.emitted_reference_id.clone(),
             name: chunk_arc.name.clone(),
             filename: chunk_arc.filename.clone(),
             code: String::new(),

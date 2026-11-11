@@ -89,8 +89,10 @@ impl JsChangedOutputs {
                 result = Err(err);
               }
             }
-            (v @ rolldown_common::Output::Asset(_), Either::B(asset)) => {
-              *v = rolldown_common::Output::Asset(Arc::new(asset.into()));
+            (rolldown_common::Output::Asset(old_asset), Either::B(asset)) => {
+              let mut asset: rolldown_common::OutputAsset = asset.into();
+              asset.emitted_reference_id.clone_from(&old_asset.emitted_reference_id);
+              *old_asset = Arc::new(asset);
             }
             _ => {}
           }
@@ -154,5 +156,82 @@ pub fn to_binding_error(diagnostic: &BuildDiagnostic, cwd: std::path::PathBuf) -
         pos,
       })
     }
+  }
+}
+
+#[cfg(test)]
+mod tests {
+  use super::*;
+  use rolldown_common::{Output, OutputAsset, OutputChunk};
+
+  #[test]
+  fn binding_output_renames_preserve_emitter_ownership() -> anyhow::Result<()> {
+    for shared in [false, true] {
+      let mut outputs = vec![
+        Output::Asset(Arc::new(OutputAsset {
+          emitted_reference_id: Some("asset-ref".into()),
+          filename: "asset.txt".into(),
+          source: "v1".to_owned().into(),
+          names: Vec::new(),
+          original_file_names: Vec::new(),
+        })),
+        Output::Chunk(Arc::new(OutputChunk {
+          emitted_reference_id: Some("chunk-ref".into()),
+          name: "chunk".into(),
+          filename: "chunk.js".into(),
+          code: "v1".into(),
+          is_entry: false,
+          is_dynamic_entry: false,
+          facade_module_id: None,
+          module_ids: Vec::new(),
+          exports: Vec::new(),
+          modules: rustc_hash::FxHashMap::default().into(),
+          imports: Vec::new(),
+          dynamic_imports: Vec::new(),
+          map: None,
+          sourcemap_filename: None,
+          preliminary_filename: "chunk.js".into(),
+        })),
+      ];
+      let snapshots = if shared { outputs.clone() } else { Vec::new() };
+      JsChangedOutputs {
+        deleted: HashSet::default(),
+        changes: HashMap::from_iter([
+          (
+            "asset.txt".to_owned(),
+            Either::B(JsOutputAsset {
+              names: Vec::new(),
+              original_file_names: Vec::new(),
+              filename: "renamed.txt".into(),
+              source: rolldown_common::StrOrBytes::Str("v2".into()).into(),
+            }),
+          ),
+          (
+            "chunk.js".to_owned(),
+            Either::A(JsOutputChunk {
+              filename: "renamed.js".into(),
+              is_entry: false,
+              code: Some("v2".into()),
+              map: None,
+              imports: None,
+              dynamic_imports: None,
+            }),
+          ),
+        ]),
+      }
+      .apply_changes(&mut outputs)?;
+      for (output, reference, filename) in
+        [(&outputs[0], "asset-ref", "renamed.txt"), (&outputs[1], "chunk-ref", "renamed.js")]
+      {
+        assert_eq!(output.emitted_reference_id().map(AsRef::as_ref), Some(reference));
+        assert_eq!(output.filename(), filename);
+        assert_eq!(output.content_as_bytes(), b"v2");
+      }
+      if shared {
+        assert_eq!(snapshots[0].filename(), "asset.txt");
+        assert_eq!(snapshots[1].filename(), "chunk.js");
+      }
+    }
+    Ok(())
   }
 }

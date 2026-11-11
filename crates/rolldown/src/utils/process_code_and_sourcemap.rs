@@ -262,6 +262,7 @@ pub fn emit_sourcemap_with_json(
           )?;
         }
         return Ok(Some(OutputAsset {
+          emitted_reference_id: None,
           filename: map_filename.into(),
           source: source.into(),
           original_file_names: vec![],

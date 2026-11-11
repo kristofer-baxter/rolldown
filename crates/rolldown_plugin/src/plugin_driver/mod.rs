@@ -292,16 +292,28 @@ impl PluginDriver {
     // See internal-docs/bundler-data-lifecycle/implementation.md.
     if !state.exposed.is_empty() {
       let positions = positions.insert(output_positions());
+      let mut owned_positions = std::collections::BTreeMap::new();
+      for (index, output) in bundle.iter().enumerate() {
+        if let Some(reference) = output.emitted_reference_id() {
+          anyhow::ensure!(
+            owned_positions.insert(reference.clone(), index).is_none(),
+            "duplicate emitted output reference: {reference}"
+          );
+        }
+      }
       let PendingEmittedOutputs { outputs, exposed, .. } = &mut *state;
-      for (reference, filename) in exposed.iter() {
-        match positions.get(&filename.to_lowercase()) {
-          Some(Some(index)) => {
-            outputs.insert(reference.clone(), bundle[*index].clone());
-          }
-          Some(None) => anyhow::bail!("conflicting native record output filename: {filename}"),
-          None => {
-            outputs.remove(reference);
-          }
+      for (reference, filename) in exposed.iter_mut() {
+        if let Some(index) = owned_positions.get(reference) {
+          let output = &bundle[*index];
+          let new_filename = output.filename();
+          anyhow::ensure!(
+            positions.get(&new_filename.to_lowercase()) == Some(&Some(*index)),
+            "conflicting native record output filename: {new_filename}"
+          );
+          outputs.insert(reference.clone(), output.clone());
+          new_filename.clone_into(filename);
+        } else {
+          outputs.remove(reference);
         }
       }
     }
@@ -341,9 +353,18 @@ impl PluginDriver {
       let key = filename.to_lowercase();
       let existing = positions.get(&key);
       let replace = if let Some(exposed) = state.exposed.get(&reference) {
-        anyhow::ensure!(exposed == &filename, "emitted reference changed its filename: {filename}");
-        match existing {
-          Some(Some(index)) => Some(*index),
+        let old_key = exposed.to_lowercase();
+        let old_position = positions.get(&old_key);
+        anyhow::ensure!(
+          existing.is_none() || existing == old_position,
+          "conflicting native record output filename: {filename}"
+        );
+        match old_position {
+          Some(Some(index)) => {
+            let index = *index;
+            positions.remove(&old_key);
+            Some(index)
+          }
           Some(None) => anyhow::bail!("conflicting native record output filename: {filename}"),
           None => None,
         }
@@ -355,6 +376,7 @@ impl PluginDriver {
         None
       };
       if let Some(index) = replace {
+        positions.insert(key, Some(index));
         bundle[index] = output;
       } else {
         positions.insert(key, Some(bundle.len()));

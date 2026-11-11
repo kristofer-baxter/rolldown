@@ -350,8 +350,9 @@ impl FileEmitter {
       self.emitted_files.remove(&reference_id);
     }
     self.files.insert(
-      reference_id,
+      reference_id.clone(),
       OutputAsset {
+        emitted_reference_id: Some(reference_id),
         filename: file.file_name.clone().unwrap(),
         source: std::mem::take(&mut file.source),
         names: std::mem::take(&mut file.name).map_or(vec![], |name| vec![name]),
@@ -399,6 +400,7 @@ impl FileEmitter {
       let mut original_file_names = std::mem::take(&mut value.original_file_names);
       original_file_names.sort_unstable();
       additional_assets.push(Output::Asset(Arc::new(OutputAsset {
+        emitted_reference_id: Some(key.clone()),
         filename: value.filename.clone(),
         names,
         original_file_names,
@@ -426,6 +428,7 @@ impl FileEmitter {
       }
 
       bundle.push(Output::Chunk(Arc::new(OutputChunk {
+        emitted_reference_id: Some(key.clone()),
         name: value.name.clone().unwrap_or_else(|| value.file_name.clone()),
         is_entry: value.is_entry,
         is_dynamic_entry: value.is_dynamic_entry,

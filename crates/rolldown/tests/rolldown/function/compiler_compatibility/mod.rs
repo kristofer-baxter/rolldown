@@ -575,6 +575,7 @@ impl Plugin for ReplaceMangledChunk {
         }
       }
       args.bundle.push(Output::Asset(Arc::new(rolldown_common::OutputAsset {
+        emitted_reference_id: None,
         filename: "hook.txt".into(),
         source: "asset".to_string().into(),
         names: vec![],

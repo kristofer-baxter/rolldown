@@ -6,6 +6,8 @@ use crate::{OutputChunk, StrOrBytes};
 
 #[derive(Debug, Clone)]
 pub struct OutputAsset {
+  /// Emitter ownership retained across output-hook cloning, mutation and renaming.
+  pub emitted_reference_id: Option<ArcStr>,
   pub names: Vec<String>,
   pub original_file_names: Vec<String>,
   pub filename: ArcStr,
@@ -19,6 +21,13 @@ pub enum Output {
 }
 
 impl Output {
+  pub fn emitted_reference_id(&self) -> Option<&ArcStr> {
+    match self {
+      Self::Chunk(chunk) => chunk.emitted_reference_id.as_ref(),
+      Self::Asset(asset) => asset.emitted_reference_id.as_ref(),
+    }
+  }
+
   pub fn filename(&self) -> &str {
     match self {
       Self::Chunk(chunk) => &chunk.filename,

@@ -714,6 +714,7 @@ impl GenerateStage<'_> {
         reject!();
       };
       let placeholder = Output::Chunk(Arc::new(OutputChunk {
+        emitted_reference_id: None,
         name: chunk.name.clone().unwrap_or_default(),
         filename: filename.clone(),
         code: String::new(),
