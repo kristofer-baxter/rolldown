@@ -6,9 +6,10 @@ use std::time::{Duration, Instant};
 use anyhow::{Context, Result, ensure};
 use rolldown::{BundleOutput, Bundler, BundlerOptions};
 use rolldown_common::{
-  ClientHmrInput, CodeSplittingMode, DevModeOptions, ExperimentalOptions, HmrStampTable, HmrUpdate,
-  InputItem, ManualCodeSplittingOptions, MatchGroup, MatchGroupName, MatchGroupTest, ModuleType,
-  OutputFormat, RawMinifyOptions, ScanMode, SourceMapType, TreeshakeOptions, WatcherChangeKind,
+  ChunkOptimizationOption, ClientHmrInput, CodeSplittingMode, DevModeOptions, ExperimentalOptions,
+  HmrStampTable, HmrUpdate, InputItem, ManualCodeSplittingOptions, MatchGroup, MatchGroupName,
+  MatchGroupTest, ModuleType, OutputFormat, Platform, RawMinifyOptions, ScanMode, SourceMapType,
+  TreeshakeOptions, WatcherChangeKind,
 };
 use rolldown_utils::indexmap::FxIndexMap;
 use rustc_hash::FxHashSet;
@@ -1166,5 +1167,263 @@ async fn development_mode_cache_tracks_dynamic_shared_chunk_exports_and_rejects_
       "unexpected format admission error: {message}"
     );
   }
+  Ok(())
+}
+
+#[tokio::test]
+async fn development_mode_cache_tracks_simulated_facade_and_dynamic_namespaces() -> Result<()> {
+  // 1. Single-chunk bundled development rebuilds across partial and full dynamic-import reads.
+  let dev_fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import {stable} from './stable.js';const {a}=await import('./target.js');\
+       events.push(a,globalThis.internal,stable());import.meta.hot.accept();",
+    ),
+    (
+      "target.js",
+      "export let a=10;export let b=20;\
+       export function internal(){return [a,b];}globalThis.internal=internal();",
+    ),
+    ("stable.js", "export function stable(){return 42;}"),
+  ])?;
+  let mut dev_opts = options(&dev_fixture, false, true);
+  dev_opts.treeshake = TreeshakeOptions::Boolean(true);
+  dev_opts.code_splitting = Some(CodeSplittingMode::Bool(false));
+  let mut dev_cached = Bundler::new(dev_opts.clone())?;
+  let dev_initial = dev_cached.incremental_generate(ScanMode::Full).await?;
+  dev_fixture.output(&dev_initial)?;
+  assert_eq!(dev_fixture.execute("./dist/main.js")?, serde_json::json!([10, [10, 20], 42]));
+
+  for (main_src, expected) in [
+    (
+      "import {stable} from './stable.js';const {b}=await import('./target.js');\
+       events.push(b,globalThis.internal,stable());import.meta.hot.accept();",
+      serde_json::json!([20, [10, 20], 42]),
+    ),
+    (
+      "import {stable} from './stable.js';const ns=await import('./target.js');\
+       events.push(Object.keys(ns).sort(),ns.a,ns.b,stable());import.meta.hot.accept();",
+      serde_json::json!([["a", "b", "internal"], 10, 20, 42]),
+    ),
+    (
+      "import {stable} from './stable.js';const {a}=await import('./target.js');\
+       events.push(a,globalThis.internal,stable());import.meta.hot.accept();",
+      serde_json::json!([10, [10, 20], 42]),
+    ),
+  ] {
+    dev_fixture.write("main.js", main_src)?;
+    let actual = dev_cached.incremental_generate(partial_scan(&dev_fixture, "main.js")).await?;
+    ensure!(
+      dev_cached.last_reused_finalized_modules() > 0,
+      "unchanged sibling modules must reuse finalized sources"
+    );
+    let mut fresh = Bundler::new(dev_opts.clone())?;
+    let expected_out = fresh.incremental_generate(ScanMode::Full).await?;
+    fresh.close().await?;
+    assert_eq!(asset_map(&actual), asset_map(&expected_out));
+    dev_fixture.output(&actual)?;
+    assert_eq!(dev_fixture.execute("./dist/main.js")?, expected);
+  }
+  dev_cached.close().await?;
+
+  // 2. Simulated-facade export-set and semantic-namespace transitions on an unchanged module
+  //    whose exports `a` and `b` remain internally referenced across every build.
+  let facade_fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import './other.js';const {a}=await import('./target-shared.js');\
+       events.push(a,globalThis.internal,globalThis.helperVal);",
+    ),
+    ("other.js", "import {helper} from './helper-shared.js';globalThis.helperVal=helper();"),
+    (
+      "target-shared.js",
+      "export let a=10;export let b=20;\
+       export function internal(){return [a,b];}globalThis.internal=internal();",
+    ),
+    ("helper-shared.js", "export function helper(){return 7;}"),
+  ])?;
+  let make_facade_opts = || {
+    let mut opts = facade_fixture.options();
+    opts.minify = Some(RawMinifyOptions::Bool(false));
+    opts.treeshake = TreeshakeOptions::Boolean(true);
+    opts.experimental =
+      Some(ExperimentalOptions { incremental_build: Some(true), ..Default::default() });
+    opts.code_splitting = Some(CodeSplittingMode::Advanced(ManualCodeSplittingOptions {
+      groups: Some(vec![MatchGroup {
+        name: MatchGroupName::Static("shared".into()),
+        test: Some(MatchGroupTest::Function(Arc::new(|ids: Vec<String>| {
+          Box::pin(async move { Ok(ids.iter().map(|id| id.ends_with("-shared.js")).collect()) })
+        }))),
+        min_share_count: Some(1),
+        include_dependencies_recursively: Some(false),
+        ..Default::default()
+      }]),
+      ..Default::default()
+    }));
+    opts
+  };
+  let mut facade_cached = Bundler::new(make_facade_opts())?;
+  let facade_initial = facade_cached.incremental_generate(ScanMode::Full).await?;
+  facade_fixture.output(&facade_initial)?;
+  assert_eq!(facade_fixture.execute("./dist/main.js")?, serde_json::json!([10, [10, 20], 7]));
+
+  for (main_src, expected) in [
+    (
+      "import './other.js';const {b}=await import('./target-shared.js');\
+       events.push(b,globalThis.internal,globalThis.helperVal);",
+      serde_json::json!([20, [10, 20], 7]),
+    ),
+    (
+      "import './other.js';const ns=await import('./target-shared.js');\
+       events.push(Object.keys(ns).sort(),ns.a,ns.b,globalThis.helperVal);",
+      serde_json::json!([["a", "b", "internal"], 10, 20, 7]),
+    ),
+    (
+      "import './other.js';import * as ns from './target-shared.js';\
+       events.push(Object.keys(ns).sort(),ns.a,ns.b,globalThis.helperVal);",
+      serde_json::json!([["a", "b", "internal"], 10, 20, 7]),
+    ),
+    (
+      "import './other.js';const {a}=await import('./target-shared.js');\
+       events.push(a,globalThis.internal,globalThis.helperVal);",
+      serde_json::json!([10, [10, 20], 7]),
+    ),
+  ] {
+    facade_fixture.write("main.js", main_src)?;
+    let actual =
+      facade_cached.incremental_generate(partial_scan(&facade_fixture, "main.js")).await?;
+    let mut fresh = Bundler::new(make_facade_opts())?;
+    let expected_out = fresh.incremental_generate(ScanMode::Full).await?;
+    fresh.close().await?;
+    assert_eq!(asset_map(&actual), asset_map(&expected_out));
+    facade_fixture.output(&actual)?;
+    assert_eq!(facade_fixture.execute("./dist/main.js")?, expected);
+  }
+  facade_cached.close().await?;
+  Ok(())
+}
+
+#[tokio::test]
+async fn development_mode_cache_tracks_absorbed_facade_and_star_namespace_completion() -> Result<()>
+{
+  // Absorbed simulated-facade namespace (`SimulateFacadeChunk`) where `target_exports` stays
+  // the sole exported symbol of the shared common chunk while narrowed properties change from
+  // `{ a }` to `{ b }` to the full namespace.
+  let absorbed_fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import {helper} from './helper.js';const {a,absent}=await import('./target.js');\
+       events.push(a,absent??null,globalThis.internal,helper());",
+    ),
+    (
+      "preload.js",
+      "import {helper} from './helper.js';import {internal} from './target.js';\
+       globalThis.preloaded=[helper(),internal()];",
+    ),
+    (
+      "target.js",
+      "export let a=10;export let b=20;\
+       export function internal(){return [a,b];}globalThis.internal=internal();",
+    ),
+    ("helper.js", "export function helper(){return 7;}"),
+  ])?;
+  let make_absorbed_opts = || {
+    let mut opts = absorbed_fixture.options();
+    opts.input = Some(vec![
+      InputItem { name: Some("main".into()), import: "./main.js".into() },
+      InputItem { name: Some("preload".into()), import: "./preload.js".into() },
+    ]);
+    opts.minify = Some(RawMinifyOptions::Bool(false));
+    opts.treeshake = TreeshakeOptions::Boolean(true);
+    opts.experimental = Some(ExperimentalOptions {
+      incremental_build: Some(true),
+      chunk_optimization: Some(ChunkOptimizationOption::Bool(true)),
+      ..Default::default()
+    });
+    opts
+  };
+  let mut absorbed_cached = Bundler::new(make_absorbed_opts())?;
+  let absorbed_initial = absorbed_cached.incremental_generate(ScanMode::Full).await?;
+  absorbed_fixture.output(&absorbed_initial)?;
+  assert_eq!(
+    absorbed_fixture.execute("./dist/main.js")?,
+    serde_json::json!([10, null, [10, 20], 7])
+  );
+
+  for (main_src, expected) in [
+    (
+      "import {helper} from './helper.js';const {b,absent}=await import('./target.js');\
+       events.push(b,absent??null,globalThis.internal,helper());",
+      serde_json::json!([20, null, [10, 20], 7]),
+    ),
+    (
+      "import {helper} from './helper.js';const ns=await import('./target.js');\
+       events.push(Object.keys(ns).sort(),ns.a,ns.b,helper());",
+      serde_json::json!([["a", "b", "internal"], 10, 20, 7]),
+    ),
+    (
+      "import {helper} from './helper.js';import * as ns from './target.js';\
+       events.push(Object.keys(ns).sort(),ns.a,ns.b,helper());",
+      serde_json::json!([["a", "b", "internal"], 10, 20, 7]),
+    ),
+    (
+      "import {helper} from './helper.js';const {a,absent}=await import('./target.js');\
+       events.push(a,absent??null,globalThis.internal,helper());",
+      serde_json::json!([10, null, [10, 20], 7]),
+    ),
+  ] {
+    absorbed_fixture.write("main.js", main_src)?;
+    let actual =
+      absorbed_cached.incremental_generate(partial_scan(&absorbed_fixture, "main.js")).await?;
+    let mut fresh = Bundler::new(make_absorbed_opts())?;
+    let expected_out = fresh.incremental_generate(ScanMode::Full).await?;
+    fresh.close().await?;
+    assert_eq!(asset_map(&actual), asset_map(&expected_out));
+    absorbed_fixture.output(&actual)?;
+    assert_eq!(absorbed_fixture.execute("./dist/main.js")?, expected);
+  }
+  absorbed_cached.close().await?;
+
+  // 4. Bundled development mode re-finalizes an unchanged CJS star-export barrel when a dynamic
+  //    importer flips `star_exports_complete_namespace`, while keeping unrelated modules cached.
+  let star_fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import * as ns from './barrel.js';import {anchor} from './stable.js';\
+       events.push(ns.x,anchor);import.meta.hot.accept();",
+    ),
+    ("barrel.js", "export * from './cjs.cjs';"),
+    ("cjs.cjs", "exports.x=7;"),
+    ("stable.js", "export const anchor=99;"),
+  ])?;
+  let mut star_opts = options(&star_fixture, false, false);
+  star_opts.platform = Some(Platform::Browser);
+  star_opts.code_splitting = Some(CodeSplittingMode::Bool(false));
+  star_opts.experimental.as_mut().unwrap().resolve_new_url_to_asset = Some(false);
+  let mut star_cached = Bundler::new(star_opts.clone())?;
+  let star_initial = star_cached.incremental_generate(ScanMode::Full).await?;
+  star_fixture.output(&star_initial)?;
+  assert_eq!(star_fixture.execute("./dist/main.js")?, serde_json::json!([7, 99]));
+
+  for main_src in [
+    "import {anchor} from './stable.js';const ns=await import('./barrel.js');\
+     events.push(ns.x,anchor);import.meta.hot.accept();",
+    "import * as ns from './barrel.js';import {anchor} from './stable.js';\
+     events.push(ns.x,anchor);import.meta.hot.accept();",
+  ] {
+    star_fixture.write("main.js", main_src)?;
+    let actual = star_cached.incremental_generate(partial_scan(&star_fixture, "main.js")).await?;
+    ensure!(
+      star_cached.last_reused_finalized_modules() > 0,
+      "unrelated modules must keep reusing finalized sources"
+    );
+    let mut fresh = Bundler::new(star_opts.clone())?;
+    let expected_out = fresh.incremental_generate(ScanMode::Full).await?;
+    fresh.close().await?;
+    assert_eq!(asset_map(&actual), asset_map(&expected_out));
+    star_fixture.output(&actual)?;
+    assert_eq!(star_fixture.execute("./dist/main.js")?, serde_json::json!([7, 99]));
+  }
+  star_cached.close().await?;
   Ok(())
 }

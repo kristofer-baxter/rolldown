@@ -1152,6 +1152,9 @@ impl ScanStageCache {
             .related_stmt_infos
             .iter()
             .any(|(importer_idx, _, _, _)| rescanned_module_idxs.contains(importer_idx))
+      })
+      || rescanned_module_idxs.iter().any(|importer_idx| {
+        cache.dynamic_import_exports_usage_by_importer.contains_key(importer_idx)
       });
     self.next_scan_generation = self.next_scan_generation.wrapping_add(1).max(1);
     let merge_generation = self.next_scan_generation;
@@ -1218,6 +1221,8 @@ impl ScanStageCache {
       let idx = self.module_id_to_idx[new_module.id()].idx();
 
       let incoming_tla_span = scan_stage_output.tla_keyword_span_map.get(&new_idx).copied();
+      let incoming_dynamic_import_usage =
+        scan_stage_output.dynamic_import_exports_usage_by_importer.remove(&new_idx);
 
       if new_idx.index() >= cache.module_table.modules.len() {
         let new_module_idx = ModuleIdx::from_usize(cache.module_table.modules.len());
@@ -1268,6 +1273,11 @@ impl ScanStageCache {
         }
         if let Some(span) = incoming_tla_span {
           cache.tla_keyword_span_map.insert(new_module_idx, span);
+        }
+        if let Some(usages) = incoming_dynamic_import_usage {
+          cache.dynamic_import_exports_usage_by_importer.insert(new_module_idx, usages);
+        } else {
+          cache.dynamic_import_exports_usage_by_importer.remove(&new_module_idx);
         }
         cache.symbol_ref_db.store_local_db(
           new_module_idx,
@@ -1360,6 +1370,14 @@ impl ScanStageCache {
           cache.tla_keyword_span_map.remove(&idx);
         }
       }
+      match incoming_dynamic_import_usage {
+        Some(usages) => {
+          cache.dynamic_import_exports_usage_by_importer.insert(idx, usages);
+        }
+        None => {
+          cache.dynamic_import_exports_usage_by_importer.remove(&idx);
+        }
+      }
       cache.module_table[idx] = new_module;
       cache.index_ecma_ast[idx] = scan_stage_output.index_ecma_ast.get_mut(new_idx).take();
       cache.stmt_infos[idx] = std::mem::replace(
@@ -1432,6 +1450,12 @@ impl ScanStageCache {
         cache.entry_points.push(entry_point);
       }
     }
+
+    cache.dynamic_import_exports_usage_map =
+      crate::stages::scan_stage::merge_dynamic_import_exports_usage(
+        &cache.dynamic_import_exports_usage_by_importer,
+        |_| true,
+      );
 
     // Update barrel module resolved import records
     let resolved_barrel_modules = std::mem::take(&mut self.barrel_state.resolved_barrel_modules);
@@ -1576,6 +1600,7 @@ impl ScanStageCache {
       runtime: cache.runtime.clone(),
       warnings: Vec::new(),
       dynamic_import_exports_usage_map: FxHashMap::default(),
+      dynamic_import_exports_usage_by_importer: FxHashMap::default(),
       overrode_preserve_entry_signature_map: FxHashMap::default(),
       entry_point_to_reference_ids: FxHashMap::default(),
       flat_options: cache.flat_options,
@@ -1628,6 +1653,9 @@ impl ScanStageCache {
       // TODO: cache warning
       warnings: vec![],
       dynamic_import_exports_usage_map: cache.dynamic_import_exports_usage_map.clone(),
+      dynamic_import_exports_usage_by_importer: cache
+        .dynamic_import_exports_usage_by_importer
+        .clone(),
       overrode_preserve_entry_signature_map: cache.overrode_preserve_entry_signature_map.clone(),
       entry_point_to_reference_ids: cache.entry_point_to_reference_ids.clone(),
       flat_options: cache.flat_options,

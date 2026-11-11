@@ -272,6 +272,8 @@ pub struct LinkStage<'a> {
   pub used_external_symbols: UsedExternalSymbols,
   pub safely_merge_cjs_ns_map: FxHashMap<ModuleIdx, SafelyMergeCjsNsInfo>,
   pub dynamic_import_exports_usage_map: FxHashMap<ModuleIdx, DynamicImportExportsUsage>,
+  pub dynamic_import_exports_usage_by_importer:
+    FxHashMap<ModuleIdx, Vec<(ModuleIdx, DynamicImportExportsUsage)>>,
   pub normal_symbol_exports_chain_map: FxHashMap<SymbolRef, Vec<SymbolRef>>,
   pub star_reexport_records_by_imported_symbol:
     FxHashMap<SymbolRef, Vec<Vec<(ModuleIdx, rolldown_common::ImportRecordIdx)>>>,
@@ -451,6 +453,8 @@ impl<'a> LinkStage<'a> {
       diagnostics: scan_stage_output.warnings.into(),
       ast_table: scan_stage_output.index_ecma_ast,
       dynamic_import_exports_usage_map: scan_stage_output.dynamic_import_exports_usage_map,
+      dynamic_import_exports_usage_by_importer: scan_stage_output
+        .dynamic_import_exports_usage_by_importer,
       options,
       used_symbol_refs_builder: UsedSymbolRefsBuilder::default(),
       used_external_symbols: UsedExternalSymbols::default(),
@@ -565,6 +569,17 @@ impl<'a> LinkStage<'a> {
       });
       !entries.is_empty()
     });
+    if self
+      .dynamic_import_exports_usage_by_importer
+      .keys()
+      .any(|importer| !reachability.reaches(*importer))
+    {
+      self.dynamic_import_exports_usage_map =
+        crate::stages::scan_stage::merge_dynamic_import_exports_usage(
+          &self.dynamic_import_exports_usage_by_importer,
+          |importer| reachability.reaches(importer),
+        );
+    }
     self.unreachable_modules = reachability.unreachable(&self.module_table.modules);
   }
 

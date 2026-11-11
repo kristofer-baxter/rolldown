@@ -168,6 +168,7 @@ is created, kept, or reused:
 `crates/rolldown/src/stages/scan_stage.rs:41`. Fields include `module_table`,
 `index_ecma_ast` (parsed AST per module), `stmt_infos`, `entry_points`,
 `symbol_ref_db`, `runtime`, `dynamic_import_exports_usage_map`,
+`dynamic_import_exports_usage_by_importer`,
 `user_defined_entry_modules`, `tla_module_count`, `tla_keyword_span_map`.
 
 `make_copy` (`scan_stage.rs:65`) clones the snapshot but clones
@@ -368,11 +369,13 @@ arm is `unreachable!()`.
    `EcmaView::rebuild_importer_sets`. The scan does this only for modules it
    produced; a cached module whose importer added/removed/re-kinded an import
    of it is refreshed here (issue #7416).
-5. **Merge entry points** — collect every module present in the partial scan,
-   remove those modules' references from every cached dynamic entry, then merge
-   the new rows. The cleanup is global because deleting or retargeting an import
-   produces no row for the old target. Drop stale entries left without call
-   sites; the merge can re-add an unspanned import with empty `related_stmt_infos`.
+5. **Merge entry points and dynamic-import export usage** — collect every module
+   present in the partial scan, remove those modules' references from every cached
+   dynamic entry, merge the new rows, and recompute `dynamic_import_exports_usage_map`
+   from `dynamic_import_exports_usage_by_importer`. The cleanup is global because
+   deleting or retargeting an import produces no row for the old target. Drop stale
+   entries left without call sites; the merge can re-add an unspanned import with
+   empty `related_stmt_infos`.
 6. **Patch barrel modules** — drain
    `barrel_state.resolved_barrel_modules` and write the resolved import records
    back into the cached modules.

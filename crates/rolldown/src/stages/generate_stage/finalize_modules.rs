@@ -962,35 +962,6 @@ impl GenerateStage<'_> {
     }
     h.write_unordered(16, meta.folded_namespace_in_checks.len(), ns_in_acc);
 
-    let is_chunk_entry_module = matches!(
-      chunk.kind,
-      rolldown_common::ChunkKind::EntryPoint { module: em, .. } if em == module_idx
-    );
-    // Development registration exposes exports even when ordinary namespace emission would not.
-    if meta.namespace_included || is_chunk_entry_module || self.options.is_dev_mode_enabled() {
-      let mut rexp_acc = (0u128, 0u128);
-      for (name, export) in &meta.resolved_exports {
-        let mut eh = DualHasher::new();
-        let non_ambig = meta.sorted_and_non_ambiguous_resolved_exports.get(name).copied();
-        let cref = symbol_db.canonical_ref_for(export.symbol_ref);
-        eh.write_val(&(
-          name.as_str(),
-          export.came_from_commonjs,
-          non_ambig,
-          sym_key(export.symbol_ref),
-          used_symbol_refs.contains(&export.symbol_ref),
-          used_symbol_refs.contains(&cref),
-          self.link_output.retained_export_symbols.contains(&export.symbol_ref),
-          self.link_output.retained_export_symbols.contains(&cref),
-        ));
-        let [d0, d1] = eh.finish();
-        rexp_acc = (rexp_acc.0.wrapping_add(d0), rexp_acc.1.wrapping_add(d1));
-      }
-      h.write_unordered(9, meta.resolved_exports.len(), rexp_acc);
-    } else {
-      h.write_val(&0u8);
-    }
-
     let hash_sym_full = |h: &mut DualHasher, sym_ref: rolldown_common::SymbolRef| {
       let canonical_ref = symbol_db.canonical_ref_for(sym_ref);
       let sym = symbol_db.get(canonical_ref);
@@ -1025,6 +996,67 @@ impl GenerateStage<'_> {
       hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&sym_ref));
       hash_const_export_meta(h, self.link_output.global_constant_symbol_map.get(&canonical_ref));
     };
+
+    if meta.namespace_included {
+      let (namespace_is_semantically_observed, simulated_facade_export_names) =
+        crate::module_finalizers::effective_namespace_export_filter(
+          module,
+          meta,
+          self.link_output.dynamic_import_exports_usage_map.get(&module_idx),
+          order_state,
+          chunk_graph,
+        );
+      let star_exports_complete = crate::module_finalizers::star_exports_complete_namespace(
+        self.options,
+        module_idx,
+        meta,
+        &self.link_output.module_table.modules,
+        &self.link_output.unreachable_modules,
+      );
+      h.write_val(&(
+        1u8,
+        namespace_is_semantically_observed,
+        star_exports_complete,
+        meta.star_exports_from_external_modules.len(),
+      ));
+      for rec_idx in &meta.star_exports_from_external_modules {
+        h.write_val(&rec_idx.raw());
+      }
+      if let Some(export_names) = simulated_facade_export_names {
+        let mut sim_acc = (0u128, 0u128);
+        for name in export_names {
+          let mut eh = DualHasher::new();
+          eh.write_val(&name.as_str());
+          let [d0, d1] = eh.finish();
+          sim_acc = (sim_acc.0.wrapping_add(d0), sim_acc.1.wrapping_add(d1));
+        }
+        h.write_unordered(18, export_names.len(), sim_acc);
+      } else {
+        h.write_val(&0u8);
+      }
+    } else {
+      h.write_val(&0u8);
+    }
+
+    let is_chunk_entry_module = matches!(
+      chunk.kind,
+      rolldown_common::ChunkKind::EntryPoint { module: em, .. } if em == module_idx
+    );
+    // Development registration exposes exports even when ordinary namespace emission would not.
+    if meta.namespace_included || is_chunk_entry_module || self.options.is_dev_mode_enabled() {
+      let mut rexp_acc = (0u128, 0u128);
+      for (name, export) in &meta.resolved_exports {
+        let mut eh = DualHasher::new();
+        let non_ambig = meta.sorted_and_non_ambiguous_resolved_exports.get(name).copied();
+        eh.write_val(&(name.as_str(), export.came_from_commonjs, non_ambig));
+        hash_sym_full(&mut eh, export.symbol_ref);
+        let [d0, d1] = eh.finish();
+        rexp_acc = (rexp_acc.0.wrapping_add(d0), rexp_acc.1.wrapping_add(d1));
+      }
+      h.write_unordered(9, meta.resolved_exports.len(), rexp_acc);
+    } else {
+      h.write_val(&0u8);
+    }
     let local_sym_count = symbol_db[module_idx].as_ref().map_or(0, |db| db.classic_data.len());
     let mut seen_local_syms = vec![false; local_sym_count];
     let mut seen_other_syms = FxHashSet::default();

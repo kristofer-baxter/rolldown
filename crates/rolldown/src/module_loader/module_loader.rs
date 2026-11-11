@@ -146,6 +146,8 @@ pub struct ModuleLoader<'a, Fs: FileSystem + Clone + 'static> {
   /// of the first TLA keyword. Stored here instead of on every `EcmaView`
   /// because top-level await is rarely used in real-world apps.
   tla_keyword_span_map: FxHashMap<ModuleIdx, Span>,
+  dynamic_import_exports_usage_by_importer:
+    FxHashMap<ModuleIdx, Vec<(ModuleIdx, DynamicImportExportsUsage)>>,
 }
 
 pub struct ModuleLoaderOutput {
@@ -163,6 +165,8 @@ pub struct ModuleLoaderOutput {
   pub runtime: RuntimeModuleBrief,
   pub warnings: Vec<BuildDiagnostic>,
   pub dynamic_import_exports_usage_map: FxHashMap<ModuleIdx, DynamicImportExportsUsage>,
+  pub dynamic_import_exports_usage_by_importer:
+    FxHashMap<ModuleIdx, Vec<(ModuleIdx, DynamicImportExportsUsage)>>,
   // Empty if it is a full scan
   pub new_added_modules_from_partial_scan: FxIndexSet<ModuleIdx>,
   pub overrode_preserve_entry_signature_map: FxHashMap<ModuleIdx, PreserveEntrySignatures>,
@@ -275,6 +279,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       magic_string_tx,
       tla_module_count: 0,
       tla_keyword_span_map: FxHashMap::default(),
+      dynamic_import_exports_usage_by_importer: FxHashMap::default(),
     })
   }
 
@@ -663,7 +668,6 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       Vec<(ModuleIdx, StmtInfoIdx, NodeId, ImportRecordIdx)>,
     > = FxHashMap::default();
 
-    let mut dynamic_import_exports_usage_pairs = vec![];
     let mut extra_entry_points = vec![];
     let mut entry_point_to_reference_ids: FxHashMap<EntryPoint, Vec<ArcStr>> = FxHashMap::default();
 
@@ -712,6 +716,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           all_warnings.extend(warnings);
 
           let module_idx = module.idx();
+          self.dynamic_import_exports_usage_by_importer.remove(&module_idx);
 
           // remove importers from previous scan
           if !self.is_full_scan
@@ -849,7 +854,11 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
 
             // Defer usage merging - with only one consumer, keep fetch actions simple
             if let Some(usage) = dynamic_import_rec_exports_usage.remove(&rec_idx) {
-              dynamic_import_exports_usage_pairs.push((idx, usage));
+              self
+                .dynamic_import_exports_usage_by_importer
+                .entry(module_idx)
+                .or_default()
+                .push((idx, usage));
             }
             // External modules are excluded here to preserve the bit-position-to-ChunkIdx
             // invariant in code splitting. User-defined and emitted entries are already
@@ -1089,20 +1098,13 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       );
     }
 
-    let dynamic_import_exports_usage_map = dynamic_import_exports_usage_pairs.into_iter().fold(
-      FxHashMap::default(),
-      |mut acc, (idx, usage)| {
-        match acc.entry(idx) {
-          Entry::Vacant(vac) => {
-            vac.insert(usage);
-          }
-          Entry::Occupied(mut occ) => {
-            occ.get_mut().merge(usage);
-          }
-        }
-        acc
-      },
-    );
+    let dynamic_import_exports_usage_by_importer =
+      std::mem::take(&mut self.dynamic_import_exports_usage_by_importer);
+    let dynamic_import_exports_usage_map =
+      crate::stages::scan_stage::merge_dynamic_import_exports_usage(
+        &dynamic_import_exports_usage_by_importer,
+        |_| true,
+      );
 
     let mut idx_of_module_info_need_update = vec![];
     let is_dense_index_vec = self.intermediate_normal_modules.modules.is_index_vec();
@@ -1208,6 +1210,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       module_table,
       warnings: all_warnings,
       dynamic_import_exports_usage_map,
+      dynamic_import_exports_usage_by_importer,
       overrode_preserve_entry_signature_map,
       entry_point_to_reference_ids,
       symbol_ref_db: std::mem::take(&mut self.symbol_ref_db),
@@ -1823,6 +1826,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         self.tla_module_count = self.tla_module_count.saturating_sub(1);
       }
       self.tla_keyword_span_map.remove(&idx);
+      self.dynamic_import_exports_usage_by_importer.remove(&idx);
       module.ecma_view = result.ecma_view;
       module.ecma_view.imported_ids.insert(leaf_id);
       module.ecma_view.import_records = result
