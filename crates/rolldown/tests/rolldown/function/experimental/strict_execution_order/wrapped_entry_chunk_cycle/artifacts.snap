@@ -88,7 +88,20 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
 var __exportAll = (all, no_symbols, fixed) => {
 	let star = __starNamespaces.get(all);
 	if (star) {
@@ -283,7 +296,20 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
 var __exportAll = (all, no_symbols, fixed) => {
 	let star = __starNamespaces.get(all);
 	if (star) {
@@ -501,7 +527,20 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
 var __exportAll = (all, no_symbols, fixed) => {
 	let star = __starNamespaces.get(all);
 	if (star) {
@@ -670,7 +709,20 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
 var __exportAll = (all, no_symbols, fixed) => {
 	let star = __starNamespaces.get(all);
 	if (star) {

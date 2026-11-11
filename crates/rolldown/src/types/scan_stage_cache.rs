@@ -132,6 +132,8 @@ pub struct CachedNativeChunk {
   pub decision_hash: [u128; 2],
   pub chunk: Arc<OutputChunk>,
   pub sourcemap_asset: Option<Arc<OutputAsset>>,
+  /// The effective output shebang, retained even when reused code bytes are omitted.
+  pub shebang: Option<ArcStr>,
 }
 
 #[derive(Debug)]
@@ -591,6 +593,7 @@ pub struct ScanStageCache {
   pub last_standby: FxHashSet<ArcStr>,
   pub runtime_rendered_chunk: Option<Arc<RollupRenderedChunk>>,
   pub omit_reused_chunk_bytes: bool,
+  pub native_commonjs_records: bool,
   /// Keeps each module's AST and scope tree in the arenas that its scan built, and the capacity
   /// that linking leaves in the cached link output, instead of right-sizing them
   /// ([`crate::utils::retained_memory`]). Tests compare the two.
@@ -640,6 +643,7 @@ pub struct ScanStageCache {
 impl ScanStageCache {
   pub fn reset_for_full_scan(&mut self) {
     let omit_reused_chunk_bytes = self.omit_reused_chunk_bytes;
+    let native_commonjs_records = self.native_commonjs_records;
     let keep_unused_capacity = self.keep_unused_capacity;
     let sourcemap_content_filter = self.sourcemap_content_filter.take();
     let mangle_properties_override = self.mangle_properties_override.take();
@@ -650,6 +654,7 @@ impl ScanStageCache {
       sourcemap_content_filter,
       mangle_properties_override,
       omit_reused_chunk_bytes,
+      native_commonjs_records,
       keep_unused_capacity,
       ..Self::default()
     };

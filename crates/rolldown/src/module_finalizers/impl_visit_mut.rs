@@ -245,7 +245,29 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
     let [declarator] = declaration.declarations.as_mut_slice() else {
       unreachable!("the CommonJS wrapper declares one binding")
     };
-    let wrapper = declarator.init.take().expect("the CommonJS wrapper has an initializer");
+    let mut wrapper = declarator.init.take().expect("the CommonJS wrapper has an initializer");
+    if self.ctx.options.is_dev_mode_enabled() {
+      let Expression::CallExpression(call) = &mut wrapper else {
+        unreachable!("the CommonJS wrapper calls its runtime helper");
+      };
+      let id = rolldown_utils::ecmascript::to_ecma_string_literal(
+        &self.ctx.module.stable_id,
+        self.ctx.options.charset.is_ascii(),
+      );
+      call.arguments.push(
+        parse_injected_expression(self.allocator(), "void 0")
+          .expect("generated CommonJS initial cache")
+          .into(),
+      );
+      call.arguments.push(
+        parse_injected_expression(
+          self.allocator(),
+          &format!("()=>__rolldown_runtime__.recordNativeCommonJsFailure?.({id})"),
+        )
+        .expect("generated CommonJS initializer failure hook")
+        .into(),
+      );
+    }
     let memo = parse_injected_expression(self.allocator(), &format!("{name}.m"))
       .expect("generated CommonJS wrapper memo")
       .into_member_expression();
@@ -257,6 +279,33 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
       self,
     );
     let call = Expression::new_call_expression(SPAN, memoized, None, [], false, self);
+    let mut body = allocator::Vec::new_in(self);
+    if self.ctx.options.is_dev_mode_enabled() {
+      // A lazy activation may have evaluated a replacement before this native wrapper's first
+      // call. Use that factory's exports instead of registering the dormant native body again.
+      let id = rolldown_utils::ecmascript::to_ecma_string_literal(
+        &self.ctx.module.stable_id,
+        self.ctx.options.charset.is_ascii(),
+      );
+      let replaced = parse_injected_expression(
+        self.allocator(),
+        &format!("__rolldown_runtime__.factories.has({id})"),
+      )
+      .expect("generated CommonJS factory lookup");
+      let current = parse_injected_expression(
+        self.allocator(),
+        &format!("__rolldown_runtime__.initModule({id})"),
+      )
+      .expect("generated CommonJS factory evaluation");
+      body.push(Statement::new_if_statement(
+        SPAN,
+        replaced,
+        Statement::new_return_statement(SPAN, Some(current), self),
+        None,
+        self,
+      ));
+    }
+    body.push(Statement::new_return_statement(SPAN, Some(call), self));
     *program.body.last_mut().unwrap() = Statement::new_function_declaration(
       SPAN,
       ast::FunctionType::FunctionDeclaration,
@@ -268,12 +317,7 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
       None,
       ast::FormalParameters::boxed(SPAN, ast::FormalParameterKind::FormalParameter, [], None, self),
       None,
-      Some(ast::FunctionBody::boxed(
-        SPAN,
-        [],
-        [Statement::new_return_statement(SPAN, Some(call), self)],
-        self,
-      )),
+      Some(ast::FunctionBody::boxed(SPAN, [], body, self)),
       self,
     );
   }

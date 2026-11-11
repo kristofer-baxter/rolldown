@@ -57,6 +57,7 @@ impl PluginContext {
         meta: Arc::clone(&ctx.meta),
         resolver: Arc::clone(&ctx.resolver),
         file_emitter: Arc::clone(&ctx.file_emitter),
+        asset_names: Arc::clone(&ctx.asset_names),
         options: Arc::clone(&ctx.options),
         watch_files: Arc::clone(&ctx.watch_files),
         module_infos: Arc::clone(&ctx.module_infos),

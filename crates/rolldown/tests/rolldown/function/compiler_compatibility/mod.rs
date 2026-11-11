@@ -30,6 +30,10 @@ use tokio::{sync::Notify, task::JoinHandle};
 #[cfg(feature = "experimental")]
 mod bundled_hmr;
 
+#[cfg(feature = "experimental")]
+mod commonjs_publication;
+#[cfg(feature = "experimental")]
+mod commonjs_records;
 mod dynamic_namespaces;
 mod manual_purity;
 mod sole_root;

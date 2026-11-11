@@ -12,14 +12,13 @@ use super::super::{
 };
 use anyhow::Context;
 use arcstr::ArcStr;
-use rolldown_common::{
-  GetLocalDb, GetLocalDbMut, Module, ScanMode, SharedFileEmitter, SymbolRefDb,
-};
+use rolldown_common::{GetLocalDb, GetLocalDbMut, Module, ScanMode, SymbolRefDb};
 use rolldown_devtools::{action, trace_action, trace_action_enabled};
 use rolldown_error::{BatchedBuildDiagnostic, BuildDiagnostic, BuildResult, Severity};
 use rolldown_fs::{FileSystem, OsFileSystem};
 use rolldown_plugin::{
-  HookBuildEndArgs, HookCloseBundleArgs, HookRenderErrorArgs, SharedPluginDriver,
+  EmittedOutputGuard, HookBuildEndArgs, HookCloseBundleArgs, HookRenderErrorArgs,
+  SharedPluginDriver,
 };
 use rolldown_utils::dashmap::FxDashSet;
 use std::{path::Path, sync::Arc};
@@ -27,6 +26,11 @@ use sugar_path::SugarPath;
 
 /// How many modules fast native relinks can append before the cached link tables grow.
 const APPENDED_MODULES_HEADROOM: usize = 64;
+
+struct UnpublishedBundleOutput {
+  output: BundleOutput,
+  emitted_output_guard: Option<EmittedOutputGuard>,
+}
 
 #[expect(
   clippy::struct_field_names,
@@ -36,7 +40,6 @@ pub struct Bundle<Fs: FileSystem + Clone + 'static = OsFileSystem> {
   pub(crate) fs: Fs,
   pub(crate) options: SharedOptions,
   pub(crate) resolver: SharedResolver<Fs>,
-  pub(crate) file_emitter: SharedFileEmitter,
   pub(crate) plugin_driver: SharedPluginDriver,
   pub(crate) warnings: Vec<BuildDiagnostic>,
   pub(crate) cache: ScanStageCache,
@@ -315,13 +318,13 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     scan_stage_output: NormalizedScanStageOutput,
   ) -> BuildResult<BundleOutput> {
     let result = self.bundle_write_impl(scan_stage_output).await;
-    self.invalidate_js_side_cache(result).await
+    self.finalize_output(result).await
   }
 
   async fn bundle_write_impl(
     &mut self,
     scan_stage_output: NormalizedScanStageOutput,
-  ) -> BuildResult<BundleOutput> {
+  ) -> BuildResult<UnpublishedBundleOutput> {
     let dist_dir = self.options.cwd.join(&self.options.out_dir);
 
     if self.options.clean_dir && self.options.file.is_none() {
@@ -336,7 +339,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     }
 
-    let mut output = Box::pin(self.bundle_up(scan_stage_output, /* is_write */ true)).await?;
+    let mut unpublished = Box::pin(self.bundle_up(scan_stage_output, /* is_write */ true)).await?;
+    let output = &mut unpublished.output;
 
     self.fs.create_dir_all(&dist_dir).with_context(|| {
       format!("Could not create directory for output chunks: {}", dist_dir.display())
@@ -383,7 +387,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
 
     output.warnings.append(&mut self.warnings);
 
-    Ok(output)
+    Ok(unpublished)
   }
 
   #[tracing::instrument(level = "debug", skip_all, parent = &self.bundle_span)]
@@ -392,27 +396,52 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     scan_stage_output: NormalizedScanStageOutput,
   ) -> BuildResult<BundleOutput> {
     let result = Box::pin(self.bundle_up(scan_stage_output, false)).await;
-    self.invalidate_js_side_cache(result).await
+    self.finalize_output(result).await
   }
 
   /// A plugin may read `chunk.code` in `generateBundle` or `writeBundle` before a later hook fails, so the
   /// JS side must drop its per-build caches on every exit of the output stage, not only on success.
-  async fn invalidate_js_side_cache(
+  /// Emissions stay unpublished until every requested output step and this final callback succeed.
+  async fn finalize_output(
     &mut self,
-    result: BuildResult<BundleOutput>,
+    result: BuildResult<UnpublishedBundleOutput>,
   ) -> BuildResult<BundleOutput> {
-    let Some(invalidate_js_side_cache) = &self.options.invalidate_js_side_cache else {
-      return result;
-    };
-    match (result, invalidate_js_side_cache.call().await) {
-      (Ok(output), Ok(())) => Ok(output),
-      // The build error is the one to report.
-      (Err(errors), _) => Err(errors),
-      (Ok(_), Err(err)) => {
-        self.cache.invalidate_native_relink();
-        Err(err.into())
+    let result = if let Some(invalidate_js_side_cache) = &self.options.invalidate_js_side_cache {
+      match (result, invalidate_js_side_cache.call().await) {
+        (Ok(output), Ok(())) => Ok(output),
+        // The build error is the one to report.
+        (Err(errors), _) => Err(errors),
+        (Ok(_), Err(err)) => {
+          self.cache.invalidate_native_relink();
+          Err(err.into())
+        }
       }
+    } else {
+      result
+    };
+    let unpublished = result?;
+    if let Some(guard) = unpublished.emitted_output_guard {
+      guard.commit();
     }
+    Ok(unpublished.output)
+  }
+
+  fn validate_native_output_names(
+    &mut self,
+    output: &BundleOutput,
+    omitted_sourcemap_filenames: &[String],
+  ) -> BuildResult<()> {
+    if self.cache.native_commonjs_records
+      && let Err(error) = crate::utils::native_records::validate_output_names(
+        &output.assets,
+        omitted_sourcemap_filenames,
+      )
+    {
+      self.cache.invalidate_native_relink();
+      self.cache.cached_native_chunks.clear();
+      return Err(error.into());
+    }
+    Ok(())
   }
 
   #[tracing::instrument(level = "debug", skip(self, output))]
@@ -468,7 +497,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     &mut self,
     mut scan_stage_output: NormalizedScanStageOutput,
     is_write: bool,
-  ) -> BuildResult<BundleOutput> {
+  ) -> BuildResult<UnpublishedBundleOutput> {
     struct LinkUnwindGuard<'a>(&'a mut ScanStageCache, bool);
     impl Drop for LinkUnwindGuard<'_> {
       fn drop(&mut self) {
@@ -642,12 +671,16 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         return Err(self.handle_render_error(errors).await);
       }
     };
+    let emitted_output_guard =
+      self.plugin_driver.begin_output_emissions(self.cache.native_commonjs_records)?;
+    let omitted_sourcemap_filenames =
+      crate::utils::native_records::omitted_sourcemap_filenames(&self.options, &self.cache);
     let pre_emit_assets_len = output.assets.len();
     let pre_emit_chunks =
       GenerateStage::snapshot_mangled_chunks(&self.options, has_mangle_override, &output.assets);
 
     // Add additional files from build plugins.
-    self.file_emitter.add_additional_files(&mut output.assets, &mut output.warnings);
+    self.plugin_driver.add_emitted_files(&mut output.assets, &mut output.warnings)?;
 
     if let Err(err) = self
       .plugin_driver
@@ -661,6 +694,8 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     if output.assets.len() != pre_emit_assets_len {
       self.cache.invalidate_native_relink();
     }
+
+    self.validate_native_output_names(&output, &omitted_sourcemap_filenames)?;
 
     if let Err(errors) =
       GenerateStage::validate_mangle_properties_output(pre_emit_chunks.as_ref(), &output.assets)
@@ -682,7 +717,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     }
 
-    Ok(output)
+    Ok(UnpublishedBundleOutput { output, emitted_output_guard })
   }
 
   #[expect(clippy::too_many_lines)]
@@ -690,7 +725,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     &mut self,
     is_write: bool,
     scan_warnings: &mut Vec<BuildDiagnostic>,
-  ) -> Option<BuildResult<BundleOutput>> {
+  ) -> Option<BuildResult<UnpublishedBundleOutput>> {
     if !self.options.preserve_modules
       || !crate::utils::native_records::enabled(&self.options)
       || !self.cache.omit_reused_chunk_bytes
@@ -1030,6 +1065,13 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       combined.append(&mut output.warnings);
       output.warnings = combined;
     }
+    let emitted_output_guard =
+      match self.plugin_driver.begin_output_emissions(self.cache.native_commonjs_records) {
+        Ok(guard) => guard,
+        Err(error) => return Some(Err(error.into())),
+      };
+    let omitted_sourcemap_filenames =
+      crate::utils::native_records::omitted_sourcemap_filenames(&self.options, &self.cache);
     let pre_emit_assets_len = output.assets.len();
     let pre_emit_chunks = GenerateStage::snapshot_mangled_chunks(
       &self.options,
@@ -1037,7 +1079,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       &output.assets,
     );
 
-    self.file_emitter.add_additional_files(&mut output.assets, &mut output.warnings);
+    if let Err(error) =
+      self.plugin_driver.add_emitted_files(&mut output.assets, &mut output.warnings)
+    {
+      return Some(Err(error.into()));
+    }
 
     if let Err(err) = self
       .plugin_driver
@@ -1050,6 +1096,10 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
 
     if output.assets.len() != pre_emit_assets_len {
       self.cache.invalidate_native_relink();
+    }
+
+    if let Err(error) = self.validate_native_output_names(&output, &omitted_sourcemap_filenames) {
+      return Some(Err(error));
     }
 
     if let Err(errors) =
@@ -1076,7 +1126,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     self.cache.last_link_decisions_unchanged =
       self.cache.last_fast_native_relink && decisions_unchanged;
     self.cache.last_native_graph_change = native_graph_change;
-    Some(Ok(output))
+    Some(Ok(UnpublishedBundleOutput { output, emitted_output_guard }))
   }
 
   async fn handle_render_error(

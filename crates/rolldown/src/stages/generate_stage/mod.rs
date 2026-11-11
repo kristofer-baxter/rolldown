@@ -246,6 +246,7 @@ pub use native_relink_graph::is_live_chunk;
 #[derive(Debug)]
 pub struct PendingNativeRelinkState {
   pub chunk_graph: ChunkGraph,
+  pub emitted_asset_names_generation: u64,
   pub used_symbol_refs: UsedSymbolRefs,
   pub order_state: order_wrap_state::OrderWrapState,
   pub final_esm_init_metadata: Sealed<FinalEsmInitMetadata>,
@@ -414,6 +415,7 @@ impl<'a> GenerateStage<'a> {
     }
     let (mut index_chunk_id_to_name, inline_record_ids) =
       self.generate_chunk_name_and_preliminary_filenames(&mut chunk_graph).await?;
+    let emitted_asset_names_generation = self.prepare_commonjs_definitions(&mut chunk_graph)?;
     for (chunk_idx, id) in inline_record_ids {
       self.inline_state.set_record_id(chunk_idx, id);
     }
@@ -558,6 +560,7 @@ impl<'a> GenerateStage<'a> {
       decision_dependencies.shrink_to_fit();
       self.pending_native_relink = Some(Box::new(PendingNativeRelinkState {
         chunk_graph,
+        emitted_asset_names_generation,
         used_symbol_refs,
         order_state,
         final_esm_init_metadata,
@@ -582,6 +585,19 @@ impl<'a> GenerateStage<'a> {
     Ok(bundle_output)
   }
 
+  fn prepare_commonjs_definitions(&self, chunk_graph: &mut ChunkGraph) -> BuildResult<u64> {
+    let (generation, filenames) = self.plugin_driver.emitted_asset_filenames();
+    if self.cache.as_ref().is_some_and(|cache| cache.native_commonjs_records) {
+      chunk_graph.native_commonjs_definitions = crate::utils::native_records::commonjs_definitions(
+        self.options,
+        self.link_output,
+        chunk_graph,
+        &filenames,
+      )?;
+    }
+    Ok(generation)
+  }
+
   #[tracing::instrument(level = "debug", skip_all)]
   pub async fn generate_fast_native_relink(
     &mut self,
@@ -589,6 +605,12 @@ impl<'a> GenerateStage<'a> {
     dirty_modules_with_used: &[(ModuleIdx, ChunkIdx, FxHashSet<rolldown_common::SymbolRef>)],
     graph_change: Option<&NativeChunkChange>,
   ) -> BuildResult<Result<(BundleOutput, Vec<ArcStr>), &'static str>> {
+    if self.cache.as_ref().is_some_and(|cache| cache.native_commonjs_records)
+      && self.plugin_driver.emitted_asset_names_generation()
+        != cached_relink.emitted_asset_names_generation
+    {
+      return Ok(Err("emitted_asset_names"));
+    }
     let retired_filenames = match graph_change {
       Some(change) => match self.apply_native_graph_change(cached_relink, change).await? {
         Ok(filenames) => filenames,
@@ -596,6 +618,25 @@ impl<'a> GenerateStage<'a> {
       },
       None => Vec::new(),
     };
+    if let Some(change) = graph_change
+      && self.cache.as_ref().is_some_and(|cache| cache.native_commonjs_records)
+    {
+      let definitions = crate::utils::native_records::commonjs_definitions(
+        self.options,
+        self.link_output,
+        &cached_relink.chunk_graph,
+        &self.plugin_driver.emitted_asset_filenames().1,
+      )?;
+      let previous = &cached_relink.chunk_graph.native_commonjs_definitions;
+      if definitions.iter().any(|(idx, definition)| {
+        previous.get(idx) != Some(definition) && !change.added.iter().any(|(_, added)| added == idx)
+      }) || previous.keys().any(|idx| {
+        is_live_chunk(&cached_relink.chunk_graph, *idx) && !definitions.contains_key(idx)
+      }) {
+        return Ok(Err("commonjs_definition_layout"));
+      }
+      cached_relink.chunk_graph.native_commonjs_definitions = definitions;
+    }
     // Only the output's own records render; a retired record must not be published again.
     if dirty_modules_with_used.iter().any(|&(module_idx, chunk_idx, _)| {
       cached_relink.chunk_graph.module_to_chunk.get(module_idx).copied().flatten()
@@ -1726,7 +1767,15 @@ impl<'a> GenerateStage<'a> {
     for &importee_chunk_idx in &chunk.cross_chunk_imports {
       let importee_chunk = &chunk_graph.chunk_table[importee_chunk_idx];
       h.write_val(&importee_chunk.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
+      h.write_val(&crate::utils::native_records::commonjs_import_suffix(
+        self.link_output,
+        chunk_graph,
+        chunk,
+        importee_chunk_idx,
+      ));
     }
+
+    h.write_val(&chunk_graph.native_commonjs_definitions.get(&chunk_idx));
 
     h.write_val(&chunk.cross_chunk_dynamic_imports.len());
     for &importee_chunk_idx in &chunk.cross_chunk_dynamic_imports {

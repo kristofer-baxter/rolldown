@@ -1,12 +1,13 @@
-use std::{ops::Deref, pin::Pin, sync::Arc};
+use std::{fmt::Write as _, ops::Deref, pin::Pin, sync::Arc};
 
 use arcstr::ArcStr;
 use futures::future::try_join_all;
 use oxc_index::{IndexVec, index_vec};
 use oxc_str::CompactStr;
 use rolldown_common::{
-  Asset, ChunkIdx, EmittedChunkInfo, InstantiationKind, ModuleIdx, ModuleRenderOutput, Output,
-  OutputAsset, OutputChunk, SharedFileEmitter, SymbolRef, UsedSymbolRefs,
+  Asset, ChunkIdx, ChunkKind, ChunkMeta, EmittedChunkInfo, InstantiationKind, ModuleIdx,
+  ModuleRenderOutput, Output, OutputAsset, OutputChunk, SharedFileEmitter, SymbolRef,
+  UsedSymbolRefs,
 };
 use rolldown_devtools::{action, trace_action, trace_action_enabled};
 use rolldown_error::{BatchedBuildDiagnostic, BuildResult, Diagnostics};
@@ -44,6 +45,43 @@ type ChunkGeneratorFuture<'a> = Pin<
       + Send,
   >,
 >;
+
+fn rendered_shebang(code: &str) -> Option<ArcStr> {
+  code.split('\n').next().filter(|line| line.starts_with("#!")).map(ArcStr::from)
+}
+
+fn omit_chunk_bytes(chunk: &OutputChunk) -> OutputChunk {
+  OutputChunk {
+    name: chunk.name.clone(),
+    filename: chunk.filename.clone(),
+    code: String::new(),
+    is_entry: chunk.is_entry,
+    is_dynamic_entry: chunk.is_dynamic_entry,
+    facade_module_id: chunk.facade_module_id.clone(),
+    modules: FxHashMap::default().into(),
+    exports: vec![],
+    module_ids: vec![],
+    // Relink consumers still need the complete static-import graph.
+    imports: chunk.imports.clone(),
+    dynamic_imports: vec![],
+    map: None,
+    sourcemap_filename: chunk.sourcemap_filename.clone(),
+    preliminary_filename: chunk.preliminary_filename.clone(),
+  }
+}
+
+fn prepare_commonjs_definition(
+  output: &mut OutputChunk,
+  origin: Option<ChunkIdx>,
+  graph: &ChunkGraph,
+) {
+  if let Some(idx) = origin.filter(|idx| graph.native_commonjs_definitions.contains_key(idx)) {
+    output.is_entry = false;
+    output.is_dynamic_entry = false;
+    output.facade_module_id = None;
+    output.exports = crate::utils::native_records::commonjs_definition_exports(graph, idx);
+  }
+}
 
 impl GenerateStage<'_> {
   #[expect(clippy::too_many_arguments)]
@@ -154,7 +192,7 @@ impl GenerateStage<'_> {
         InstantiationKind::Ecma(ecma_meta) => {
           let code = code.try_into_string()?;
           let rendered_chunk = ecma_meta.rendered_chunk;
-          let chunk_arc = Arc::new(OutputChunk {
+          let mut chunk = OutputChunk {
             name: rendered_chunk.name.clone(),
             filename: filename.clone(),
             code,
@@ -173,7 +211,9 @@ impl GenerateStage<'_> {
             map,
             sourcemap_filename: ecma_meta.sourcemap_filename,
             preliminary_filename: ecma_meta.preliminary_filename.to_string(),
-          });
+          };
+          prepare_commonjs_definition(&mut chunk, originate_from, chunk_graph);
+          let chunk_arc = Arc::new(chunk);
           if let Some(chunk_idx) = originate_from
             && chunk_decisions.get(chunk_idx).and_then(|d| *d).is_some()
           {
@@ -222,33 +262,15 @@ impl GenerateStage<'_> {
       for (chunk_idx, chunk_arc) in newly_cached_chunks {
         if let Some(decision_hash) = chunk_decisions.get(chunk_idx).and_then(|d| *d) {
           let module_idx = chunk_graph.chunk_table[chunk_idx].modules[0];
+          let shebang = rendered_shebang(&chunk_arc.code);
           let (cached_chunk, sourcemap_asset) = if omit_bytes {
-            (
-              Arc::new(OutputChunk {
-                name: chunk_arc.name.clone(),
-                filename: chunk_arc.filename.clone(),
-                code: String::new(),
-                is_entry: chunk_arc.is_entry,
-                is_dynamic_entry: chunk_arc.is_dynamic_entry,
-                facade_module_id: chunk_arc.facade_module_id.clone(),
-                modules: FxHashMap::default().into(),
-                exports: vec![],
-                module_ids: vec![],
-                // Relink consumers still need the complete static-import graph.
-                imports: chunk_arc.imports.clone(),
-                dynamic_imports: vec![],
-                map: None,
-                sourcemap_filename: chunk_arc.sourcemap_filename.clone(),
-                preliminary_filename: chunk_arc.preliminary_filename.clone(),
-              }),
-              None,
-            )
+            (Arc::new(omit_chunk_bytes(&chunk_arc)), None)
           } else {
             (chunk_arc, newly_cached_maps.remove(&chunk_idx))
           };
           cache.cached_native_chunks.insert(
             module_idx,
-            CachedNativeChunk { decision_hash, chunk: cached_chunk, sourcemap_asset },
+            CachedNativeChunk { decision_hash, chunk: cached_chunk, sourcemap_asset, shebang },
           );
         }
       }
@@ -263,6 +285,8 @@ impl GenerateStage<'_> {
       cache.cached_native_chunks.retain(|idx, _| live_single_modules.contains(idx));
       cache.cached_chunk_namings.retain(|idx, _| live_single_modules.contains(idx));
     }
+
+    self.append_commonjs_facades(chunk_graph, &mut output)?;
 
     // The chunks order make sure the entry chunk at first, the assets at last, see https://github.com/rollup/rollup/blob/master/src/rollup/rollup.ts#L266
     output.sort_unstable_by(|a, b| {
@@ -279,6 +303,111 @@ impl GenerateStage<'_> {
     // `into_result` fast-paths the common no-error case, skipping the partition.
     let warnings = diagnostics.into_result()?;
     Ok(BundleOutput { assets: output, warnings, mangle_cache })
+  }
+
+  fn append_commonjs_facades(
+    &self,
+    chunk_graph: &ChunkGraph,
+    output: &mut Vec<Output>,
+  ) -> anyhow::Result<()> {
+    use rolldown_utils::ecmascript::{
+      to_ecma_string_literal, to_module_import_export_name_with_ascii,
+    };
+
+    if chunk_graph.native_commonjs_definitions.is_empty() {
+      return Ok(());
+    }
+    let definitions: FxHashMap<_, _> = chunk_graph
+      .native_commonjs_definitions
+      .iter()
+      .map(|(idx, definition)| {
+        let chunk = &chunk_graph.chunk_table[*idx];
+        (chunk.preliminary_filename.as_ref().expect("chunk filename").as_str(), (chunk, definition))
+      })
+      .collect();
+    let mut names: FxHashSet<_> =
+      output.iter().map(|asset| asset.filename().to_ascii_lowercase()).collect();
+    let mut facades = Vec::with_capacity(definitions.len());
+    let ascii = self.options.charset.is_ascii();
+    for asset in output.iter() {
+      let Output::Chunk(definition_chunk) = asset else {
+        continue;
+      };
+      let Some((chunk, definition)) =
+        definitions.get(definition_chunk.preliminary_filename.as_str())
+      else {
+        continue;
+      };
+      let filename = definition_chunk
+        .filename
+        .strip_suffix(&definition.suffix)
+        .expect("CommonJS definition filename keeps its suffix");
+      anyhow::ensure!(
+        names.insert(filename.to_ascii_lowercase()),
+        "conflicting CommonJS evaluation record: {filename}"
+      );
+      let path = to_ecma_string_literal(
+        &format!(
+          "./{}",
+          definition_chunk.filename.rsplit('/').next().expect("definition basename")
+        ),
+        ascii,
+      );
+      let wrapper = to_module_import_export_name_with_ascii(&definition.wrapper_export, ascii);
+      let ChunkKind::EntryPoint { module, meta, .. } = chunk.kind else {
+        unreachable!("CommonJS definitions belong to preserved entry records");
+      };
+      let mut exports = get_export_items(chunk)
+        .into_iter()
+        .map(|(name, _)| name)
+        .filter(|name| name.as_str() != "default")
+        .collect::<Vec<_>>();
+      let mut code = String::new();
+      let shebang = if definition_chunk.code.is_empty() {
+        self
+          .cache
+          .as_deref()
+          .and_then(|cache| cache.cached_native_chunks.get(&module))
+          .and_then(|cached| cached.shebang.clone())
+      } else {
+        rendered_shebang(&definition_chunk.code)
+      };
+      if let Some(shebang) = shebang {
+        code.push_str(&shebang);
+        code.push('\n');
+      }
+      writeln!(code, "import {{ {wrapper} as requireCommonJs }} from {path};")
+        .expect("writing to a String cannot fail");
+      if !exports.is_empty() {
+        let names = exports
+          .iter()
+          .map(|name| to_module_import_export_name_with_ascii(name, ascii))
+          .collect::<Vec<_>>()
+          .join(", ");
+        writeln!(code, "export {{ {names} }} from {path};")
+          .expect("writing to a String cannot fail");
+      }
+      code.push_str("export default requireCommonJs();\n");
+      exports.push("default".into());
+      facades.push(Output::Chunk(Arc::new(OutputChunk {
+        name: definition_chunk.name.clone(),
+        filename: filename.into(),
+        code,
+        is_entry: meta.intersects(ChunkMeta::UserDefinedEntry | ChunkMeta::EmittedChunk),
+        is_dynamic_entry: meta.contains(ChunkMeta::DynamicImported),
+        facade_module_id: Some(self.link_output.module_table[module].id().clone()),
+        modules: FxHashMap::default().into(),
+        exports,
+        module_ids: Vec::new(),
+        imports: vec![definition_chunk.filename.clone()],
+        dynamic_imports: Vec::new(),
+        map: None,
+        sourcemap_filename: None,
+        preliminary_filename: definition_chunk.preliminary_filename.clone(),
+      })));
+    }
+    output.extend(facades);
+    Ok(())
   }
 
   fn prepare_chunk_sourcemap_cache(
@@ -977,15 +1106,24 @@ impl GenerateStage<'_> {
         InstantiationKind::Ecma(ecma_meta) => {
           let code = code.try_into_string()?;
           let rendered_chunk = ecma_meta.rendered_chunk;
+          let definition =
+            originate_from.filter(|idx| chunk_graph.native_commonjs_definitions.contains_key(idx));
           let chunk_arc = Arc::new(OutputChunk {
             name: rendered_chunk.name.clone(),
             filename: filename.clone(),
             code,
-            is_entry: rendered_chunk.is_entry,
-            is_dynamic_entry: rendered_chunk.is_dynamic_entry,
-            facade_module_id: rendered_chunk.facade_module_id.clone(),
+            is_entry: definition.is_none() && rendered_chunk.is_entry,
+            is_dynamic_entry: definition.is_none() && rendered_chunk.is_dynamic_entry,
+            facade_module_id: if definition.is_some() {
+              None
+            } else {
+              rendered_chunk.facade_module_id.clone()
+            },
             modules: FxHashMap::default().into(),
-            exports: rendered_chunk.exports.clone(),
+            exports: definition.map_or_else(
+              || rendered_chunk.exports.clone(),
+              |idx| crate::utils::native_records::commonjs_definition_exports(chunk_graph, idx),
+            ),
             module_ids: rendered_chunk.module_ids.clone(),
             imports: ecma_meta.imports,
             dynamic_imports: ecma_meta.dynamic_imports,
@@ -1055,7 +1193,12 @@ impl GenerateStage<'_> {
           }
           cache.cached_native_chunks.insert(
             module_idx,
-            CachedNativeChunk { decision_hash, chunk: cached_chunk, sourcemap_asset: None },
+            CachedNativeChunk {
+              decision_hash,
+              chunk: cached_chunk,
+              sourcemap_asset: None,
+              shebang: rendered_shebang(&chunk_arc.code),
+            },
           );
         }
       }
@@ -1067,6 +1210,11 @@ impl GenerateStage<'_> {
 
     let mut output: Vec<Output> =
       Vec::with_capacity(sorted_output_template.len() + extra_assets.len());
+    let rebuilt_definitions: FxHashSet<_> = newly_cached_chunks
+      .iter()
+      .filter(|(idx, _)| chunk_graph.native_commonjs_definitions.contains_key(idx))
+      .map(|(_, chunk)| chunk.filename.clone())
+      .collect();
     output.extend(sorted_output_template.iter().map(|(_, out)| out.clone()));
     for (chunk_idx, chunk_arc) in newly_cached_chunks {
       if let Some(pos) = chunk_idx_to_template_pos.get(chunk_idx).and_then(|p| *p) {
@@ -1076,6 +1224,19 @@ impl GenerateStage<'_> {
     if !extra_assets.is_empty() {
       extra_assets.sort_unstable_by(|a, b| a.filename().cmp(b.filename()));
       output.extend(extra_assets);
+    }
+
+    let facade_start = output.len();
+    self.append_commonjs_facades(chunk_graph, &mut output)?;
+    if let Some(cache) = self.cache.as_deref_mut() {
+      for facade in &output[facade_start..] {
+        if let Output::Chunk(chunk) = facade
+          && chunk.imports.iter().any(|name| rebuilt_definitions.contains(name))
+        {
+          cache.last_rebuilt_chunk_filenames.push(chunk.filename.clone());
+          cache.last_rebuilt_chunk_outputs.push(facade.clone());
+        }
+      }
     }
 
     let warnings = diagnostics.into_result()?;
@@ -1093,10 +1254,17 @@ fn set_emitted_chunk_filenames(
     .filter(|asset| matches!(asset.meta, InstantiationKind::Ecma(_)))
     .filter_map(|asset| {
       asset.originate_from.and_then(|originate_from| {
-        chunk_graph.chunk_idx_to_reference_ids.get(&originate_from).map(|reference_ids| {
-          reference_ids.iter().map(|reference_id| EmittedChunkInfo {
+        chunk_graph.chunk_idx_to_reference_ids.get(&originate_from).map(move |reference_ids| {
+          reference_ids.iter().map(move |reference_id| EmittedChunkInfo {
             reference_id: reference_id.clone(),
-            filename: asset.filename.clone(),
+            filename: match chunk_graph.native_commonjs_definitions.get(&originate_from) {
+              Some(definition) => asset
+                .filename
+                .strip_suffix(&definition.suffix)
+                .expect("CommonJS definition filename keeps its suffix")
+                .into(),
+              None => asset.filename.clone(),
+            },
           })
         })
       })

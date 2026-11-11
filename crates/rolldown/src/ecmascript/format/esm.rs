@@ -229,6 +229,19 @@ fn render_chunk_content<'code>(
   );
 }
 
+fn commonjs_chunk_import_path(ctx: &GenerateContext<'_>, exporter: ChunkIdx) -> String {
+  let mut path = ctx.chunk.import_path_for(&ctx.chunk_graph.chunk_table[exporter]);
+  if let Some(suffix) = crate::utils::native_records::commonjs_import_suffix(
+    ctx.link_output,
+    ctx.chunk_graph,
+    ctx.chunk,
+    exporter,
+  ) {
+    path.push_str(suffix);
+  }
+  path
+}
+
 fn render_esm_chunk_imports(ctx: &GenerateContext<'_>) -> Option<String> {
   let mut s = String::new();
   let mut internal_imports = vec![];
@@ -286,7 +299,7 @@ fn render_esm_chunk_imports(ctx: &GenerateContext<'_>) -> Option<String> {
       .collect::<Vec<_>>();
     specifiers.sort_unstable();
 
-    let path = ctx.chunk.import_path_for(importee_chunk);
+    let path = commonjs_chunk_import_path(ctx, *exporter_id);
     native_namespaces.sort_unstable();
     for namespace in &native_namespaces {
       s.push_str(&concat_string!(
