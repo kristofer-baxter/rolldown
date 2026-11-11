@@ -127,6 +127,11 @@ guard releases the active publication but retains output for replay. A later wri
 from the same reference replaces its pending bytes; distinct references with the
 same filename fail closed.
 
+After each successful `generateBundle` or `writeBundle` hook, pending emissions
+capture the exposed bundle values, including removals, before draining new
+emissions. This retains one-shot hook edits if a later hook, validation, write or
+cleanup fails, while a newer emission from the same reference still takes precedence.
+
 The scan cache preserves `native_commonjs_records` across full scans, independently
 of its graph snapshot. Failed native output invalidates both the retained link and
 reusable chunks, since the caller has not published that generation. Retired native

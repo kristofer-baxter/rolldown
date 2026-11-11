@@ -277,6 +277,34 @@ impl PluginDriver {
       self.file_emitter.add_additional_files(bundle, warnings);
       return Ok(());
     }
+    let output_positions = || {
+      let mut positions = std::collections::BTreeMap::new();
+      for (index, output) in bundle.iter().enumerate() {
+        positions
+          .entry(output.filename().to_lowercase())
+          .and_modify(|position| *position = None)
+          .or_insert(Some(index));
+      }
+      positions
+    };
+    let mut positions = None;
+    // Preserve successful output-hook edits before draining newer emissions or any later failure.
+    // See internal-docs/bundler-data-lifecycle/implementation.md.
+    if !state.exposed.is_empty() {
+      let positions = positions.insert(output_positions());
+      let PendingEmittedOutputs { outputs, exposed, .. } = &mut *state;
+      for (reference, filename) in exposed.iter() {
+        match positions.get(&filename.to_lowercase()) {
+          Some(Some(index)) => {
+            outputs.insert(reference.clone(), bundle[*index].clone());
+          }
+          Some(None) => anyhow::bail!("conflicting native record output filename: {filename}"),
+          None => {
+            outputs.remove(reference);
+          }
+        }
+      }
+    }
     self.refresh_emitted_output_owners(&mut state)?;
     let mut emitted = Vec::new();
     self.file_emitter.add_additional_files(&mut emitted, warnings);
@@ -307,13 +335,7 @@ impl PluginDriver {
     if current.is_empty() {
       return Ok(());
     }
-    let mut positions = std::collections::BTreeMap::new();
-    for (index, output) in bundle.iter().enumerate() {
-      positions
-        .entry(output.filename().to_lowercase())
-        .and_modify(|position| *position = None)
-        .or_insert(Some(index));
-    }
+    let mut positions = positions.unwrap_or_else(output_positions);
     for (reference, output) in current {
       let filename = output.filename().to_owned();
       let key = filename.to_lowercase();

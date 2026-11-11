@@ -784,6 +784,250 @@ async fn native_commonjs_output_failures_preserve_emitted_asset_updates() -> Res
 }
 
 #[tokio::test]
+async fn native_commonjs_retries_preserve_one_shot_output_hook_edits() -> Result<()> {
+  check_one_shot_output_hook_retry(false).await
+}
+
+#[tokio::test]
+async fn native_commonjs_retries_preserve_one_shot_output_hook_removals() -> Result<()> {
+  check_one_shot_output_hook_retry(true).await
+}
+
+#[derive(Debug)]
+struct OneShotOutputEditPlugin {
+  armed: Arc<AtomicBool>,
+  emitted: AtomicBool,
+  edited: AtomicBool,
+  remove: bool,
+  at_write: bool,
+}
+impl OneShotOutputEditPlugin {
+  fn edit(&self, bundle: &mut Vec<rolldown_common::Output>) {
+    if !self.armed.load(Ordering::Relaxed) || self.edited.swap(true, Ordering::Relaxed) {
+      return;
+    }
+    if self.remove {
+      bundle.retain(|output| output.filename() != "manifest.json");
+    } else {
+      let asset = bundle
+        .iter_mut()
+        .find_map(|output| match output {
+          rolldown_common::Output::Asset(asset) if asset.filename == "manifest.json" => Some(asset),
+          _ => None,
+        })
+        .expect("one-shot emission must reach the output hook");
+      Arc::make_mut(asset).source = "v2".to_owned().into();
+    }
+  }
+}
+impl rolldown_plugin::Plugin for OneShotOutputEditPlugin {
+  fn name(&self) -> std::borrow::Cow<'static, str> {
+    "edit-once".into()
+  }
+  fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+    rolldown_plugin::HookUsage::BuildStart
+      | rolldown_plugin::HookUsage::GenerateBundle
+      | rolldown_plugin::HookUsage::WriteBundle
+  }
+  async fn build_start(
+    &self,
+    ctx: &rolldown_plugin::PluginContext,
+    _: &rolldown_plugin::HookBuildStartArgs<'_>,
+  ) -> rolldown_plugin::HookNoopReturn {
+    if self.armed.load(Ordering::Relaxed) && !self.emitted.swap(true, Ordering::Relaxed) {
+      ctx.emit_file(
+        rolldown_common::EmittedAsset {
+          file_name: Some("manifest.json".into()),
+          source: "v1".to_owned().into(),
+          ..Default::default()
+        },
+        None,
+        None,
+      )?;
+    }
+    Ok(())
+  }
+  async fn generate_bundle(
+    &self,
+    _: &rolldown_plugin::PluginContext,
+    args: &mut rolldown_plugin::HookGenerateBundleArgs<'_>,
+  ) -> rolldown_plugin::HookNoopReturn {
+    if !self.at_write {
+      self.edit(args.bundle);
+    }
+    Ok(())
+  }
+  async fn write_bundle(
+    &self,
+    _: &rolldown_plugin::PluginContext,
+    args: &mut rolldown_plugin::HookWriteBundleArgs<'_>,
+  ) -> rolldown_plugin::HookNoopReturn {
+    if self.at_write {
+      self.edit(args.bundle);
+    }
+    Ok(())
+  }
+}
+#[derive(Debug)]
+struct FailAfterOutputEditPlugin {
+  fail: Arc<AtomicBool>,
+  at_write: bool,
+  validation: bool,
+}
+impl rolldown_plugin::Plugin for FailAfterOutputEditPlugin {
+  fn name(&self) -> std::borrow::Cow<'static, str> {
+    "fail-later".into()
+  }
+  fn register_hook_usage(&self) -> rolldown_plugin::HookUsage {
+    rolldown_plugin::HookUsage::GenerateBundle | rolldown_plugin::HookUsage::WriteBundle
+  }
+  async fn generate_bundle(
+    &self,
+    _: &rolldown_plugin::PluginContext,
+    args: &mut rolldown_plugin::HookGenerateBundleArgs<'_>,
+  ) -> rolldown_plugin::HookNoopReturn {
+    if self.fail.load(Ordering::Relaxed) {
+      if self.validation {
+        args.bundle.push(rolldown_common::Output::Asset(Arc::new(rolldown_common::OutputAsset {
+          filename: "entry.js.cjs-factory.js".into(),
+          source: "collision".to_owned().into(),
+          names: Vec::new(),
+          original_file_names: Vec::new(),
+        })));
+      } else {
+        anyhow::ensure!(self.at_write, "later hook rejected");
+      }
+    }
+    Ok(())
+  }
+  async fn write_bundle(
+    &self,
+    _: &rolldown_plugin::PluginContext,
+    _: &mut rolldown_plugin::HookWriteBundleArgs<'_>,
+  ) -> rolldown_plugin::HookNoopReturn {
+    anyhow::ensure!(!self.at_write || !self.fail.load(Ordering::Relaxed), "later hook rejected");
+    Ok(())
+  }
+}
+async fn check_one_shot_output_hook_retry(remove: bool) -> Result<()> {
+  for force_full_link in [false, true] {
+    for (at_write, failure) in [
+      (false, "generate"),
+      (false, "validation"),
+      (false, "write"),
+      (false, "filesystem"),
+      (false, "cleanup"),
+      (true, "write"),
+      (true, "cleanup"),
+    ] {
+      let root = Fixture::new(&[])?;
+      let published = Fixture::new(&[])?;
+      write(root.0.as_path(), "entry.cjs", "module.exports=42;")?;
+      let armed = Arc::new(AtomicBool::new(false));
+      let fail = Arc::new(AtomicBool::new(false));
+      let mut options = rolldown::BundlerOptions {
+        cwd: Some(root.0.as_path().canonicalize()?),
+        dir: Some(published.0.as_path().to_string_lossy().into_owned()),
+        clean_dir: Some(false),
+        input: Some(vec![rolldown_common::InputItem {
+          name: Some("entry".into()),
+          import: "./entry.cjs".into(),
+        }]),
+        preserve_modules: Some(true),
+        strict_execution_order: Some(false),
+        minify: Some(rolldown_common::RawMinifyOptions::Bool(false)),
+        invalidate_js_side_cache: (failure == "cleanup").then(|| {
+          let fail = Arc::clone(&fail);
+          rolldown_common::InvalidateJsSideCache::new(Arc::new(move || {
+            let fail = Arc::clone(&fail);
+            Box::pin(async move {
+              anyhow::ensure!(!fail.load(Ordering::Relaxed), "cleanup rejected");
+              Ok(())
+            })
+          }))
+        }),
+        ..Default::default()
+      };
+      options.experimental.get_or_insert_default().incremental_build = Some(true);
+      let mut plugins = vec![<OneShotOutputEditPlugin as rolldown_plugin::Plugin>::new_shared(
+        OneShotOutputEditPlugin {
+          armed: Arc::clone(&armed),
+          emitted: AtomicBool::new(false),
+          edited: AtomicBool::new(false),
+          remove,
+          at_write,
+        },
+      )];
+      if matches!(failure, "generate" | "validation" | "write") {
+        plugins.push(<FailAfterOutputEditPlugin as rolldown_plugin::Plugin>::new_shared(
+          FailAfterOutputEditPlugin {
+            fail: Arc::clone(&fail),
+            at_write: failure == "write",
+            validation: failure == "validation",
+          },
+        ));
+      }
+      let mut bundler = rolldown::Bundler::with_plugins(options, plugins)?;
+      bundler.set_native_commonjs_records(true)?;
+      let writing = failure == "write" || failure == "filesystem" || at_write;
+      bundler.set_omit_reused_chunk_bytes(!writing);
+      for round in 0..5 {
+        armed.store(round > 0, Ordering::Relaxed);
+        fail.store(matches!(round, 1 | 2), Ordering::Relaxed);
+        let blocked = published.0.as_path().join("entry.js");
+        if failure == "filesystem" {
+          if round == 1 {
+            fs::remove_file(&blocked)?;
+            fs::create_dir(&blocked)?;
+          } else if round == 3 {
+            fs::remove_dir(&blocked)?;
+          }
+        }
+        if force_full_link {
+          bundler.invalidate_native_relink();
+        }
+        let scan = if round == 0 {
+          rolldown_common::ScanMode::Full
+        } else {
+          rolldown_common::ScanMode::Partial(Vec::new())
+        };
+        let result = if writing {
+          bundler.incremental_write(scan).await
+        } else {
+          bundler.incremental_generate(scan).await
+        };
+        let case = format!(
+          "round={round}, failure={failure}, at_write={at_write}, remove={remove}, full={force_full_link}"
+        );
+        if matches!(round, 1 | 2) {
+          let error = result.err().with_context(|| format!("{case}: expected failure"))?;
+          let expected = match failure {
+            "validation" => "conflicting native record output filename",
+            "filesystem" => "Failed to write file",
+            "cleanup" => "cleanup rejected",
+            _ => "later hook rejected",
+          };
+          assert!(format!("{error:?}").contains(expected), "{case}: {error:?}");
+          continue;
+        }
+        let output = result.map_err(|error| anyhow::anyhow!("{case}: {error:?}"))?;
+        let manifest = output.assets.iter().find(|output| output.filename() == "manifest.json");
+        if round == 3 && !remove {
+          assert_eq!(manifest.context(case.clone())?.content_as_bytes(), b"v2", "{case}");
+          if writing {
+            assert_eq!(fs::read(published.0.as_path().join("manifest.json"))?, b"v2", "{case}");
+          }
+        } else {
+          assert!(manifest.is_none(), "{case}: removed or committed emission was replayed");
+        }
+      }
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn native_commonjs_output_failures_reject_duplicate_emitted_entries() -> Result<()> {
   #[derive(Debug)]
   struct DuplicateEntries;
