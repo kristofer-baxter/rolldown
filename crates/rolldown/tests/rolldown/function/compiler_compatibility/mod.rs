@@ -33,6 +33,7 @@ mod bundled_hmr;
 mod dynamic_namespaces;
 mod sole_root;
 mod structured_defines;
+mod temporal_imports;
 
 #[tokio::test]
 async fn require_cycle_keeps_tdz_reads_inside_a_hoisted_function() -> Result<()> {

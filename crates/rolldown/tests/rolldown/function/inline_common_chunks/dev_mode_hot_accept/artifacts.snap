@@ -20,7 +20,11 @@ __share("self_accept-RFHWBDnX", ((exports) => {
 	function init_self_accept() {
 		return (init_self_accept = __esmMin((() => {
 			self_accept_hot = __rolldown_runtime__.createModuleHotContext("self_accept.js");
-			__rolldown_runtime__.registerModule("self_accept.js", { exports: self_accept_exports });
+			__rolldown_runtime__.registerModule("self_accept.js", {
+				exports: self_accept_exports,
+				bindings: true,
+				cells: { value: [() => value, (_) => value = _] }
+			});
 			value = "self-v0";
 			self_accept_hot.accept((mod) => {
 				globalThis.selfAccepted = mod.value;
@@ -74,7 +78,11 @@ __share("self_accept-RFHWBDnX", ((exports) => {
 	function init_self_accept() {
 		return (init_self_accept = __esmMin((() => {
 			self_accept_hot = __rolldown_runtime__.createModuleHotContext("self_accept.js");
-			__rolldown_runtime__.registerModule("self_accept.js", { exports: self_accept_exports });
+			__rolldown_runtime__.registerModule("self_accept.js", {
+				exports: self_accept_exports,
+				bindings: true,
+				cells: { value: [() => value, (_) => value = _] }
+			});
 			value = "self-v0";
 			self_accept_hot.accept((mod) => {
 				globalThis.selfAccepted = mod.value;
@@ -97,7 +105,11 @@ __share("accept_dep-z052dtnB", ((exports) => {
 	function init_dep() {
 		return (init_dep = __esmMin((() => {
 			__rolldown_runtime__.createModuleHotContext("dep.js");
-			__rolldown_runtime__.registerModule("dep.js", { exports: dep_exports });
+			__rolldown_runtime__.registerModule("dep.js", {
+				exports: dep_exports,
+				bindings: true,
+				cells: { dep: [() => dep, (_) => dep = _] }
+			});
 			dep = "dep-v0";
 		})))();
 	}
@@ -111,7 +123,11 @@ __share("accept_dep-z052dtnB", ((exports) => {
 		return (init_accept_dep = __esmMin((() => {
 			init_dep();
 			accept_dep_hot = __rolldown_runtime__.createModuleHotContext("accept_dep.js");
-			__rolldown_runtime__.registerModule("accept_dep.js", { exports: accept_dep_exports });
+			__rolldown_runtime__.registerModule("accept_dep.js", {
+				exports: accept_dep_exports,
+				bindings: true,
+				cells: { current: [() => current, (_) => current = _] }
+			});
 			latest = dep;
 			accept_dep_hot.accept("dep.js", (mod) => {
 				latest = mod.dep;
@@ -167,7 +183,11 @@ __share("accept_dep-z052dtnB", ((exports) => {
 	function init_dep() {
 		return (init_dep = __esmMin((() => {
 			__rolldown_runtime__.createModuleHotContext("dep.js");
-			__rolldown_runtime__.registerModule("dep.js", { exports: dep_exports });
+			__rolldown_runtime__.registerModule("dep.js", {
+				exports: dep_exports,
+				bindings: true,
+				cells: { dep: [() => dep, (_) => dep = _] }
+			});
 			dep = "dep-v0";
 		})))();
 	}
@@ -181,7 +201,11 @@ __share("accept_dep-z052dtnB", ((exports) => {
 		return (init_accept_dep = __esmMin((() => {
 			init_dep();
 			accept_dep_hot = __rolldown_runtime__.createModuleHotContext("accept_dep.js");
-			__rolldown_runtime__.registerModule("accept_dep.js", { exports: accept_dep_exports });
+			__rolldown_runtime__.registerModule("accept_dep.js", {
+				exports: accept_dep_exports,
+				bindings: true,
+				cells: { current: [() => current, (_) => current = _] }
+			});
 			latest = dep;
 			accept_dep_hot.accept("dep.js", (mod) => {
 				latest = mod.dep;
@@ -235,7 +259,7 @@ __rolldown_runtime__.registerGraph({ids:["self_accept.js"],localCount:1,edges:[[
 //#region self_accept.js
 __rolldown_runtime__.registerFactory("self_accept.js", (function(__rolldown_module_id__) {
 	try {
-		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ value: () => value });
+		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ value: (() => value) });
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		const hot_self_accept = __rolldown_runtime__.createModuleHotContext(__rolldown_module_id__);
 		const value = "self-v1";
@@ -265,7 +289,7 @@ __rolldown_runtime__.registerGraph({ids:["dep.js"],localCount:1,edges:[[]],stamp
 //#region dep.js
 __rolldown_runtime__.registerFactory("dep.js", (function(__rolldown_module_id__) {
 	try {
-		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ dep: () => dep });
+		var __rolldown_exports__ = __rolldown_runtime__.__exportAll({ dep: (() => dep) });
 		__rolldown_runtime__.registerModule(__rolldown_module_id__, { exports: __rolldown_exports__ });
 		const hot_dep = __rolldown_runtime__.createModuleHotContext(__rolldown_module_id__);
 		const dep = "dep-v1";

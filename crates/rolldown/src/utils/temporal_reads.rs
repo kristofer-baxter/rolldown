@@ -256,13 +256,23 @@ pub fn preserve_temporal_reads<'ast>(
 /// The expression a temporal read wraps, or `expression` itself when it is not one.
 pub fn temporal_read_argument<'b, 'ast>(expression: &'b Expression<'ast>) -> &'b Expression<'ast> {
   if let Expression::CallExpression(call) = expression
-    && matches!(&call.callee, Expression::Identifier(identifier) if identifier.name == TEMPORAL_READ)
-    && let [argument] = call.arguments.as_slice()
-    && let Some(argument) = argument.as_expression()
+    && let Some(argument) = temporal_read_call_argument(call)
   {
     return argument;
   }
   expression
+}
+
+pub fn temporal_read_call_argument<'b, 'ast>(
+  call: &'b ast::CallExpression<'ast>,
+) -> Option<&'b Expression<'ast>> {
+  if matches!(&call.callee, Expression::Identifier(identifier) if identifier.name == TEMPORAL_READ)
+    && let [argument] = call.arguments.as_slice()
+    && let Some(argument) = argument.as_expression()
+  {
+    return Some(argument);
+  }
+  None
 }
 
 pub fn unwrap_temporal_read(expression: &mut Expression<'_>) {

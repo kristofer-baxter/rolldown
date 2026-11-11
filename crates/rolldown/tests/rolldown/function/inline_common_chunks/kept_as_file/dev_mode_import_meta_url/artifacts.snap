@@ -76,7 +76,11 @@ var shared_hot, url;
 function init_shared() {
 	return (init_shared = __esmMin((() => {
 		shared_hot = __rolldown_runtime__.createModuleHotContext("shared.js");
-		__rolldown_runtime__.registerModule("shared.js", { exports: shared_exports });
+		__rolldown_runtime__.registerModule("shared.js", {
+			exports: shared_exports,
+			bindings: true,
+			cells: { url: [() => url, (_) => url = _] }
+		});
 		url = import.meta.url;
 		shared_hot.accept();
 	})))();

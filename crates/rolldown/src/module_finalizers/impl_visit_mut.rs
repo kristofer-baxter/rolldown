@@ -800,6 +800,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
       }
       ast::Expression::TaggedTemplateExpression(tagged) => {
         // A tag is called like a callee: a bridge member tag keeps `this === undefined`.
+        crate::utils::temporal_reads::unwrap_temporal_read(&mut tagged.tag);
         if let Some(new_tag) = self.try_rewrite_bridge_callee(&tagged.tag) {
           tagged.tag = new_tag;
         }
@@ -917,6 +918,7 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         // import.meta.hot?.accept()
         if let ast::ChainElement::CallExpression(call_expr) = &mut chain_expr.expression {
           self.rewrite_hot_accept_call_deps(call_expr);
+          crate::utils::temporal_reads::unwrap_temporal_read(&mut call_expr.callee);
           // `f?.()` / `ns.f?.()` of a bridge member: the optional callee needs the same `this`
           // guard as a plain call.
           if let Some(new_callee) = self.try_rewrite_bridge_callee(&call_expr.callee) {

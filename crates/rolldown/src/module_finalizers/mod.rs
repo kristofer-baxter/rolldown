@@ -829,6 +829,9 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// side-effect-free function is marked pure, and any other callee that resolves to a bridge
   /// member gets the same `this` guard.
   fn rewrite_call_callee(&self, call_expr: &mut ast::CallExpression<'ast>) {
+    // The intrinsic preserves a read during DCE, not a call-result receiver. Reveal the
+    // imported identifier before choosing its callee form, including an inline bridge guard.
+    crate::utils::temporal_reads::unwrap_temporal_read(&mut call_expr.callee);
     if let Some(ident_ref) = call_expr.callee.as_identifier_mut() {
       let is_empty_function = ident_ref
         .reference_id

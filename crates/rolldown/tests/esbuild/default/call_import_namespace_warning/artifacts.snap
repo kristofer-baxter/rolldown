@@ -237,8 +237,11 @@ import "c";
 
 ```js
 import "a";
-import "b";
-import "c";
+import { B } from "b";
+import c from "c";
+// jsx-components.jsx
+B;
+c;
 
 ```
 
