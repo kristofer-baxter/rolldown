@@ -1767,17 +1767,12 @@ impl<'a> GenerateStage<'a> {
     for &importee_chunk_idx in &chunk.cross_chunk_imports {
       let importee_chunk = &chunk_graph.chunk_table[importee_chunk_idx];
       h.write_val(&importee_chunk.preliminary_filename.as_deref().map(arcstr::ArcStr::as_str));
-      h.write_val(
-        &crate::utils::native_records::commonjs_import_routes(
-          self.link_output,
-          chunk_graph,
-          chunk,
-          importee_chunk_idx,
-        )
-        .map(|routes| {
-          (routes.primary_suffix, routes.registration.map(|_| routes.definition.suffix.as_str()))
-        }),
-      );
+      h.write_val(&crate::utils::native_records::commonjs_import_suffix(
+        self.link_output,
+        chunk_graph,
+        chunk,
+        importee_chunk_idx,
+      ));
     }
 
     h.write_val(&chunk_graph.native_commonjs_definitions.get(&chunk_idx));

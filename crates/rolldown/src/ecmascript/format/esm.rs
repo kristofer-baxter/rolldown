@@ -2,9 +2,9 @@ use std::collections::VecDeque;
 
 use itertools::Itertools;
 use rolldown_common::{
-  AddonRenderContext, ChunkIdx, CrossChunkImportItem, ExportsKind, ExternalModule, ImportAttribute,
-  ImportKind, ImportRecordIdx, ImportRecordMeta, Module, ModuleIdx, ModuleTable,
-  RUNTIME_MODULE_KEY, Specifier, SymbolRef,
+  AddonRenderContext, ChunkIdx, ExportsKind, ExternalModule, ImportAttribute, ImportKind,
+  ImportRecordIdx, ImportRecordMeta, Module, ModuleIdx, ModuleTable, RUNTIME_MODULE_KEY, Specifier,
+  SymbolRef,
 };
 use rolldown_sourcemap::SourceJoiner;
 use rolldown_utils::{
@@ -229,128 +229,99 @@ fn render_chunk_content<'code>(
   );
 }
 
-fn render_esm_internal_import(
-  ctx: &GenerateContext<'_>,
-  exporter_id: ChunkIdx,
-  items: &[CrossChunkImportItem],
-) -> String {
-  let mut s = String::new();
-  let ascii_only = ctx.options.charset.is_ascii();
-  let importee_chunk = &ctx.chunk_graph.chunk_table[exporter_id];
-  let routes = crate::utils::native_records::commonjs_import_routes(
+fn commonjs_chunk_import_path(ctx: &GenerateContext<'_>, exporter: ChunkIdx) -> String {
+  let mut path = ctx.chunk.import_path_for(&ctx.chunk_graph.chunk_table[exporter]);
+  if let Some(suffix) = crate::utils::native_records::commonjs_import_suffix(
     ctx.link_output,
     ctx.chunk_graph,
     ctx.chunk,
-    exporter_id,
-  );
-  let mut default_alias = vec![];
-  let mut native_namespaces = vec![];
-  let mut registration_specifiers = vec![];
-  // Track seen canonical refs to avoid duplicate imports.
-  // Multiple import_refs can resolve to the same canonical_ref (e.g., re-exports from CJS modules),
-  // and we only need to import once per unique canonical symbol.
-  let mut seen_canonical_refs: FxHashSet<SymbolRef> = FxHashSet::default();
-  let mut specifiers = items
-    .iter()
-    .filter_map(|item| {
-      let canonical_ref = ctx.link_output.symbol_db.canonical_ref_for(item.import_ref);
-      // Skip if we've already processed this canonical symbol
-      if !seen_canonical_refs.insert(canonical_ref) {
-        return None;
-      }
-      let imported = ctx
-        .link_output
-        .symbol_db
-        .canonical_name_for_or_original(canonical_ref, &ctx.chunk.canonical_names);
-      let rendered_imported = escape_non_ascii(imported, ascii_only);
-      if let Some(routes) = &routes
-        && routes.registration == Some(canonical_ref)
-      {
-        registration_specifiers.push(concat_string!(
-          to_module_import_export_name_with_ascii(&routes.definition.wrapper_export, ascii_only),
-          " as ",
-          rendered_imported
-        ));
-        return None;
-      }
-      if crate::utils::native_records::is_native_namespace(
-        ctx.options,
-        ctx.link_output,
-        canonical_ref,
-      ) && importee_chunk.entry_module_idx().is_some_and(|module| module == canonical_ref.owner)
-      {
-        native_namespaces.push(rendered_imported.into_owned());
-        return None;
-      }
-      let alias = &ctx.render_export_items_index_vec[exporter_id]
-        .get(&item.import_ref)
-        .expect("should have export item index")[0];
-      if alias.as_str() == imported {
-        Some(to_module_import_export_name_with_ascii(alias.as_str(), ascii_only))
-      } else {
-        if alias.as_str() == "default" {
-          default_alias.push(rendered_imported.into_owned());
-          return None;
-        }
-        Some(concat_string!(
-          to_module_import_export_name_with_ascii(alias, ascii_only),
-          " as ",
-          rendered_imported
-        ))
-      }
-    })
-    .collect::<Vec<_>>();
-  specifiers.sort_unstable();
-
-  let mut path = ctx.chunk.import_path_for(importee_chunk);
-  if let Some(suffix) = routes.as_ref().and_then(|routes| routes.primary_suffix) {
+    exporter,
+  ) {
     path.push_str(suffix);
   }
-  native_namespaces.sort_unstable();
-  for namespace in &native_namespaces {
-    s.push_str(&concat_string!(
-      "import * as ",
-      namespace,
-      " from ",
-      to_ecma_string_literal(&path, ascii_only),
-      ";\n"
-    ));
-  }
-  if native_namespaces.is_empty() || !specifiers.is_empty() || !default_alias.is_empty() {
-    s.push_str(&create_import_declaration(
-      &ctx.link_output.module_table,
-      specifiers,
-      &default_alias,
-      &path,
-      None,
-      ascii_only,
-    ));
-  }
-  if let Some(routes) = routes.filter(|routes| routes.registration.is_some()) {
-    let registration_path = concat_string!(path, routes.definition.suffix);
-    s.push_str(&create_import_declaration(
-      &ctx.link_output.module_table,
-      registration_specifiers,
-      &[],
-      &registration_path,
-      None,
-      ascii_only,
-    ));
-  }
-  s
+  path
 }
 
 fn render_esm_chunk_imports(ctx: &GenerateContext<'_>) -> Option<String> {
   let mut s = String::new();
+  let mut internal_imports = vec![];
   let ascii_only = ctx.options.charset.is_ascii();
-  let internal_imports = ctx
-    .chunk
-    .imports_from_other_chunks
-    .iter()
-    .map(|(exporter_id, items)| {
-      (*exporter_id, render_esm_internal_import(ctx, *exporter_id, items))
-    })
-    .collect::<Vec<_>>();
+  ctx.chunk.imports_from_other_chunks.iter().for_each(|(exporter_id, items)| {
+    let mut s = String::new();
+    let importee_chunk = &ctx.chunk_graph.chunk_table[*exporter_id];
+    let mut default_alias = vec![];
+    let mut native_namespaces = vec![];
+    // Track seen canonical refs to avoid duplicate imports.
+    // Multiple import_refs can resolve to the same canonical_ref (e.g., re-exports from CJS modules),
+    // and we only need to import once per unique canonical symbol.
+    let mut seen_canonical_refs: FxHashSet<SymbolRef> = FxHashSet::default();
+    let mut specifiers = items
+      .iter()
+      .filter_map(|item| {
+        let canonical_ref = ctx.link_output.symbol_db.canonical_ref_for(item.import_ref);
+        // Skip if we've already processed this canonical symbol
+        if !seen_canonical_refs.insert(canonical_ref) {
+          return None;
+        }
+        let imported = ctx
+          .link_output
+          .symbol_db
+          .canonical_name_for_or_original(canonical_ref, &ctx.chunk.canonical_names);
+        let rendered_imported = escape_non_ascii(imported, ascii_only);
+        if crate::utils::native_records::is_native_namespace(
+          ctx.options,
+          ctx.link_output,
+          canonical_ref,
+        ) && importee_chunk
+          .entry_module_idx()
+          .is_some_and(|module| module == canonical_ref.owner)
+        {
+          native_namespaces.push(rendered_imported.into_owned());
+          return None;
+        }
+        let alias = &ctx.render_export_items_index_vec[*exporter_id]
+          .get(&item.import_ref)
+          .expect("should have export item index")[0];
+        if alias.as_str() == imported {
+          Some(to_module_import_export_name_with_ascii(alias.as_str(), ascii_only))
+        } else {
+          if alias.as_str() == "default" {
+            default_alias.push(rendered_imported.into_owned());
+            return None;
+          }
+          Some(concat_string!(
+            to_module_import_export_name_with_ascii(alias, ascii_only),
+            " as ",
+            rendered_imported
+          ))
+        }
+      })
+      .collect::<Vec<_>>();
+    specifiers.sort_unstable();
+
+    let path = commonjs_chunk_import_path(ctx, *exporter_id);
+    native_namespaces.sort_unstable();
+    for namespace in &native_namespaces {
+      s.push_str(&concat_string!(
+        "import * as ",
+        namespace,
+        " from ",
+        to_ecma_string_literal(&path, ascii_only),
+        ";\n"
+      ));
+    }
+    if native_namespaces.is_empty() || !specifiers.is_empty() || !default_alias.is_empty() {
+      s.push_str(&create_import_declaration(
+        &ctx.link_output.module_table,
+        specifiers,
+        &default_alias,
+        &path,
+        None,
+        ascii_only,
+      ));
+    }
+    internal_imports.push((*exporter_id, s));
+  });
   let has_deferred_imports =
     ctx.chunk.modules.iter().any(|idx| !ctx.link_output.metas[*idx].deferred_imports.is_empty());
   if has_deferred_imports && crate::utils::native_records::enabled(ctx.options) {

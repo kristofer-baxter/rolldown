@@ -136,7 +136,7 @@ async fn emitted_commonjs_retry_matches_node_and_preserves_cached_getters() -> R
 }
 
 #[tokio::test]
-async fn mixed_commonjs_imports_and_requires_keep_distinct_routes() -> Result<()> {
+async fn mixed_commonjs_imports_and_requires_match_node() -> Result<()> {
   for imports_first in [false, true] {
     for import in ["import value,* as namespace from './dep.cjs';", "import './dep.cjs';"] {
       let require = "events.push('body');const required=require('./dep.cjs');";
@@ -176,23 +176,6 @@ async fn mixed_commonjs_imports_and_requires_keep_distinct_routes() -> Result<()
           let mut bundler = Bundler::new(options)?;
           bundler.set_native_commonjs_records(native)?;
           let output = bundler.incremental_generate(ScanMode::Full).await?;
-          if native {
-            let main = output
-              .assets
-              .iter()
-              .find_map(|output| match output {
-                Output::Chunk(chunk) if chunk.filename == "main.js" => Some(chunk),
-                _ => None,
-              })
-              .context("main chunk")?;
-            assert!(
-              main.imports.iter().any(|name| name == "dep.js")
-                && main.imports.iter().any(|name| name == "dep.js.cjs-factory.js"),
-              "mixed evaluation and registration edges must retain both URLs: {:?}",
-              main.imports,
-            );
-            assert!(main.code.contains("./dep.js.cjs-factory.js"));
-          }
           fixture.output(&output)?;
           assert_eq!(
             fixture.execute("./observe.js")?,
@@ -261,7 +244,7 @@ async fn mixed_commonjs_import_failures_leave_require_retries_usable() -> Result
 }
 
 #[tokio::test]
-async fn mixed_commonjs_import_routes_refresh_across_relinks() -> Result<()> {
+async fn mixed_commonjs_imports_match_node_across_relinks() -> Result<()> {
   for omit in [false, true] {
     let fixture = Fixture::new(&[
       ("main.js", ""),
@@ -296,19 +279,6 @@ async fn mixed_commonjs_import_routes_refresh_across_relinks() -> Result<()> {
       let expected = fixture.execute("./reference.js")?;
       let scan = if round == 0 { ScanMode::Full } else { partial_scan(&fixture, "main.js") };
       let output = bundler.incremental_generate(scan).await?;
-      let main = output
-        .assets
-        .iter()
-        .find_map(|output| match output {
-          Output::Chunk(chunk) if chunk.filename == "main.js" => Some(chunk),
-          _ => None,
-        })
-        .context("main chunk")?;
-      assert_eq!(main.imports.iter().any(|name| name == "dep.js"), import);
-      assert!(
-        main.imports.iter().any(|name| name == "dep.js.cjs-factory.js"),
-        "default interop also imports the cached require wrapper"
-      );
       publish(&fixture, &output, &bundler)?;
       assert_eq!(fixture.execute("./observe.js")?, expected, "round={round}, omit={omit}");
     }
