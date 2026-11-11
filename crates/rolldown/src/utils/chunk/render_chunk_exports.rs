@@ -74,6 +74,9 @@ pub fn render_wrapped_entry_chunk(
   if let ChunkKind::EntryPoint { module: entry_id, meta, .. } = ctx.chunk.kind {
     let entry_meta = &ctx.link_output.metas[entry_id];
     if matches!(entry_meta.wrap_kind(), WrapKind::Cjs) {
+      if ctx.chunk_graph.native_commonjs_definitions.contains_key(&ctx.chunk_idx) {
+        return None;
+      }
       // A native record that only `require()` or `import.meta.hot.accept()` reaches evaluates on
       // its first `require`, as CommonJS does, rather than when the record itself evaluates: an
       // eager call would run it before the module requiring it, even inside a `require()` cycle
@@ -274,6 +277,11 @@ pub fn render_chunk_exports(
 
   match options.format {
     OutputFormat::Esm => {
+      if let Some(definition) = ctx.chunk_graph.native_commonjs_definitions.get(&ctx.chunk_idx) {
+        let module = chunk.entry_module_idx().expect("CommonJS definition entry");
+        let wrapper = link_output.metas[module].wrapper_ref.expect("CommonJS wrapper");
+        export_items.push((definition.wrapper_export.clone(), wrapper));
+      }
       // A record's native namespace is reached through `import * as`, never a named export.
       export_items.retain(|(_, symbol)| {
         !(crate::utils::native_records::is_native_namespace(options, link_output, *symbol)
@@ -610,6 +618,12 @@ pub fn get_chunk_export_names(chunk: &Chunk, graph: &LinkStageOutput) -> Vec<Com
 }
 
 pub fn get_chunk_export_names_with_ctx(ctx: &GenerateContext<'_>) -> Vec<CompactStr> {
+  if ctx.chunk_graph.native_commonjs_definitions.contains_key(&ctx.chunk_idx) {
+    return crate::utils::native_records::commonjs_definition_exports(
+      ctx.chunk_graph,
+      ctx.chunk_idx,
+    );
+  }
   let GenerateContext { chunk, link_output, render_export_items_index_vec, .. } = ctx;
   if let ChunkKind::EntryPoint { module: entry_id, .. } = &chunk.kind {
     let entry_meta = &link_output.metas[*entry_id];

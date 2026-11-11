@@ -35,8 +35,7 @@ export { foo as t };
 ### lazy-chunk.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as foo, r as init_user_lib } from "./main2.js";
+import { n as init_user_lib, r as __esmMin, t as foo } from "./main.js";
 // lazy-chunk.js
 function init_lazy_chunk() {
 	return (init_lazy_chunk = __esmMin((() => {
@@ -51,15 +50,7 @@ init_lazy_chunk();
 ### main.js
 
 ```js
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-### main2.js
-
-```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+// HIDDEN [\0rolldown/runtime.js]
 // polyfill.js
 function init_polyfill() {
 	return (init_polyfill = __esmMin((() => {
@@ -83,15 +74,8 @@ function init_main() {
 		foo();
 	})))();
 }
-export { init_polyfill as i, foo as n, init_user_lib as r, init_main as t };
-
-```
-
-### rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+init_main();
+export { init_user_lib as n, __esmMin as r, foo as t };
 
 ```
 
@@ -102,62 +86,24 @@ export { __esmMin as t };
 ### lazy-chunk.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as foo, r as init_user_lib } from "./main2.js";
+import { t as foo } from "./main.js";
 // lazy-chunk.js
-function init_lazy_chunk() {
-	return (init_lazy_chunk = __esmMin((() => {
-		init_user_lib();
-		foo();
-	})))();
-}
-init_lazy_chunk();
+foo();
 
 ```
 
 ### main.js
 
 ```js
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-### main2.js
-
-```js
-import { t as __esmMin } from "./rolldown-runtime.js";
 // polyfill.js
-function init_polyfill() {
-	return (init_polyfill = __esmMin((() => {
-		Object.somePolyfilledFunction = () => {};
-	})))();
-}
+Object.somePolyfilledFunction = () => {};
 // user-lib.js
+Object.somePolyfilledFunction();
 async function foo() {
 	return import("./lazy-chunk.js");
 }
-function init_user_lib() {
-	return (init_user_lib = __esmMin((() => {
-		Object.somePolyfilledFunction();
-	})))();
-}
 // main.js
-function init_main() {
-	return (init_main = __esmMin((() => {
-		init_polyfill();
-		init_user_lib();
-		foo();
-	})))();
-}
-export { init_polyfill as i, foo as n, init_user_lib as r, init_main as t };
-
-```
-
-### rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+foo();
+export { foo as t };
 
 ```

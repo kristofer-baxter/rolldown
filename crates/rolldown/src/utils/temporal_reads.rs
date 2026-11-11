@@ -6,7 +6,7 @@ use oxc::{
   },
   ast_visit::{VisitJs, VisitJsMut, walk_js_mut},
   semantic::Scoping,
-  span::SPAN,
+  span::{GetSpan, SPAN},
   syntax::symbol::SymbolFlags,
 };
 use rustc_hash::FxHashSet;
@@ -190,16 +190,63 @@ pub fn preserve_temporal_reads<'ast>(
   program: &mut ast::Program<'ast>,
   scoping: &Scoping,
   allocator: &'ast Allocator,
+  manual_pure_functions: Option<&FxHashSet<String>>,
 ) -> bool {
   struct Preserve<'a, 'ast> {
     scoping: &'a Scoping,
     symbols: FxHashSet<oxc::semantic::SymbolId>,
     builder: AstBuilder<'ast>,
+    manual_pure_functions: Option<&'a FxHashSet<String>>,
     changed: bool,
   }
-  impl<'ast> VisitJsMut<'ast> for Preserve<'_, 'ast> {
-    fn visit_expression(&mut self, expression: &mut Expression<'ast>) {
-      walk_js_mut::walk_expression(self, expression);
+  impl<'ast> Preserve<'_, 'ast> {
+    fn restore_manual_pure_root(&mut self, expression: &mut Expression<'ast>) {
+      let Some(functions) = self.manual_pure_functions.filter(|functions| !functions.is_empty())
+      else {
+        return;
+      };
+      let mut root = expression;
+      let mut has_callee_arguments = false;
+      loop {
+        if matches!(root, Expression::Identifier(_))
+          || matches!(root, Expression::CallExpression(call) if temporal_read_call_argument(call).is_some())
+        {
+          break;
+        }
+        root = match root {
+          Expression::CallExpression(call) => {
+            has_callee_arguments |= !call.arguments.is_empty();
+            &mut call.callee
+          }
+          Expression::StaticMemberExpression(member) => &mut member.object,
+          Expression::ComputedMemberExpression(member) => &mut member.object,
+          Expression::ChainExpression(chain) => match &mut chain.expression {
+            ast::ChainElement::CallExpression(call) => {
+              has_callee_arguments |= !call.arguments.is_empty();
+              &mut call.callee
+            }
+            ast::ChainElement::StaticMemberExpression(member) => &mut member.object,
+            ast::ChainElement::ComputedMemberExpression(member) => &mut member.object,
+            _ => return,
+          },
+          _ => return,
+        };
+      }
+      if let Expression::Identifier(identifier) = temporal_read_argument(root)
+        && functions.contains(identifier.name.as_str())
+      {
+        if has_callee_arguments {
+          // Oxc's manual-purity chain shortcut does not inspect inner call arguments.
+          // Keep the barrier instead of exposing those arguments to that shortcut.
+          self.preserve_identifier(root);
+        } else {
+          // See internal-docs/inline-common-chunks/implementation.md. Only the promised
+          // chain root is transparent: authored arguments, keys and spreads retain barriers.
+          unwrap_temporal_read(root);
+        }
+      }
+    }
+    fn preserve_identifier(&mut self, expression: &mut Expression<'ast>) {
       let Expression::Identifier(identifier) = expression else {
         return;
       };
@@ -213,9 +260,10 @@ pub fn preserve_temporal_reads<'ast>(
       if !self.symbols.contains(&symbol) {
         return;
       }
+      let span = expression.span();
       let value = expression.take_in(&self.builder);
       *expression = Expression::new_call_expression(
-        SPAN,
+        span,
         Expression::new_identifier(SPAN, TEMPORAL_READ, &self.builder),
         None,
         [ast::Argument::from(value)],
@@ -223,6 +271,21 @@ pub fn preserve_temporal_reads<'ast>(
         &self.builder,
       );
       self.changed = true;
+    }
+  }
+  impl<'ast> VisitJsMut<'ast> for Preserve<'_, 'ast> {
+    fn visit_expression(&mut self, expression: &mut Expression<'ast>) {
+      walk_js_mut::walk_expression(self, expression);
+      match expression {
+        Expression::CallExpression(call) => self.restore_manual_pure_root(&mut call.callee),
+        Expression::NewExpression(call) => self.restore_manual_pure_root(&mut call.callee),
+        Expression::TaggedTemplateExpression(tag) => self.restore_manual_pure_root(&mut tag.tag),
+        Expression::StaticMemberExpression(_)
+        | Expression::ComputedMemberExpression(_)
+        | Expression::ChainExpression(_) => self.restore_manual_pure_root(expression),
+        _ => {}
+      }
+      self.preserve_identifier(expression);
     }
   }
   let safe_symbols = safe_post_declaration_symbols(program, scoping);
@@ -247,8 +310,13 @@ pub fn preserve_temporal_reads<'ast>(
       }
     }
   }
-  let mut preserve =
-    Preserve { scoping, symbols, builder: AstBuilder::new(allocator), changed: false };
+  let mut preserve = Preserve {
+    scoping,
+    symbols,
+    builder: AstBuilder::new(allocator),
+    manual_pure_functions,
+    changed: false,
+  };
   preserve.visit_program(program);
   preserve.changed
 }
@@ -256,13 +324,23 @@ pub fn preserve_temporal_reads<'ast>(
 /// The expression a temporal read wraps, or `expression` itself when it is not one.
 pub fn temporal_read_argument<'b, 'ast>(expression: &'b Expression<'ast>) -> &'b Expression<'ast> {
   if let Expression::CallExpression(call) = expression
-    && matches!(&call.callee, Expression::Identifier(identifier) if identifier.name == TEMPORAL_READ)
-    && let [argument] = call.arguments.as_slice()
-    && let Some(argument) = argument.as_expression()
+    && let Some(argument) = temporal_read_call_argument(call)
   {
     return argument;
   }
   expression
+}
+
+pub fn temporal_read_call_argument<'b, 'ast>(
+  call: &'b ast::CallExpression<'ast>,
+) -> Option<&'b Expression<'ast>> {
+  if matches!(&call.callee, Expression::Identifier(identifier) if identifier.name == TEMPORAL_READ)
+    && let [argument] = call.arguments.as_slice()
+    && let Some(argument) = argument.as_expression()
+  {
+    return Some(argument);
+  }
+  None
 }
 
 pub fn unwrap_temporal_read(expression: &mut Expression<'_>) {

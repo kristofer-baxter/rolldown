@@ -109,6 +109,7 @@ pub struct JsOutputAsset {
 impl From<JsOutputAsset> for rolldown_common::OutputAsset {
   fn from(asset: JsOutputAsset) -> Self {
     Self {
+      emitted_reference_id: None,
       names: asset.names,
       original_file_names: asset.original_file_names,
       filename: asset.filename.into(),

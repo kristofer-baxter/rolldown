@@ -521,14 +521,14 @@ mod tests {
     let unrelated = ModuleIdx::from_raw(3);
     let appended = ModuleIdx::from_raw(4);
     let analysis = PlainObjectReads {
-      exporters: [exporter].into_iter().collect(),
+      exporters: std::iter::once(exporter).collect(),
       guarded: [exporter, previous_reader].into_iter().collect(),
       ..Default::default()
     };
     for reader in [unrelated, appended] {
       assert!(!analysis.guards(reader), "the previous link did not see this reader");
       assert!(!analysis.guards_new_imports(std::iter::empty()));
-      assert!(!analysis.guards_new_imports([unrelated].into_iter()));
+      assert!(!analysis.guards_new_imports(std::iter::once(unrelated)));
       assert!(analysis.guards_new_imports([unrelated, exporter].into_iter()));
     }
     assert!(analysis.guards(previous_reader));

@@ -27,12 +27,35 @@ impl Bundler {
     // See internal-docs/bundler-data-lifecycle/implementation.md ("Cache integrity on a failed build").
     let ret = with_fn(&mut bundle).await;
     bundle.set_mangle_properties(None);
+    if ret.is_err() && bundle.cache.native_commonjs_records {
+      bundle.cache.invalidate_native_relink();
+      bundle.cache.cached_native_chunks.clear();
+    }
     self.cache = bundle.cache;
     ret
   }
 
   pub fn set_omit_reused_chunk_bytes(&mut self, omit: bool) {
     self.cache.omit_reused_chunk_bytes = omit;
+  }
+
+  /// Opts native dev-server records into separate CommonJS registration and evaluation.
+  /// Ordinary preserve-modules layout is unchanged. Generation rejects CommonJS tail addons.
+  ///
+  /// # Errors
+  /// Requires incremental preserved ESM output without strict execution-order wrapping.
+  pub fn set_native_commonjs_records(&mut self, enabled: bool) -> anyhow::Result<()> {
+    anyhow::ensure!(
+      !enabled
+        || self.options.experimental.is_incremental_build_enabled()
+          && crate::utils::native_records::enabled(&self.options),
+      "native CommonJS records require incremental preserved ESM output without strict execution order"
+    );
+    if self.cache.native_commonjs_records != enabled {
+      self.cache.native_commonjs_records = enabled;
+      self.invalidate_native_relink();
+    }
+    Ok(())
   }
 
   /// Keeps the arenas that scans build and the capacity that linking leaves, instead of

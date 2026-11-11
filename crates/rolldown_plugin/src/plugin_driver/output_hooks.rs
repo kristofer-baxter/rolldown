@@ -259,7 +259,7 @@ impl PluginDriver {
       let mut args = crate::HookGenerateBundleArgs { is_write, bundle, options: opts };
       let result = plugin.call_generate_bundle(ctx, &mut args).await;
       result.with_context(|| CausedPlugin::new(plugin.call_name()))?;
-      ctx.file_emitter().add_additional_files(bundle, warnings);
+      self.add_emitted_files(bundle, warnings)?;
     }
     Ok(())
   }
@@ -280,7 +280,7 @@ impl PluginDriver {
       let mut args = crate::HookWriteBundleArgs { bundle, options: opts };
       let result = plugin.call_write_bundle(ctx, &mut args).await;
       result.with_context(|| CausedPlugin::new(plugin.call_name()))?;
-      ctx.file_emitter().add_additional_files(bundle, warnings);
+      self.add_emitted_files(bundle, warnings)?;
     }
     Ok(())
   }

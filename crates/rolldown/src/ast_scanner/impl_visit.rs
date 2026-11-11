@@ -502,6 +502,12 @@ impl<'me, 'ast: 'me> VisitJs<'ast> for AstScanner<'me, 'ast> {
   }
 
   fn visit_call_expression(&mut self, it: &ast::CallExpression<'ast>) {
+    if let Some(argument) = crate::utils::temporal_reads::temporal_read_call_argument(it) {
+      // This internal DCE barrier is still a binding read. Do not put an artificial call
+      // between it and its member ancestors: linking needs the complete namespace chain.
+      self.visit_expression(argument);
+      return;
+    }
     self.try_extract_hmr_info_from_hot_accept_call(it);
     walk_js::walk_call_expression(self, it);
   }

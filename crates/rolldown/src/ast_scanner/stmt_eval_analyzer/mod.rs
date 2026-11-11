@@ -230,7 +230,7 @@ impl<'a> StmtEvalAnalyzer<'a> {
   /// `!DEV && warn()`. The analysis then skips the branch that never runs, like Rollup's
   /// `IfStatement.hasEffects`.
   fn known_truthiness(&self, test: &Expression) -> Option<bool> {
-    match test.without_parentheses() {
+    match utils::temporal_reads::temporal_read_argument(test.without_parentheses()) {
       Expression::Identifier(ident) => {
         let value = self.constant_value_for_reference_id(ident.reference_id.get()?)?;
         oxc_ecmascript::ConstantValue::from(value).to_boolean(self)
@@ -281,7 +281,8 @@ impl<'a> StmtEvalAnalyzer<'a> {
   /// can never have side effects (no getters possible).
   fn is_namespace_member_access(&self, member_expr: &ast::MemberExpression) -> Option<bool> {
     let namespace_ids = self.namespace_object_symbol_ids?;
-    let ident = member_expr.object().as_identifier()?;
+    let ident =
+      utils::temporal_reads::temporal_read_argument(member_expr.object()).as_identifier()?;
     let ref_id = ident.reference_id.get()?;
     let symbol_id = self.scope.symbol_id_for(ref_id)?;
     Some(namespace_ids.contains(&symbol_id))

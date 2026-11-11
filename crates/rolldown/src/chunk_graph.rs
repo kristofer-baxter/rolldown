@@ -35,6 +35,8 @@ pub struct ChunkGraph {
   /// Facade entry chunk elimination did not run (common-chunk merging is off, which a
   /// top-level-await build forces), so every dynamic entry hosted elsewhere kept its facade.
   pub dynamic_entry_facades_retained: bool,
+  pub native_commonjs_definitions:
+    FxHashMap<ChunkIdx, crate::utils::native_records::CommonJsDefinition>,
 }
 
 impl ChunkGraph {
@@ -50,6 +52,7 @@ impl ChunkGraph {
       common_chunk_preserve_export_names_modules: FxHashMap::default(),
       post_chunk_optimization_operations: FxHashMap::default(),
       dynamic_entry_facades_retained: false,
+      native_commonjs_definitions: FxHashMap::default(),
     }
   }
 

@@ -25,6 +25,14 @@ The order is defined by a small set of rules, in precedence order:
 
 The link-time constant lookup in `refine_stmt_side_effects.rs` therefore rejects imported constants within the same static-import strongly connected component, even if the exporter has a lower `exec_order`. With multiple entries or preserved modules, loading a different entry can reverse the order within the cycle and expose a `const` TDZ failure. These components are computed lazily once and shared with the analyzer reruns in cross-module optimization. An exporter outside the importer's component can still supply a constant when it precedes the importer.
 
+## Lazy-barrel demand and dynamic boundaries
+
+Explicit `experimental.lazy_barrel` routing with code splitting does not require the native-record protocol. A static read retains its selected leaf's initialization, including when a literal value is inlined and the package declares `sideEffects: false`. Cross-chunk links consult the exact retained constant reads rather than treating every included pure module as observable. Ordinary builds without lazy-barrel mode retain their existing pure-elision behavior.
+
+Dynamic namespace reads contribute their own demands without replacing static demands. Runtime-discovered CommonJS stars promote the full barrel body, including named re-exports, before linking its getter table. After tree shaking, namespace targets are narrowed again from retained readers so loading one selected lazy leaf does not initialize its neighbors.
+
+Lazy promotion can discover a broken static dependency closure behind a dynamic import. With lazy-barrel mode enabled, an exclusively dynamic parse/link failure rejects the import at runtime, and subsequent incremental builds can recover after repair. User-defined input errors and failures reachable through static or host loading paths remain build errors. Ordinary builds without this or the native error-isolation protocol still report parse/link failures during the build.
+
 ## Lexical reads across wrappers
 
 Execution order alone cannot certify a lexical read inside a hoisted function: a `require()` cycle can call that function before its declaring module reaches the lexical initializer. Strict execution-order wrappers lift those declarations into `var` bindings, so `preserve_temporal_bindings` retains explicit initialization flags even without the native-record protocol.

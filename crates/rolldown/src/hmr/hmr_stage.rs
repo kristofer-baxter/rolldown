@@ -698,7 +698,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       } else {
         FxHashMap::default()
       };
-    let binding_cells = native_records || self.options.is_dev_mode_enabled();
+    let binding_cells = native_records
+      || crate::utils::native_records::runtime_module_semantics_enabled(&self.options);
     let pre_rebuild_export_shapes = if binding_cells && !rescan_only {
       changed_modules
         .iter()

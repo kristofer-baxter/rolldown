@@ -209,7 +209,6 @@ impl BundleFactory {
       fs,
       options: Arc::clone(&self.options),
       resolver,
-      file_emitter: Arc::clone(&self.file_emitter),
       plugin_driver,
       warnings: std::mem::take(&mut self.warnings),
       bundle_span,

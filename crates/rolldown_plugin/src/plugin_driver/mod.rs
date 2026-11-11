@@ -15,9 +15,10 @@ use anyhow::Context;
 use arcstr::ArcStr;
 use dashmap::DashMap;
 use rolldown_common::{
-  ModuleDefFormat, ModuleId, ModuleIdx, ModuleInfo, ModuleLoaderMsg, PluginIdx, SharedFileEmitter,
-  SharedModuleInfoDashMap, WatchPath,
+  ModuleDefFormat, ModuleId, ModuleIdx, ModuleInfo, ModuleLoaderMsg, Output, PluginIdx,
+  SharedFileEmitter, SharedModuleInfoDashMap, WatchPath,
 };
+use rolldown_error::BuildDiagnostic;
 use rolldown_utils::dashmap::FxDashSet;
 use tokio::sync::broadcast;
 
@@ -31,6 +32,172 @@ use crate::{
 
 pub type SharedPluginDriver = Arc<PluginDriver>;
 
+#[derive(Debug, Default)]
+pub struct EmittedAssetNames {
+  state: Mutex<(u64, std::collections::BTreeMap<ArcStr, ArcStr>)>,
+}
+
+impl EmittedAssetNames {
+  pub(crate) fn record(
+    &self,
+    reference: ArcStr,
+    filename: impl FnOnce() -> anyhow::Result<ArcStr>,
+  ) -> anyhow::Result<()> {
+    // Looking up before locking can overwrite a concurrent deduplication's shorter name.
+    let mut state = self.state.lock().expect("emitted asset names poisoned");
+    let filename = filename()?;
+    if state.1.get(&reference) != Some(&filename) {
+      state.1.insert(reference, filename);
+      state.0 = state.0.wrapping_add(1);
+    }
+    Ok(())
+  }
+
+  fn clear(&self) {
+    let mut state = self.state.lock().expect("emitted asset names poisoned");
+    if !state.1.is_empty() {
+      state.1.clear();
+      state.0 = state.0.wrapping_add(1);
+    }
+  }
+
+  fn snapshot(&self) -> (u64, Vec<ArcStr>) {
+    let state = self.state.lock().expect("emitted asset names poisoned");
+    (state.0, state.1.values().cloned().collect())
+  }
+
+  fn generation(&self) -> u64 {
+    self.state.lock().expect("emitted asset names poisoned").0
+  }
+
+  fn owners_since(&self, generation: Option<u64>) -> anyhow::Result<Option<EmittedOutputOwners>> {
+    let state = self.state.lock().expect("emitted asset names poisoned");
+    if generation == Some(state.0) {
+      return Ok(None);
+    }
+    let mut references = std::collections::BTreeMap::new();
+    for (reference, filename) in &state.1 {
+      anyhow::ensure!(
+        references.insert(filename.to_lowercase(), reference.clone()).is_none(),
+        "conflicting native record output filename: {filename} (distinct emitted references)"
+      );
+    }
+    Ok(Some(EmittedOutputOwners { generation: state.0, references }))
+  }
+}
+
+#[cfg(test)]
+mod emitted_asset_names_tests {
+  use super::EmittedAssetNames;
+  use arcstr::ArcStr;
+  use rolldown_common::{EmittedAsset, FileEmitter, FilenameTemplate, NormalizedBundlerOptions};
+  use std::sync::{Arc, TryLockError, mpsc};
+
+  fn emit_named(emitter: &FileEmitter, name: &str) -> anyhow::Result<ArcStr> {
+    emitter.emit_file(
+      EmittedAsset {
+        name: Some(name.into()),
+        source: "identical contents".to_owned().into(),
+        ..Default::default()
+      },
+      Some(FilenameTemplate::new("[name][extname]".to_owned(), "output.assetFileNames")),
+      Some(name.into()),
+    )
+  }
+
+  #[test]
+  fn commonjs_emitted_names_follow_concurrent_deduplication() -> anyhow::Result<()> {
+    let emitter = Arc::new(FileEmitter::new(Arc::new(NormalizedBundlerOptions::default())));
+    emitter.enter_build_phase();
+    let reference = emit_named(&emitter, "long-asset-name.txt")?;
+    let names = Arc::new(EmittedAssetNames::default());
+    let (observed_tx, observed_rx) = mpsc::channel();
+    let (resume_tx, resume_rx) = mpsc::channel();
+    let first = {
+      let emitter = Arc::clone(&emitter);
+      let names = Arc::clone(&names);
+      let reference = reference.clone();
+      std::thread::spawn(move || {
+        names.record(reference.clone(), || {
+          let filename = emitter.get_file_name(&reference)?;
+          observed_tx.send(filename.clone())?;
+          resume_rx.recv()?;
+          Ok(filename)
+        })
+      })
+    };
+    let observed = observed_rx.recv()?;
+    let lookup_holds_lock = matches!(names.state.try_lock(), Err(TryLockError::WouldBlock));
+    let shorter_reference = emit_named(&emitter, "a.txt")?;
+    let (recorded_tx, recorded_rx) = mpsc::channel();
+    let second = {
+      let emitter = Arc::clone(&emitter);
+      let names = Arc::clone(&names);
+      let reference = shorter_reference.clone();
+      std::thread::spawn(move || -> anyhow::Result<()> {
+        let result = names.record(reference.clone(), || emitter.get_file_name(&reference));
+        recorded_tx.send(())?;
+        result
+      })
+    };
+    if !lookup_holds_lock {
+      recorded_rx.recv()?;
+    }
+    resume_tx.send(())?;
+    first.join().expect("first name recorder panicked")?;
+    second.join().expect("second name recorder panicked")?;
+    assert!(lookup_holds_lock, "filename lookup must share the tracking update's lock");
+    assert_eq!(observed.as_str(), "long-asset-name.txt");
+    assert_eq!(reference, shorter_reference, "identical assets must share a reference");
+    assert_eq!(emitter.get_file_name(&reference)?.as_str(), "a.txt");
+    assert_eq!(names.snapshot().1, vec![ArcStr::from("a.txt")]);
+    Ok(())
+  }
+}
+
+#[derive(Debug)]
+struct EmittedOutputOwners {
+  generation: u64,
+  references: std::collections::BTreeMap<String, ArcStr>,
+}
+
+#[derive(Debug, Default)]
+pub struct PendingEmittedOutputs {
+  active: bool,
+  replay_pending: bool,
+  owners: Option<EmittedOutputOwners>,
+  outputs: std::collections::BTreeMap<ArcStr, Output>,
+  exposed: std::collections::BTreeMap<ArcStr, String>,
+  untracked_output: Option<String>,
+}
+
+#[derive(Debug)]
+pub struct EmittedOutputGuard {
+  state: Arc<Mutex<PendingEmittedOutputs>>,
+  committed: bool,
+}
+
+impl EmittedOutputGuard {
+  pub fn commit(mut self) {
+    let mut state = self.state.lock().expect("emitted outputs poisoned");
+    state.outputs.clear();
+    state.exposed.clear();
+    state.active = false;
+    state.replay_pending = false;
+    self.committed = true;
+  }
+}
+
+impl Drop for EmittedOutputGuard {
+  fn drop(&mut self) {
+    if !self.committed {
+      let mut state = self.state.lock().expect("emitted outputs poisoned");
+      state.active = false;
+      state.replay_pending = false;
+    }
+  }
+}
+
 pub struct PluginDriver {
   plugins: IndexPluginable,
   contexts: IndexPluginContext,
@@ -38,6 +205,8 @@ pub struct PluginDriver {
   pub(crate) should_skip_user_plugins_for_lazy_proxy_modules: bool,
   pub(crate) lazy_compilation_plugin_idx: Option<PluginIdx>,
   pub file_emitter: SharedFileEmitter,
+  pub(crate) asset_names: Arc<EmittedAssetNames>,
+  pub(crate) emitted_outputs: Arc<Mutex<PendingEmittedOutputs>>,
   pub watch_files: Arc<FxDashSet<ArcStr>>,
   pub module_infos: SharedModuleInfoDashMap,
   /// Module dependencies tracked during load/transform hooks for HMR invalidation
@@ -57,6 +226,165 @@ impl PluginDriver {
     // by BundleFactory which manages its lifecycle (reset on full builds only)
     self.context_load_completion_manager.clear();
     self.file_emitter.clear();
+    self.asset_names.clear();
+    *self.emitted_outputs.lock().expect("emitted outputs poisoned") =
+      PendingEmittedOutputs::default();
+  }
+
+  pub fn emitted_asset_filenames(&self) -> (u64, Vec<ArcStr>) {
+    self.asset_names.snapshot()
+  }
+
+  pub fn emitted_asset_names_generation(&self) -> u64 {
+    self.asset_names.generation()
+  }
+
+  pub fn begin_output_emissions(
+    &self,
+    enabled: bool,
+  ) -> anyhow::Result<Option<EmittedOutputGuard>> {
+    let mut state = self.emitted_outputs.lock().expect("emitted outputs poisoned");
+    anyhow::ensure!(!state.active, "an emitted-output publication is already active");
+    if let Some(filename) = &state.untracked_output {
+      anyhow::bail!("native output was emitted without a plugin reference: {filename}");
+    }
+    if !enabled && state.outputs.is_empty() {
+      return Ok(None);
+    }
+    self.refresh_emitted_output_owners(&mut state)?;
+    state.active = true;
+    state.replay_pending = true;
+    state.exposed.clear();
+    Ok(Some(EmittedOutputGuard { state: Arc::clone(&self.emitted_outputs), committed: false }))
+  }
+
+  fn refresh_emitted_output_owners(&self, state: &mut PendingEmittedOutputs) -> anyhow::Result<()> {
+    if let Some(owners) =
+      self.asset_names.owners_since(state.owners.as_ref().map(|o| o.generation))?
+    {
+      state.owners = Some(owners);
+    }
+    Ok(())
+  }
+
+  pub fn add_emitted_files(
+    &self,
+    bundle: &mut Vec<Output>,
+    warnings: &mut Vec<BuildDiagnostic>,
+  ) -> anyhow::Result<()> {
+    let mut state = self.emitted_outputs.lock().expect("emitted outputs poisoned");
+    if !state.active {
+      self.file_emitter.add_additional_files(bundle, warnings);
+      return Ok(());
+    }
+    let output_positions = || {
+      let mut positions = std::collections::BTreeMap::new();
+      for (index, output) in bundle.iter().enumerate() {
+        positions
+          .entry(output.filename().to_lowercase())
+          .and_modify(|position| *position = None)
+          .or_insert(Some(index));
+      }
+      positions
+    };
+    let mut positions = None;
+    // Preserve successful output-hook edits before draining newer emissions or any later failure.
+    // See internal-docs/bundler-data-lifecycle/implementation.md.
+    if !state.exposed.is_empty() {
+      let positions = positions.insert(output_positions());
+      let mut owned_positions = std::collections::BTreeMap::new();
+      for (index, output) in bundle.iter().enumerate() {
+        if let Some(reference) = output.emitted_reference_id() {
+          anyhow::ensure!(
+            owned_positions.insert(reference.clone(), index).is_none(),
+            "duplicate emitted output reference: {reference}"
+          );
+        }
+      }
+      let PendingEmittedOutputs { outputs, exposed, .. } = &mut *state;
+      for (reference, filename) in exposed.iter_mut() {
+        if let Some(index) = owned_positions.get(reference) {
+          let output = &bundle[*index];
+          let new_filename = output.filename();
+          anyhow::ensure!(
+            positions.get(&new_filename.to_lowercase()) == Some(&Some(*index)),
+            "conflicting native record output filename: {new_filename}"
+          );
+          outputs.insert(reference.clone(), output.clone());
+          new_filename.clone_into(filename);
+        } else {
+          outputs.remove(reference);
+        }
+      }
+    }
+    self.refresh_emitted_output_owners(&mut state)?;
+    let mut emitted = Vec::new();
+    self.file_emitter.add_additional_files(&mut emitted, warnings);
+    let mut current = Vec::with_capacity(emitted.len());
+    for output in emitted {
+      let reference = state
+        .owners
+        .as_ref()
+        .expect("emitted owners refreshed")
+        .references
+        .get(&output.filename().to_lowercase())
+        .cloned();
+      let Some(reference) = reference else {
+        state.untracked_output = Some(output.filename().to_owned());
+        anyhow::bail!(
+          "native output was emitted without a plugin reference: {}",
+          output.filename()
+        );
+      };
+      state.outputs.insert(reference.clone(), output.clone());
+      current.push((reference, output));
+    }
+    if state.replay_pending {
+      state.replay_pending = false;
+      current = state.outputs.iter().map(|(id, output)| (id.clone(), output.clone())).collect();
+      current.sort_unstable_by(|(_, a), (_, b)| a.filename().cmp(b.filename()));
+    }
+    if current.is_empty() {
+      return Ok(());
+    }
+    let mut positions = positions.unwrap_or_else(output_positions);
+    for (reference, output) in current {
+      let filename = output.filename().to_owned();
+      let key = filename.to_lowercase();
+      let existing = positions.get(&key);
+      let replace = if let Some(exposed) = state.exposed.get(&reference) {
+        let old_key = exposed.to_lowercase();
+        let old_position = positions.get(&old_key);
+        anyhow::ensure!(
+          existing.is_none() || existing == old_position,
+          "conflicting native record output filename: {filename}"
+        );
+        match old_position {
+          Some(Some(index)) => {
+            let index = *index;
+            positions.remove(&old_key);
+            Some(index)
+          }
+          Some(None) => anyhow::bail!("conflicting native record output filename: {filename}"),
+          None => None,
+        }
+      } else {
+        anyhow::ensure!(
+          existing.is_none(),
+          "conflicting native record output filename: {filename}"
+        );
+        None
+      };
+      if let Some(index) = replace {
+        positions.insert(key, Some(index));
+        bundle[index] = output;
+      } else {
+        positions.insert(key, Some(bundle.len()));
+        bundle.push(output);
+      }
+      state.exposed.insert(reference, filename);
+    }
+    Ok(())
   }
 
   pub fn set_module_info(&self, module_id: &ModuleId, module_info: Arc<ModuleInfo>) {

@@ -276,6 +276,15 @@ impl Generator for EcmaGenerator {
       None => None,
     };
 
+    anyhow::ensure!(
+      !ctx.chunk_graph.native_commonjs_definitions.contains_key(&ctx.chunk_idx)
+        || [outro.as_deref(), footer.as_deref(), post_footer.as_deref()]
+          .into_iter()
+          .flatten()
+          .all(str::is_empty),
+      "native CommonJS records do not support outro, footer, or post_footer addons; use ordinary preserved or bundled output"
+    );
+
     let mut warnings = Vec::new();
 
     // Warn when multiple shebang sources would produce duplicate shebangs in the output.

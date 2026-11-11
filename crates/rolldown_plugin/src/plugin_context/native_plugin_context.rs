@@ -37,6 +37,7 @@ pub struct NativePluginContextImpl {
   pub(crate) meta: Arc<PluginContextMeta>,
   pub(crate) plugin_driver: Weak<PluginDriver>,
   pub(crate) file_emitter: SharedFileEmitter,
+  pub(crate) asset_names: Arc<crate::plugin_driver::EmittedAssetNames>,
   pub(crate) options: SharedNormalizedBundlerOptions,
   pub(crate) watch_files: Arc<FxDashSet<ArcStr>>,
   pub(crate) module_infos: SharedModuleInfoDashMap,
@@ -149,7 +150,13 @@ impl NativePluginContextImpl {
   }
 
   pub fn emit_prebuilt_chunk(&self, chunk: rolldown_common::EmittedPrebuiltChunk) -> ArcStr {
-    self.file_emitter.emit_prebuilt_chunk(chunk)
+    let filename = chunk.file_name.clone();
+    let reference = self.file_emitter.emit_prebuilt_chunk(chunk);
+    self
+      .asset_names
+      .record(reference.clone(), || Ok(filename))
+      .expect("prebuilt chunk filename is already known");
+    reference
   }
 
   pub fn emit_file(
@@ -169,7 +176,10 @@ impl NativePluginContextImpl {
       self.options.sanitize_filename.value(file.name_for_sanitize(), fn_sanitized_file_name)
     });
 
-    self.file_emitter.emit_file(file, asset_filename_template, sanitized_file_name)
+    let reference =
+      self.file_emitter.emit_file(file, asset_filename_template, sanitized_file_name)?;
+    self.asset_names.record(reference.clone(), || self.file_emitter.get_file_name(&reference))?;
+    Ok(reference)
   }
 
   pub async fn emit_file_async(
@@ -178,7 +188,9 @@ impl NativePluginContextImpl {
   ) -> anyhow::Result<ArcStr> {
     let asset_filename = self.options.asset_filename_with_file(&file).await?;
     let sanitized_file_name = self.options.sanitize_file_name_with_file(&file).await?;
-    self.file_emitter.emit_file(file, asset_filename, sanitized_file_name)
+    let reference = self.file_emitter.emit_file(file, asset_filename, sanitized_file_name)?;
+    self.asset_names.record(reference.clone(), || self.file_emitter.get_file_name(&reference))?;
+    Ok(reference)
   }
 
   pub fn get_file_name(&self, reference_id: &str) -> anyhow::Result<ArcStr> {

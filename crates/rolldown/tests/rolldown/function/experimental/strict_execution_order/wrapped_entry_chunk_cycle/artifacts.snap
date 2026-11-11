@@ -6,24 +6,24 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## dep.js
 
 ```js
-import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
-import { n as extend, t as init_hub } from "./hub2.js";
+import { i as __exportAll, r as __esmMin, t as __checkTDZ } from "./rolldown-runtime.js";
+import { n as __initialized$1, r as extend, t as init_hub } from "./hub2.js";
 // dep.js
-var dep_exports = /* @__PURE__ */ __exportAll({ useDep: () => useDep });
-var useDep;
+var dep_exports = /* @__PURE__ */ __exportAll({ useDep: () => (__checkTDZ(__initialized, "useDep"), useDep) });
+var __initialized, useDep;
 var init_dep = __esmMin((() => {
 	init_hub();
-	useDep = () => extend({}, {});
+	useDep = () => (__checkTDZ(__initialized$1, "extend"), extend)({}, {}), __initialized = true;
 }));
-export { init_dep as n, useDep as r, dep_exports as t };
+export { useDep as i, dep_exports as n, init_dep as r, __initialized as t };
 
 ```
 
 ## hub.js
 
 ```js
-import { r as useDep } from "./dep.js";
-import { n as extend, t as init_hub } from "./hub2.js";
+import { i as useDep } from "./dep.js";
+import { r as extend, t as init_hub } from "./hub2.js";
 init_hub();
 export { extend, useDep };
 
@@ -32,11 +32,11 @@ export { extend, useDep };
 ## hub2.js
 
 ```js
-import { n as __esmMin, t as __commonJSMin } from "./rolldown-runtime.js";
-import { n as init_dep } from "./dep.js";
-var extend;
+import { n as __commonJSMin, r as __esmMin } from "./rolldown-runtime.js";
+import { r as init_dep } from "./dep.js";
+var __initialized, extend;
 var init_shared = __esmMin((() => {
-	extend = Object.assign;
+	extend = Object.assign, __initialized = true;
 }));
 // interop.cjs
 var require_interop = /* @__PURE__ */ __commonJSMin((() => {
@@ -48,22 +48,22 @@ var init_hub = __esmMin((() => {
 	init_shared();
 	init_dep();
 }));
-export { extend as n, init_shared as r, init_hub as t };
+export { init_shared as i, __initialized as n, extend as r, init_hub as t };
 
 ```
 
 ## main.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
-import { r as useDep } from "./dep.js";
-import { n as extend, t as init_hub } from "./hub2.js";
+import { r as __esmMin, t as __checkTDZ } from "./rolldown-runtime.js";
+import { i as useDep, t as __initialized } from "./dep.js";
+import { n as __initialized$1, r as extend, t as init_hub } from "./hub2.js";
 // main.js
 var go;
 function init_main() {
 	return (init_main = __esmMin((() => {
 		init_hub();
-		go = () => [useDep, extend];
+		go = () => [(__checkTDZ(__initialized, "useDep"), useDep), (__checkTDZ(__initialized$1, "extend"), extend)];
 	})))();
 }
 init_main();
@@ -75,7 +75,11 @@ export { go };
 
 ```js
 // \0rolldown/runtime.js
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __esmMin = (fn, res, err) => () => {
 	if (err) throw err[0];
 	try {
@@ -84,17 +88,73 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
-var __exportAll = (all, no_symbols) => {
-	let target = {};
-	for (var name in all) __defProp(target, name, {
-		get: all[name],
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
+var __exportAll = (all, no_symbols, fixed) => {
+	let star = __starNamespaces.get(all);
+	if (star) {
+		Object.preventExtensions(star[1]);
+		return all;
+	}
+	if (fixed === void 0) {
+		let target = {};
+		for (var name in all) __defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+		if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+		return target;
+	}
+	let target = __create(null);
+	let names = __getOwnPropNames(all).sort();
+	for (let name of names) __defProp(target, name, {
+		value: void 0,
+		writable: true,
 		enumerable: true
 	});
 	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
-	return target;
+	if (fixed) Object.preventExtensions(target);
+	let namespace = new Proxy(target, {
+		get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+		ownKeys: (target) => {
+			let keys = fixed ? names : __getOwnPropNames(target).sort();
+			return no_symbols ? keys : [...keys, Symbol.toStringTag];
+		},
+		getOwnPropertyDescriptor(target, key) {
+			let descriptor = __getOwnPropDesc(target, key);
+			if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+			return descriptor;
+		},
+		set: () => false,
+		defineProperty(target, key, descriptor) {
+			if (!__hasOwnProp.call(all, key)) return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+			let value = all[key]();
+			return !descriptor.configurable && descriptor.enumerable !== false && descriptor.writable !== false && !("get" in descriptor) && !("set" in descriptor) && (!("value" in descriptor) || Object.is(descriptor.value, value));
+		},
+		preventExtensions: (target) => !Object.isExtensible(target),
+		setPrototypeOf: (_, prototype) => prototype === null
+	});
+	if (!fixed) __starNamespaces.set(namespace, [all, target]);
+	return namespace;
 };
-export { __esmMin as n, __exportAll as r, __commonJSMin as t };
+var __checkTDZ = (initialized, name, readonly) => {
+	if (!initialized) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+	if (readonly) throw new TypeError("Assignment to constant variable.");
+};
+var __starNamespaces = /* @__PURE__ */ new WeakMap();
+export { __exportAll as i, __commonJSMin as n, __esmMin as r, __checkTDZ as t };
 
 ```
 
@@ -108,12 +168,18 @@ export { __esmMin as n, __exportAll as r, __commonJSMin as t };
 const require_rolldown_runtime = require("./rolldown-runtime.js");
 const require_hub = require("./hub2.js");
 // dep.js
-var dep_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ useDep: () => useDep });
-var useDep;
+var dep_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ useDep: () => (require_rolldown_runtime.__checkTDZ(__initialized, "useDep"), useDep) });
+var __initialized, useDep;
 var init_dep = require_rolldown_runtime.__esmMin((() => {
 	require_hub.init_hub();
-	useDep = () => require_hub.extend({}, {});
+	useDep = () => (require_rolldown_runtime.__checkTDZ(require_hub.__initialized, "extend"), require_hub.extend)({}, {}), __initialized = true;
 }));
+Object.defineProperty(exports, "__initialized", {
+	enumerable: true,
+	get: function() {
+		return __initialized;
+	}
+});
 Object.defineProperty(exports, "dep_exports", {
 	enumerable: true,
 	get: function() {
@@ -152,9 +218,9 @@ exports.useDep = require_dep.useDep;
 ```js
 const require_rolldown_runtime = require("./rolldown-runtime.js");
 const require_dep = require("./dep.js");
-var extend;
+var __initialized, extend;
 var init_shared = require_rolldown_runtime.__esmMin((() => {
-	extend = Object.assign;
+	extend = Object.assign, __initialized = true;
 }));
 // interop.cjs
 var require_interop = /* @__PURE__ */ require_rolldown_runtime.__commonJSMin((() => {
@@ -166,6 +232,12 @@ var init_hub = require_rolldown_runtime.__esmMin((() => {
 	init_shared();
 	require_dep.init_dep();
 }));
+Object.defineProperty(exports, "__initialized", {
+	enumerable: true,
+	get: function() {
+		return __initialized;
+	}
+});
 Object.defineProperty(exports, "extend", {
 	enumerable: true,
 	get: function() {
@@ -199,7 +271,7 @@ var go;
 function init_main() {
 	return (init_main = require_rolldown_runtime.__esmMin((() => {
 		require_hub.init_hub();
-		go = () => [require_dep.useDep, require_hub.extend];
+		go = () => [(require_rolldown_runtime.__checkTDZ(require_dep.__initialized, "useDep"), require_dep.useDep), (require_rolldown_runtime.__checkTDZ(require_hub.__initialized, "extend"), require_hub.extend)];
 	})))();
 }
 init_main();
@@ -211,7 +283,11 @@ exports.go = go;
 
 ```js
 // \0rolldown/runtime.js
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __esmMin = (fn, res, err) => () => {
 	if (err) throw err[0];
 	try {
@@ -220,16 +296,78 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
-var __exportAll = (all, no_symbols) => {
-	let target = {};
-	for (var name in all) __defProp(target, name, {
-		get: all[name],
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
+var __exportAll = (all, no_symbols, fixed) => {
+	let star = __starNamespaces.get(all);
+	if (star) {
+		Object.preventExtensions(star[1]);
+		return all;
+	}
+	if (fixed === void 0) {
+		let target = {};
+		for (var name in all) __defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+		if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+		return target;
+	}
+	let target = __create(null);
+	let names = __getOwnPropNames(all).sort();
+	for (let name of names) __defProp(target, name, {
+		value: void 0,
+		writable: true,
 		enumerable: true
 	});
 	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
-	return target;
+	if (fixed) Object.preventExtensions(target);
+	let namespace = new Proxy(target, {
+		get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+		ownKeys: (target) => {
+			let keys = fixed ? names : __getOwnPropNames(target).sort();
+			return no_symbols ? keys : [...keys, Symbol.toStringTag];
+		},
+		getOwnPropertyDescriptor(target, key) {
+			let descriptor = __getOwnPropDesc(target, key);
+			if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+			return descriptor;
+		},
+		set: () => false,
+		defineProperty(target, key, descriptor) {
+			if (!__hasOwnProp.call(all, key)) return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+			let value = all[key]();
+			return !descriptor.configurable && descriptor.enumerable !== false && descriptor.writable !== false && !("get" in descriptor) && !("set" in descriptor) && (!("value" in descriptor) || Object.is(descriptor.value, value));
+		},
+		preventExtensions: (target) => !Object.isExtensible(target),
+		setPrototypeOf: (_, prototype) => prototype === null
+	});
+	if (!fixed) __starNamespaces.set(namespace, [all, target]);
+	return namespace;
 };
+var __checkTDZ = (initialized, name, readonly) => {
+	if (!initialized) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+	if (readonly) throw new TypeError("Assignment to constant variable.");
+};
+var __starNamespaces = /* @__PURE__ */ new WeakMap();
+Object.defineProperty(exports, "__checkTDZ", {
+	enumerable: true,
+	get: function() {
+		return __checkTDZ;
+	}
+});
 Object.defineProperty(exports, "__commonJSMin", {
 	enumerable: true,
 	get: function() {
@@ -261,12 +399,18 @@ Object.defineProperty(exports, "__exportAll", {
 const require_rolldown_runtime = require("./rolldown-runtime.js");
 const require_hub = require("./hub2.js");
 // dep.js
-var dep_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ useDep: () => useDep });
-var useDep;
+var dep_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ useDep: () => (require_rolldown_runtime.__checkTDZ(__initialized, "useDep"), useDep) });
+var __initialized, useDep;
 var init_dep = require_rolldown_runtime.__esmMin((() => {
 	require_hub.init_hub();
-	useDep = () => require_hub.extend({}, {});
+	useDep = () => (require_rolldown_runtime.__checkTDZ(require_hub.__initialized, "extend"), require_hub.extend)({}, {}), __initialized = true;
 }));
+Object.defineProperty(exports, "__initialized", {
+	enumerable: true,
+	get: function() {
+		return __initialized;
+	}
+});
 Object.defineProperty(exports, "dep_exports", {
 	enumerable: true,
 	get: function() {
@@ -305,9 +449,9 @@ exports.useDep = require_dep.useDep;
 ```js
 const require_rolldown_runtime = require("./rolldown-runtime.js");
 const require_dep = require("./dep.js");
-var extend;
+var __initialized, extend;
 var init_shared = require_rolldown_runtime.__esmMin((() => {
-	extend = Object.assign;
+	extend = Object.assign, __initialized = true;
 }));
 // interop.cjs
 var require_interop = /* @__PURE__ */ require_rolldown_runtime.__commonJSMin((() => {
@@ -319,6 +463,12 @@ var init_hub = require_rolldown_runtime.__esmMin((() => {
 	init_shared();
 	require_dep.init_dep();
 }));
+Object.defineProperty(exports, "__initialized", {
+	enumerable: true,
+	get: function() {
+		return __initialized;
+	}
+});
 Object.defineProperty(exports, "extend", {
 	enumerable: true,
 	get: function() {
@@ -352,7 +502,7 @@ var go;
 function init_main() {
 	return (init_main = require_rolldown_runtime.__esmMin((() => {
 		require_hub.init_hub();
-		go = () => [require_dep.useDep, require_hub.extend];
+		go = () => [(require_rolldown_runtime.__checkTDZ(require_dep.__initialized, "useDep"), require_dep.useDep), (require_rolldown_runtime.__checkTDZ(require_hub.__initialized, "extend"), require_hub.extend)];
 	})))();
 }
 init_main();
@@ -364,7 +514,11 @@ exports.go = go;
 
 ```js
 // \0rolldown/runtime.js
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __esmMin = (fn, res, err) => () => {
 	if (err) throw err[0];
 	try {
@@ -373,16 +527,78 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
-var __exportAll = (all, no_symbols) => {
-	let target = {};
-	for (var name in all) __defProp(target, name, {
-		get: all[name],
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
+var __exportAll = (all, no_symbols, fixed) => {
+	let star = __starNamespaces.get(all);
+	if (star) {
+		Object.preventExtensions(star[1]);
+		return all;
+	}
+	if (fixed === void 0) {
+		let target = {};
+		for (var name in all) __defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+		if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+		return target;
+	}
+	let target = __create(null);
+	let names = __getOwnPropNames(all).sort();
+	for (let name of names) __defProp(target, name, {
+		value: void 0,
+		writable: true,
 		enumerable: true
 	});
 	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
-	return target;
+	if (fixed) Object.preventExtensions(target);
+	let namespace = new Proxy(target, {
+		get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+		ownKeys: (target) => {
+			let keys = fixed ? names : __getOwnPropNames(target).sort();
+			return no_symbols ? keys : [...keys, Symbol.toStringTag];
+		},
+		getOwnPropertyDescriptor(target, key) {
+			let descriptor = __getOwnPropDesc(target, key);
+			if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+			return descriptor;
+		},
+		set: () => false,
+		defineProperty(target, key, descriptor) {
+			if (!__hasOwnProp.call(all, key)) return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+			let value = all[key]();
+			return !descriptor.configurable && descriptor.enumerable !== false && descriptor.writable !== false && !("get" in descriptor) && !("set" in descriptor) && (!("value" in descriptor) || Object.is(descriptor.value, value));
+		},
+		preventExtensions: (target) => !Object.isExtensible(target),
+		setPrototypeOf: (_, prototype) => prototype === null
+	});
+	if (!fixed) __starNamespaces.set(namespace, [all, target]);
+	return namespace;
 };
+var __checkTDZ = (initialized, name, readonly) => {
+	if (!initialized) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+	if (readonly) throw new TypeError("Assignment to constant variable.");
+};
+var __starNamespaces = /* @__PURE__ */ new WeakMap();
+Object.defineProperty(exports, "__checkTDZ", {
+	enumerable: true,
+	get: function() {
+		return __checkTDZ;
+	}
+});
 Object.defineProperty(exports, "__commonJSMin", {
 	enumerable: true,
 	get: function() {
@@ -411,24 +627,24 @@ Object.defineProperty(exports, "__exportAll", {
 ### dep.js
 
 ```js
-import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
-import { n as extend, t as init_hub } from "./hub2.js";
+import { i as __exportAll, r as __esmMin, t as __checkTDZ } from "./rolldown-runtime.js";
+import { n as __initialized$1, r as extend, t as init_hub } from "./hub2.js";
 // dep.js
-var dep_exports = /* @__PURE__ */ __exportAll({ useDep: () => useDep });
-var useDep;
+var dep_exports = /* @__PURE__ */ __exportAll({ useDep: () => (__checkTDZ(__initialized, "useDep"), useDep) });
+var __initialized, useDep;
 var init_dep = __esmMin((() => {
 	init_hub();
-	useDep = () => extend({}, {});
+	useDep = () => (__checkTDZ(__initialized$1, "extend"), extend)({}, {}), __initialized = true;
 }));
-export { init_dep as n, useDep as r, dep_exports as t };
+export { useDep as i, dep_exports as n, init_dep as r, __initialized as t };
 
 ```
 
 ### hub.js
 
 ```js
-import { r as useDep } from "./dep.js";
-import { n as extend, t as init_hub } from "./hub2.js";
+import { i as useDep } from "./dep.js";
+import { r as extend, t as init_hub } from "./hub2.js";
 init_hub();
 export { extend, useDep };
 
@@ -437,11 +653,11 @@ export { extend, useDep };
 ### hub2.js
 
 ```js
-import { n as __esmMin, t as __commonJSMin } from "./rolldown-runtime.js";
-import { n as init_dep } from "./dep.js";
-var extend;
+import { n as __commonJSMin, r as __esmMin } from "./rolldown-runtime.js";
+import { r as init_dep } from "./dep.js";
+var __initialized, extend;
 var init_shared = __esmMin((() => {
-	extend = Object.assign;
+	extend = Object.assign, __initialized = true;
 }));
 // interop.cjs
 var require_interop = /* @__PURE__ */ __commonJSMin((() => {
@@ -453,22 +669,22 @@ var init_hub = __esmMin((() => {
 	init_shared();
 	init_dep();
 }));
-export { extend as n, init_shared as r, init_hub as t };
+export { init_shared as i, __initialized as n, extend as r, init_hub as t };
 
 ```
 
 ### main.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
-import { r as useDep } from "./dep.js";
-import { n as extend, t as init_hub } from "./hub2.js";
+import { r as __esmMin, t as __checkTDZ } from "./rolldown-runtime.js";
+import { i as useDep, t as __initialized } from "./dep.js";
+import { n as __initialized$1, r as extend, t as init_hub } from "./hub2.js";
 // main.js
 var go;
 function init_main() {
 	return (init_main = __esmMin((() => {
 		init_hub();
-		go = () => [useDep, extend];
+		go = () => [(__checkTDZ(__initialized, "useDep"), useDep), (__checkTDZ(__initialized$1, "extend"), extend)];
 	})))();
 }
 init_main();
@@ -480,7 +696,11 @@ export { go };
 
 ```js
 // \0rolldown/runtime.js
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __esmMin = (fn, res, err) => () => {
 	if (err) throw err[0];
 	try {
@@ -489,16 +709,72 @@ var __esmMin = (fn, res, err) => () => {
 		throw err = [e], e;
 	}
 };
-var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
-var __exportAll = (all, no_symbols) => {
-	let target = {};
-	for (var name in all) __defProp(target, name, {
-		get: all[name],
+var __commonJSMin = (cb, mod, onFailure) => () => {
+	if (!mod) {
+		mod = { exports: {} };
+		try {
+			cb(mod.exports, mod, mod.exports);
+			cb = null;
+		} catch (error) {
+			mod = void 0;
+			onFailure?.(error);
+			throw error;
+		}
+	}
+	return mod.exports;
+};
+var __exportAll = (all, no_symbols, fixed) => {
+	let star = __starNamespaces.get(all);
+	if (star) {
+		Object.preventExtensions(star[1]);
+		return all;
+	}
+	if (fixed === void 0) {
+		let target = {};
+		for (var name in all) __defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+		if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+		return target;
+	}
+	let target = __create(null);
+	let names = __getOwnPropNames(all).sort();
+	for (let name of names) __defProp(target, name, {
+		value: void 0,
+		writable: true,
 		enumerable: true
 	});
 	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
-	return target;
+	if (fixed) Object.preventExtensions(target);
+	let namespace = new Proxy(target, {
+		get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+		ownKeys: (target) => {
+			let keys = fixed ? names : __getOwnPropNames(target).sort();
+			return no_symbols ? keys : [...keys, Symbol.toStringTag];
+		},
+		getOwnPropertyDescriptor(target, key) {
+			let descriptor = __getOwnPropDesc(target, key);
+			if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+			return descriptor;
+		},
+		set: () => false,
+		defineProperty(target, key, descriptor) {
+			if (!__hasOwnProp.call(all, key)) return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+			let value = all[key]();
+			return !descriptor.configurable && descriptor.enumerable !== false && descriptor.writable !== false && !("get" in descriptor) && !("set" in descriptor) && (!("value" in descriptor) || Object.is(descriptor.value, value));
+		},
+		preventExtensions: (target) => !Object.isExtensible(target),
+		setPrototypeOf: (_, prototype) => prototype === null
+	});
+	if (!fixed) __starNamespaces.set(namespace, [all, target]);
+	return namespace;
 };
-export { __esmMin as n, __exportAll as r, __commonJSMin as t };
+var __checkTDZ = (initialized, name, readonly) => {
+	if (!initialized) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+	if (readonly) throw new TypeError("Assignment to constant variable.");
+};
+var __starNamespaces = /* @__PURE__ */ new WeakMap();
+export { __exportAll as i, __commonJSMin as n, __esmMin as r, __checkTDZ as t };
 
 ```

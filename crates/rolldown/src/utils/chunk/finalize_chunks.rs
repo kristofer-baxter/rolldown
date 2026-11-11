@@ -343,7 +343,7 @@ pub async fn finalize_assets(
         .iter()
         .flat_map(|importee_idx| {
           let instances = &index_chunk_to_instances[*importee_idx];
-          if instances.is_empty() && chunk_hashes_by_placeholder.is_empty() {
+          let mut filenames = if instances.is_empty() && chunk_hashes_by_placeholder.is_empty() {
             chunk_graph.chunk_table[*importee_idx]
               .preliminary_filename
               .as_ref()
@@ -355,7 +355,18 @@ pub async fn finalize_assets(
               .iter()
               .map(|importee_asset_idx| index_ins_chunk_to_filename[*importee_asset_idx].clone())
               .collect::<Vec<_>>()
+          };
+          if let Some(suffix) = crate::utils::native_records::commonjs_import_suffix(
+            link_output,
+            chunk_graph,
+            chunk,
+            *importee_idx,
+          ) {
+            for filename in &mut filenames {
+              *filename = format!("{filename}{suffix}").into();
+            }
           }
+          filenames
         })
         .chain(super::static_external_imports(chunk, &link_output.module_table).map(|idx| {
           link_output.module_table[idx]
@@ -391,6 +402,9 @@ pub async fn finalize_assets(
             .get_file_name(resolved_paths)
         }))
         .collect();
+      if let Some(definition) = chunk_graph.native_commonjs_definitions.get(&originate_from) {
+        ins_chunk.filename = format!("{}{}", ins_chunk.filename, definition.suffix).into();
+      }
     }
   });
 

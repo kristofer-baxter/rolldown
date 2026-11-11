@@ -28,9 +28,9 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## entry.js
 
 ```js
-require("@remix-run/react");
+let _remix_run_react = require("@remix-run/react");
 require("react");
 // entry.jsx
-({ ...y }), z;
+_remix_run_react.Link, { ...y }, z;
 
 ```

@@ -118,6 +118,34 @@ files.
 
 ### Cache integrity on a failed build
 
+Native CommonJS output additionally has a publication transaction. `PluginDriverFactory`
+shares emitted-asset reference ownership and pending outputs across fresh drivers.
+`Bundle::bundle_up` and its fast-relink path return an `UnpublishedBundleOutput`
+with an `EmittedOutputGuard`; `finalize_output` commits it only after generation or
+writing, output hooks and JavaScript-cache cleanup succeed. Dropping an uncommitted
+guard releases the active publication but retains output for replay. A later write
+from the same reference replaces its pending bytes; distinct references with the
+same filename fail closed.
+
+Native output names are checked both before disk writing and after mutable
+`writeBundle` hooks, before publication. A post-write validation failure leaves
+pending emissions available for retry. As with other `writeBundle` failures, files
+have already been written; rejecting publication does not roll back disk writes.
+
+After each successful `generateBundle` or `writeBundle` hook, pending emissions
+capture the exposed bundle values, including removals and renames, before draining
+new emissions. Emitted assets and prebuilt chunks carry their stable emitter
+reference through clones and binding edits, independently of bundle order or
+filename. This retains one-shot hook edits if a later hook, validation, write or
+cleanup fails, while a newer emission from the same reference still takes precedence
+and replaces the renamed output rather than leaving both names in the bundle.
+
+The scan cache preserves `native_commonjs_records` across full scans, independently
+of its graph snapshot. Failed native output invalidates both the retained link and
+reusable chunks, since the caller has not published that generation. Retired native
+CommonJS modules retire their public evaluation facade, registration factory and
+source map together. See [the Rust consumption contract](../../docs/apis/rust-crates.md#native-commonjs-registration-and-evaluation).
+
 `ScanStageCache` must survive a _failed_ build whole, not just a successful one
 — otherwise the next HMR/incremental build reads a broken cache and panics. The
 invariant is: **between builds, `Bundler::cache` is always whole** — `snapshot`

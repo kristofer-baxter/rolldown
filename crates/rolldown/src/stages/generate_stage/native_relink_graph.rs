@@ -161,11 +161,25 @@ impl GenerateStage<'_> {
           .chain(chunk.preliminary_sourcemap_filename.as_ref().map(|map| map.as_str()))
           .flat_map(name_family),
       );
-      if let Some(map) = &chunk.preliminary_sourcemap_filename {
+      let record_filename = chunk_graph.native_commonjs_definitions.get(&chunk_idx).map_or_else(
+        || filename.clone(),
+        |definition| arcstr::format!("{filename}{}", definition.suffix),
+      );
+      let cached_map = self
+        .cache
+        .as_deref()
+        .and_then(|cache| cache.cached_native_chunks.get(&module))
+        .and_then(|cached| cached.chunk.sourcemap_filename.as_ref());
+      if let Some(map) = cached_map {
+        retired_filenames.push(ArcStr::from(map.as_str()));
+      } else if let Some(map) = &chunk.preliminary_sourcemap_filename {
         retired_filenames.push(ArcStr::from(map.as_str()));
       } else if matches!(self.options.sourcemap, Some(SourceMapType::File | SourceMapType::Hidden))
       {
-        retired_filenames.push(arcstr::format!("{filename}.map"));
+        retired_filenames.push(arcstr::format!("{record_filename}.map"));
+      }
+      if record_filename != filename {
+        retired_filenames.push(record_filename);
       }
       retired_filenames.push(filename);
       retired_chunks.insert(chunk_idx);
@@ -700,6 +714,7 @@ impl GenerateStage<'_> {
         reject!();
       };
       let placeholder = Output::Chunk(Arc::new(OutputChunk {
+        emitted_reference_id: None,
         name: chunk.name.clone().unwrap_or_default(),
         filename: filename.clone(),
         code: String::new(),

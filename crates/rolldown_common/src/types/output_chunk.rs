@@ -11,6 +11,8 @@ use super::rendered_module::RenderedModule;
 
 #[derive(Debug, Clone)]
 pub struct OutputChunk {
+  /// Emitter ownership retained across output-hook cloning, mutation and renaming.
+  pub emitted_reference_id: Option<ArcStr>,
   // PreRenderedChunk
   pub name: ArcStr,
   pub is_entry: bool,

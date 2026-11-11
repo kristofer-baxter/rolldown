@@ -6,7 +6,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## dyn.js
 
 ```js
-import { n as setup } from "./main2.js";
+import { t as setup } from "./main.js";
 // dyn.js
 console.log("dyn", typeof setup);
 
@@ -15,15 +15,6 @@ console.log("dyn", typeof setup);
 ## main.js
 
 ```js
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-## main2.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
 // setup.js
 const setup = () => {
 	globalThis.foo = "foo";
@@ -33,13 +24,9 @@ setup();
 const captured = globalThis.foo;
 console.log("captured", captured);
 // main.js
-function init_main() {
-	return (init_main = __esmMin((() => {
-		setup();
-		import("./dyn.js");
-	})))();
-}
-export { setup as n, init_main as t };
+setup();
+import("./dyn.js");
+export { setup as t };
 
 ```
 
@@ -50,8 +37,7 @@ export { setup as n, init_main as t };
 ### dyn.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
-import { i as setup, n as init_intermediate, r as init_setup } from "./main2.js";
+import { i as __esmMin, n as init_setup, r as setup, t as init_intermediate } from "./main.js";
 // dyn.js
 function init_dyn() {
 	return (init_dyn = __esmMin((() => {
@@ -67,15 +53,7 @@ init_dyn();
 ### main.js
 
 ```js
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-### main2.js
-
-```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+// HIDDEN [\0rolldown/runtime.js]
 // setup.js
 var setup;
 function init_setup() {
@@ -109,14 +87,7 @@ function init_main() {
 		import("./dyn.js");
 	})))();
 }
-export { setup as i, init_intermediate as n, init_setup as r, init_main as t };
-
-```
-
-### rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+init_main();
+export { __esmMin as i, init_setup as n, setup as r, init_intermediate as t };
 
 ```

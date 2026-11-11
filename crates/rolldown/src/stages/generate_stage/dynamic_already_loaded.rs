@@ -63,23 +63,21 @@ impl GenerateStage<'_> {
     chunk_graph: &mut ChunkGraph,
     used_symbol_refs_builder: &mut UsedSymbolRefsBuilder,
   ) {
-    if !crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
-      return;
-    }
     // Even an unmerged JSON facade must expose the same default-only namespace
     // as a static namespace import, not its bundler-only named bindings. And an
     // unmerged facade whose star exports reach CommonJS modules must expose the
     // namespace object that `__reExport` fills at runtime, whose names its chunk's
     // export list can't carry, also when it is an explicit input, an emitted chunk or a
     // preserved module, whose public exports stay (`route_public_namespace_extractions`).
-    let namespaces = chunk_graph
+    let mut namespaces: FxHashSet<_> = chunk_graph
       .entry_module_to_entry_chunk
       .iter()
       .filter_map(|(&module, &chunk)| {
         let ChunkKind::EntryPoint { meta, .. } = chunk_graph.chunk_table[chunk].kind else {
           return None;
         };
-        let json = meta == ChunkMeta::DynamicImported
+        let json = crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+          && meta == ChunkMeta::DynamicImported
           && !self.options.preserve_modules
           && self.link_output.module_table[module]
             .as_normal()
@@ -90,6 +88,9 @@ impl GenerateStage<'_> {
         .then_some((chunk, module))
       })
       .collect();
+    let importers =
+      self.live_dynamic_importers(chunk_graph, namespaces.iter().map(|&(_, module)| module));
+    namespaces.retain(|&(_, module)| !importers[&module].is_empty());
     self.apply_dynamic_entry_namespace_extractions(
       chunk_graph,
       &namespaces,
@@ -213,6 +214,10 @@ impl GenerateStage<'_> {
     // share, can move into the entry chunk only once each shared module that imports it has moved
     // there too. So the moves repeat until a pass moves nothing, which leaves no shared chunk that
     // the entry must load before it runs.
+    let repeat_until_fixed_point =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+        || (self.options.is_strict_execution_order_enabled()
+          && self.options.experimental.chunk_optimization.is_some());
     let mut changed = false;
     loop {
       let mut moved_in_pass = false;
@@ -232,7 +237,7 @@ impl GenerateStage<'_> {
         false
       });
       changed |= moved_in_pass;
-      if !moved_in_pass || pending.is_empty() {
+      if !repeat_until_fixed_point || !moved_in_pass || pending.is_empty() {
         break;
       }
     }
@@ -363,6 +368,9 @@ impl GenerateStage<'_> {
     if !matches!(module.exports_kind, ExportsKind::Esm) || !meta.has_dynamic_exports {
       return false;
     }
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options);
+    let mut has_recognized_cjs_star = runtime_semantics;
     let mut queue = VecDeque::from([entry_module_idx]);
     let mut visited = FxHashSet::default();
     while let Some(module_idx) = queue.pop_front() {
@@ -372,6 +380,12 @@ impl GenerateStage<'_> {
       let Module::Normal(module) = &self.link_output.module_table[module_idx] else {
         return false;
       };
+      if matches!(module.exports_kind, ExportsKind::CommonJs)
+        && (!module.named_exports.is_empty()
+          || module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::ModuleRef))
+      {
+        has_recognized_cjs_star = true;
+      }
       for record in &module.import_records {
         if record.meta.contains(ImportRecordMeta::IsExportStar)
           && let Some(importee_idx) = record.resolved_module
@@ -380,7 +394,7 @@ impl GenerateStage<'_> {
         }
       }
     }
-    true
+    has_recognized_cjs_star
   }
 
   /// Whether `import()` of this dynamic entry can be preserved by exporting the
@@ -493,8 +507,7 @@ impl GenerateStage<'_> {
         .iter()
         .any(|importer| importer.trigger_chunk.is_some_and(|chunk| chunk != host_idx));
       if host_idx == chunk_idx {
-        if !crosses || !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-        {
+        if !crosses {
           continue;
         }
         self.split_public_entry_chunk(chunk_graph, chunk_idx, module_idx);

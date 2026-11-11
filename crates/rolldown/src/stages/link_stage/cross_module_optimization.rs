@@ -394,6 +394,7 @@ impl<'ast> CrossModuleOptimizationRunnerContext<'_, 'ast> {
   /// imports across chunk boundaries (the call stays as `ns.fn()` until finalization, long after
   /// side-effect detection has run).
   fn resolve_callee_canonical_symbol(&self, callee: &Expression<'ast>) -> Option<SymbolRef> {
+    let callee = crate::utils::temporal_reads::temporal_read_argument(callee);
     if let Some(ident) = callee.as_identifier() {
       let ref_id = ident.reference_id.get()?;
       let symbol_id = self.immutable_ctx.eval_ctx.scope.get_reference(ref_id).symbol_id()?;

@@ -6,13 +6,13 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## index.js
 
 ```js
-import { n as value1, value1 as value1$1, value2 } from "./libs.js";
+import { r as value1, value1 as value1$1, value2 } from "./libs.js";
 import assert from "node:assert";
 // index.js
 assert.strictEqual(value1, "lib1-value");
 assert.strictEqual(value1$1, "conflict-value");
 assert.strictEqual(value2, "lib2-value");
-import("./libs.js").then((n) => n.t).then((m) => {
+import("./lib3.js").then((m) => {
 	assert.strictEqual(m.value3, "lib3-value");
 	assert.strictEqual(m.value4, "lib3-value4");
 });
@@ -22,26 +22,28 @@ import("./libs.js").then((n) => n.t).then((m) => {
 ## lib1.js
 
 ```js
-export { n as value1 } from "./libs.js";
+export { r as value1 } from "./libs.js";
+
+```
+
+## lib3.js
+
+```js
+export { t as value3, n as value4 } from "./libs.js";
 
 ```
 
 ## libs.js
 
 ```js
-// HIDDEN [\0rolldown/runtime.js]
 // lib1.js
 const value1$1 = "lib1-value";
 // lib2.js
 const value2 = "lib2-value";
 const value1 = "conflict-value";
 // lib3.js
-var lib3_exports = /* @__PURE__ */ __exportAll({
-	value3: () => value3,
-	value4: () => value4
-});
 const value3 = "lib3-value";
 const value4 = "lib3-value4";
-export { value1$1 as n, lib3_exports as t, value1, value2, value3, value4 };
+export { value4 as n, value1$1 as r, value3 as t, value1, value2 };
 
 ```

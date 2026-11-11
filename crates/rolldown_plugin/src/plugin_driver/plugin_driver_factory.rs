@@ -21,11 +21,18 @@ use crate::{
 pub struct PluginDriverFactory {
   plugins: Vec<SharedPluginable>,
   resolver: Arc<Resolver>,
+  asset_names: Arc<super::EmittedAssetNames>,
+  emitted_outputs: Arc<std::sync::Mutex<super::PendingEmittedOutputs>>,
 }
 
 impl PluginDriverFactory {
   pub fn new(plugins: Vec<SharedPluginable>, resolver: &Arc<Resolver>) -> Self {
-    Self { plugins, resolver: Arc::clone(resolver) }
+    Self {
+      plugins,
+      resolver: Arc::clone(resolver),
+      asset_names: Arc::default(),
+      emitted_outputs: Arc::default(),
+    }
   }
 
   pub fn create_plugin_driver(
@@ -76,6 +83,7 @@ impl PluginDriverFactory {
           meta: Arc::clone(&meta),
           resolver: Arc::clone(&self.resolver),
           file_emitter: Arc::clone(file_emitter),
+          asset_names: Arc::clone(&self.asset_names),
           module_infos: Arc::clone(&module_infos),
           options: Arc::clone(options),
           watch_files: Arc::clone(&watch_files),
@@ -93,6 +101,8 @@ impl PluginDriverFactory {
         should_skip_user_plugins_for_lazy_proxy_modules,
         lazy_compilation_plugin_idx,
         file_emitter: Arc::clone(file_emitter),
+        asset_names: Arc::clone(&self.asset_names),
+        emitted_outputs: Arc::clone(&self.emitted_outputs),
         watch_files,
         module_infos,
         transform_dependencies,

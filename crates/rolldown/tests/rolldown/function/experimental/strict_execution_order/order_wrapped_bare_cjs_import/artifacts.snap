@@ -7,7 +7,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 
 ```js
 import { n as __esmMin, t as __commonJSMin } from "./rolldown-runtime.js";
-import { n as require_c3 } from "./main2.js";
+import { t as require_c3 } from "./main.js";
 // c4.cjs
 var require_c4 = /* @__PURE__ */ __commonJSMin((() => {
 	console.log("c4");
@@ -33,15 +33,6 @@ export { init_m2 as n, init_m1 as t };
 ## main.js
 
 ```js
-import "./group-1.js";
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-## main2.js
-
-```js
 import { n as __esmMin, t as __commonJSMin } from "./rolldown-runtime.js";
 import { n as init_m2, t as init_m1 } from "./group-1.js";
 // c3.cjs
@@ -56,7 +47,8 @@ function init_main() {
 		console.log("m0");
 	})))();
 }
-export { require_c3 as n, init_main as t };
+init_main();
+export { require_c3 as t };
 
 ```
 
@@ -76,7 +68,7 @@ export { __esmMin as n, __commonJSMin as t };
 
 ```js
 import { n as __esmMin, t as __commonJSMin } from "./rolldown-runtime.js";
-import { n as require_c3 } from "./main2.js";
+import { t as require_c3 } from "./main.js";
 // c4.cjs
 var require_c4 = /* @__PURE__ */ __commonJSMin((() => {
 	console.log("c4");
@@ -102,15 +94,6 @@ export { init_m2 as n, init_m1 as t };
 ### main.js
 
 ```js
-import "./group-1.js";
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-### main2.js
-
-```js
 import { n as __esmMin, t as __commonJSMin } from "./rolldown-runtime.js";
 import { n as init_m2, t as init_m1 } from "./group-1.js";
 // c3.cjs
@@ -125,7 +108,8 @@ function init_main() {
 		console.log("m0");
 	})))();
 }
-export { require_c3 as n, init_main as t };
+init_main();
+export { require_c3 as t };
 
 ```
 

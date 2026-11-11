@@ -15,16 +15,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## main.js
 
 ```js
-import { n as loadRoute, t as init_main } from "./main2.js";
-init_main();
-export { loadRoute };
-
-```
-
-## main2.js
-
-```js
-import { n as __esmMin, r as __toESM, t as __commonJSMin } from "./rolldown-runtime.js";
+// HIDDEN [\0rolldown/runtime.js]
 // node_modules/pure-barrel/cn.js
 function cn(...values) {
 	return values.filter(Boolean).join(" ");
@@ -60,23 +51,15 @@ function init_main() {
 		globalThis.__events.push(`main:${cn("a", "b")}:${missing === void 0}`);
 	})))();
 }
-export { init_pure_barrel as i, loadRoute as n, import_clone_deep as r, init_main as t };
-
-```
-
-## rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as n, __toESM as r, __commonJSMin as t };
+init_main();
+export { loadRoute, init_pure_barrel as n, __esmMin as r, import_clone_deep as t };
 
 ```
 
 ## route.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
-import { i as init_pure_barrel, r as import_clone_deep } from "./main2.js";
+import { n as init_pure_barrel, r as __esmMin, t as import_clone_deep } from "./main.js";
 // route.js
 var value;
 function init_route() {
@@ -107,15 +90,6 @@ export { value };
 ### main.js
 
 ```js
-import { n as loadRoute, t as init_main } from "./main2.js";
-init_main();
-export { loadRoute };
-
-```
-
-### main2.js
-
-```js
 // HIDDEN [\0rolldown/runtime.js]
 // node_modules/pure-barrel/cn.js
 globalThis.__events.push("cn");
@@ -129,24 +103,19 @@ var import_clone_deep = /* @__PURE__ */ __toESM((/* @__PURE__ */ __commonJSMin((
 		return JSON.parse(JSON.stringify(value));
 	};
 })))(), 1);
-var missing = void 0;
 // main.js
+globalThis.__events.push(`main:${cn("a", "b")}:true`);
 function loadRoute() {
 	return import("./route.js");
 }
-function init_main() {
-	return (init_main = __esmMin((() => {
-		globalThis.__events.push(`main:${cn("a", "b")}:${missing === void 0}`);
-	})))();
-}
-export { loadRoute as n, import_clone_deep as r, init_main as t };
+export { loadRoute, import_clone_deep as t };
 
 ```
 
 ### route.js
 
 ```js
-import { r as import_clone_deep } from "./main2.js";
+import { t as import_clone_deep } from "./main.js";
 // route.js
 globalThis.__events.push("route");
 const value = (0, import_clone_deep.default)({ value: 1 });

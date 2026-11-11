@@ -12,7 +12,7 @@ const VALUE: &str = "({used:(events.push('value'),1),\
 
 fn options(fixture: &Fixture, root: &str, value: &str, marked: bool) -> BundlerOptions {
   let mut options = fixture.options();
-  options.define = Some([(root.to_owned(), value.to_owned())].into_iter().collect());
+  options.define = Some(std::iter::once((root.to_owned(), value.to_owned())).collect());
   options.experimental = Some(ExperimentalOptions {
     define_object_destructuring: marked.then(|| vec![root.to_owned()]),
     ..Default::default()
@@ -28,15 +28,13 @@ async fn run(fixture: &Fixture, options: BundlerOptions) -> Result<Value> {
 }
 
 fn cases_source(cases: &[&str], target: &str) -> String {
-  cases
-    .iter()
-    .map(|case| {
-      format!(
-        "try{{{}}}catch(error){{events.push(error.message)}};",
-        case.replace("TARGET", target)
-      )
-    })
-    .collect()
+  let mut source = String::new();
+  for case in cases {
+    source.push_str("try{");
+    source.push_str(&case.replace("TARGET", target));
+    source.push_str("}catch(error){events.push(error.message)};");
+  }
+  source
 }
 
 #[tokio::test]

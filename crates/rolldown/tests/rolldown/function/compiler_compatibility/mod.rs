@@ -30,8 +30,15 @@ use tokio::{sync::Notify, task::JoinHandle};
 #[cfg(feature = "experimental")]
 mod bundled_hmr;
 
+#[cfg(feature = "experimental")]
+mod commonjs_publication;
+#[cfg(feature = "experimental")]
+mod commonjs_records;
+mod dynamic_namespaces;
+mod manual_purity;
 mod sole_root;
 mod structured_defines;
+mod temporal_imports;
 
 #[tokio::test]
 async fn require_cycle_keeps_tdz_reads_inside_a_hoisted_function() -> Result<()> {
@@ -568,6 +575,7 @@ impl Plugin for ReplaceMangledChunk {
         }
       }
       args.bundle.push(Output::Asset(Arc::new(rolldown_common::OutputAsset {
+        emitted_reference_id: None,
         filename: "hook.txt".into(),
         source: "asset".to_string().into(),
         names: vec![],

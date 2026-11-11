@@ -6,72 +6,32 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## dynamic.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as init_read, r as read } from "./main2.js";
+import { t as read } from "./main.js";
 // dynamic.js
-function init_dynamic() {
-	return (init_dynamic = __esmMin((() => {
-		init_read();
-		read();
-	})))();
-}
-init_dynamic();
+read();
 
 ```
 
 ## main.js
 
 ```js
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-## main2.js
-
-```js
-import { t as __esmMin } from "./rolldown-runtime.js";
 import nodeAssert from "node:assert";
 // setup.js
-var setup;
-function init_setup() {
-	return (init_setup = __esmMin((() => {
-		setup = () => {
-			globalThis.foo = "foo";
-		};
-		setup();
-	})))();
-}
+const setup = () => {
+	globalThis.foo = "foo";
+};
+setup();
 // read.js
-var foo, read;
-function init_read() {
-	return (init_read = __esmMin((() => {
-		foo = globalThis.foo;
-		read = () => {
-			console.log("read", foo);
-		};
-	})))();
-}
+const foo = globalThis.foo;
+const read = () => {
+	console.log("read", foo);
+};
 // main.js
-function init_main() {
-	return (init_main = __esmMin((() => {
-		init_setup();
-		init_read();
-		setup();
-		read();
-		import("./dynamic.js");
-		nodeAssert.strictEqual(globalThis.foo, "foo");
-	})))();
-}
-export { init_read as n, read as r, init_main as t };
-
-```
-
-## rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+setup();
+read();
+import("./dynamic.js");
+nodeAssert.strictEqual(globalThis.foo, "foo");
+export { read as t };
 
 ```
 
@@ -82,8 +42,7 @@ export { __esmMin as t };
 ### dynamic.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as init_read, r as read } from "./main2.js";
+import { n as read, r as __esmMin, t as init_read } from "./main.js";
 // dynamic.js
 function init_dynamic() {
 	return (init_dynamic = __esmMin((() => {
@@ -98,16 +57,8 @@ init_dynamic();
 ### main.js
 
 ```js
-import { t as init_main } from "./main2.js";
-init_main();
-
-```
-
-### main2.js
-
-```js
-import { t as __esmMin } from "./rolldown-runtime.js";
 import nodeAssert from "node:assert";
+// HIDDEN [\0rolldown/runtime.js]
 // setup.js
 var setup;
 function init_setup() {
@@ -139,14 +90,7 @@ function init_main() {
 		nodeAssert.strictEqual(globalThis.foo, "foo");
 	})))();
 }
-export { init_read as n, read as r, init_main as t };
-
-```
-
-### rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __esmMin as t };
+init_main();
+export { read as n, __esmMin as r, init_read as t };
 
 ```

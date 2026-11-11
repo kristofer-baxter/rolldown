@@ -22,15 +22,35 @@ export var __esmMin = (fn, res, err) => () => {
     throw ((err = [e]), e);
   }
 };
-export var __commonJS = (cb, mod) =>
+export var __commonJS = (cb, mod, onFailure) =>
   function () {
-    return (
-      mod || ((0, cb[__getOwnPropNames(cb)[0]])((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports
-    );
+    if (!mod) {
+      mod = { exports: {} };
+      try {
+        (0, cb[__getOwnPropNames(cb)[0]])(mod.exports, mod, mod.exports);
+        cb = null;
+      } catch (error) {
+        mod = void 0;
+        onFailure?.(error);
+        throw error;
+      }
+    }
+    return mod.exports;
   };
-export var __commonJSMin = (cb, mod) => () => (
-  mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports
-);
+export var __commonJSMin = (cb, mod, onFailure) => () => {
+  if (!mod) {
+    mod = { exports: {} };
+    try {
+      cb(mod.exports, mod, mod.exports);
+      cb = null;
+    } catch (error) {
+      mod = void 0;
+      onFailure?.(error);
+      throw error;
+    }
+  }
+  return mod.exports;
+};
 // Default runtime uses `{}` for compact output (`crates/rolldown/tests/test262_failures.json`);
 // null-prototype namespace semantics are provided by `runtime-extra-dev-common.js` when enabled.
 export var __exportAll = (all, no_symbols) => {

@@ -7,7 +7,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 
 ```js
 import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as init_m2, t as init_m1 } from "./m1.js";
+import { n as init_m2, t as init_m1 } from "./main.js";
 // m4.js
 function init_m4() {
 	return (init_m4 = __esmMin((() => {
@@ -26,11 +26,11 @@ export { init_m4 as n, init_main as t };
 
 ```
 
-## m1.js
+## main.js
 
 ```js
 import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as init_m4 } from "./group-0.js";
+import { n as init_m4, t as init_main } from "./group-0.js";
 // m3.js
 function init_m3() {
 	return (init_m3 = __esmMin((() => {
@@ -53,16 +53,8 @@ function init_m1() {
 		console.log("m1");
 	})))();
 }
-export { init_m2 as n, init_m1 as t };
-
-```
-
-## main.js
-
-```js
-import { t as init_main } from "./group-0.js";
-import "./m1.js";
 init_main();
+export { init_m2 as n, init_m1 as t };
 
 ```
 
@@ -82,7 +74,7 @@ export { __esmMin as t };
 
 ```js
 import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as init_m2, t as init_m1 } from "./m1.js";
+import { n as init_m2, t as init_m1 } from "./main.js";
 // m4.js
 function init_m4() {
 	return (init_m4 = __esmMin((() => {
@@ -101,11 +93,11 @@ export { init_m4 as n, init_main as t };
 
 ```
 
-### m1.js
+### main.js
 
 ```js
 import { t as __esmMin } from "./rolldown-runtime.js";
-import { n as init_m4 } from "./group-0.js";
+import { n as init_m4, t as init_main } from "./group-0.js";
 // m3.js
 function init_m3() {
 	return (init_m3 = __esmMin((() => {
@@ -128,16 +120,8 @@ function init_m1() {
 		console.log("m1");
 	})))();
 }
-export { init_m2 as n, init_m1 as t };
-
-```
-
-### main.js
-
-```js
-import { t as init_main } from "./group-0.js";
-import "./m1.js";
 init_main();
+export { init_m2 as n, init_m1 as t };
 
 ```
 

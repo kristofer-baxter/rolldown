@@ -6,7 +6,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## ca.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./main.js";
 import { t as init_cyc_b } from "./cb.js";
 // cyc-a.js
 function init_cyc_a() {
@@ -22,7 +22,7 @@ export { init_cyc_a as t };
 ## cb.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./main.js";
 import { t as init_cyc_a } from "./ca.js";
 // cyc-b.js
 function init_cyc_b() {
@@ -38,7 +38,7 @@ export { init_cyc_b as t };
 ## dynamic-page.js
 
 ```js
-import { n as __exportAll, t as __esmMin } from "./rolldown-runtime.js";
+import { n as __exportAll, t as __esmMin } from "./main.js";
 import { t as init_cyc_a } from "./ca.js";
 // linear.js
 function makeUnit() {
@@ -105,7 +105,7 @@ export { getScale };
 ## main.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+// HIDDEN [\0rolldown/runtime.js]
 // main.js
 function loadPage() {
 	return import("./dynamic-page.js");
@@ -116,15 +116,7 @@ function init_main() {
 	})))();
 }
 init_main();
-export { loadPage };
-
-```
-
-## rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __exportAll as n, __esmMin as t };
+export { loadPage, __exportAll as n, __esmMin as t };
 
 ```
 
@@ -135,7 +127,7 @@ export { __exportAll as n, __esmMin as t };
 ### ca.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./main.js";
 import { t as init_cyc_b } from "./cb.js";
 // cyc-a.js
 function init_cyc_a() {
@@ -151,7 +143,7 @@ export { init_cyc_a as t };
 ### cb.js
 
 ```js
-import { t as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./main.js";
 import { t as init_cyc_a } from "./ca.js";
 // cyc-b.js
 function init_cyc_b() {
@@ -167,7 +159,7 @@ export { init_cyc_b as t };
 ### dynamic-page.js
 
 ```js
-import { n as __exportAll, t as __esmMin } from "./rolldown-runtime.js";
+import { n as __exportAll, t as __esmMin } from "./main.js";
 import { t as init_cyc_a } from "./ca.js";
 // linear.js
 function makeUnit() {
@@ -234,19 +226,12 @@ export { getScale };
 ### main.js
 
 ```js
+// HIDDEN [\0rolldown/runtime.js]
 // main.js
 (globalThis.__events ??= []).push("main");
 function loadPage() {
 	return import("./dynamic-page.js");
 }
-export { loadPage };
-
-```
-
-### rolldown-runtime.js
-
-```js
-// HIDDEN [\0rolldown/runtime.js]
-export { __exportAll as n, __esmMin as t };
+export { loadPage, __exportAll as n, __esmMin as t };
 
 ```

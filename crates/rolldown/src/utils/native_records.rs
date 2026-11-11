@@ -6,6 +6,7 @@
 //! one identity with exactly the authored export keys.
 
 use oxc::ast::ast::Statement;
+use oxc_str::CompactStr;
 use rolldown_common::{
   Chunk, ChunkIdx, ImportKind, ImportRecordIdx, ImportRecordMeta, Module, ModuleIdx, NormalModule,
   NormalizedBundlerOptions, OutputFormat, Specifier, SymbolOrMemberExprRef, SymbolRef, SymbolRefDb,
@@ -14,13 +15,196 @@ use rolldown_common::{
 use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{
-  stages::link_stage::LinkStageOutput, type_alias::IndexEcmaAst,
+  chunk_graph::ChunkGraph, stages::link_stage::LinkStageOutput, type_alias::IndexEcmaAst,
   types::linking_metadata::LinkingMetadata,
 };
 
 pub const NATIVE_CELL_PREFIX: &str = "\0native-cell:";
 pub const NATIVE_JSON_RECORD_PREFIX: &str = "__native/json-values/";
 pub const NATIVE_JSON_NAMESPACE_PREFIX: &str = "__native/json-namespaces/";
+
+#[derive(Debug, PartialEq, Eq, Hash)]
+pub struct CommonJsDefinition {
+  pub suffix: String,
+  pub wrapper_export: CompactStr,
+}
+
+/// Keep CommonJS registration URLs stable when later imports activate a previously required
+/// module. Adjacent records preserve the base of relative imports and source maps.
+pub fn commonjs_definitions(
+  options: &NormalizedBundlerOptions,
+  link_output: &LinkStageOutput,
+  chunk_graph: &ChunkGraph,
+  emitted_asset_names: &[arcstr::ArcStr],
+) -> anyhow::Result<FxHashMap<ChunkIdx, CommonJsDefinition>> {
+  let mut definitions = FxHashMap::default();
+  if !enabled(options) {
+    return Ok(definitions);
+  }
+  let mut public_names = FxHashSet::default();
+  for (idx, chunk) in chunk_graph.chunk_table.iter_enumerated() {
+    if chunk
+      .entry_module_idx()
+      .is_some_and(|module| chunk_graph.module_to_chunk[module] != Some(idx))
+    {
+      continue;
+    }
+    if let Some(filename) = &chunk.preliminary_filename {
+      anyhow::ensure!(
+        public_names.insert(filename.as_str().to_ascii_lowercase()),
+        "conflicting CommonJS evaluation record: {}",
+        filename.as_str(),
+      );
+    }
+  }
+  let mut filenames: FxHashSet<_> = chunk_graph
+    .chunk_table
+    .iter_enumerated()
+    .filter(|(idx, chunk)| {
+      chunk
+        .entry_module_idx()
+        .is_none_or(|module| chunk_graph.module_to_chunk[module] == Some(*idx))
+    })
+    .flat_map(|(_, chunk)| {
+      chunk
+        .preliminary_filename
+        .iter()
+        .chain(chunk.preliminary_sourcemap_filename.iter())
+        .map(|filename| filename.as_str().to_ascii_lowercase())
+    })
+    .collect();
+  filenames.extend(emitted_asset_names.iter().map(|name| name.to_ascii_lowercase()));
+  for (chunk_idx, chunk) in chunk_graph.chunk_table.iter_enumerated() {
+    let Some(module_idx) = chunk.entry_module_idx() else {
+      continue;
+    };
+    let meta = &link_output.metas[module_idx];
+    if chunk_graph.module_to_chunk[module_idx] != Some(chunk_idx)
+      || meta.wrap_kind() != WrapKind::Cjs
+    {
+      continue;
+    }
+    let mut wrapper_export = "__native_require".to_owned();
+    let mut count = 2;
+    while chunk
+      .exports_to_other_chunks
+      .values()
+      .flatten()
+      .any(|name| name.as_str() == wrapper_export)
+    {
+      wrapper_export = format!("__native_require{count}");
+      count += 1;
+    }
+    let preliminary = chunk.preliminary_filename.as_ref().expect("chunk filename");
+    let filename = preliminary.as_str();
+    // Suffixes are appended after hash replacement; a hashed final component is not a literal
+    // extension that the factory can reuse.
+    let extension = std::path::Path::new(filename)
+      .extension()
+      .and_then(|extension| extension.to_str())
+      .filter(|extension| {
+        !preliminary.hash_placeholder().is_some_and(|placeholders| {
+          placeholders.iter().any(|placeholder| extension.contains(placeholder.as_str()))
+        })
+      })
+      .unwrap_or("js");
+    let mut suffix = format!(".cjs-factory.{extension}");
+    let mut count = 2;
+    let default_map = chunk.preliminary_sourcemap_filename.is_none()
+      && matches!(
+        options.sourcemap,
+        Some(rolldown_common::SourceMapType::File | rolldown_common::SourceMapType::Hidden)
+      );
+    while filenames.contains(&format!("{filename}{suffix}").to_ascii_lowercase())
+      || default_map && filenames.contains(&format!("{filename}{suffix}.map").to_ascii_lowercase())
+    {
+      suffix = format!(".cjs-factory{count}.{extension}");
+      count += 1;
+    }
+    filenames.insert(format!("{filename}{suffix}").to_ascii_lowercase());
+    if default_map {
+      filenames.insert(format!("{filename}{suffix}.map").to_ascii_lowercase());
+    }
+    definitions
+      .insert(chunk_idx, CommonJsDefinition { suffix, wrapper_export: wrapper_export.into() });
+  }
+  Ok(definitions)
+}
+
+pub fn omitted_sourcemap_filenames(
+  options: &NormalizedBundlerOptions,
+  cache: &crate::types::scan_stage_cache::ScanStageCache,
+) -> Vec<String> {
+  if !cache.native_commonjs_records
+    || !matches!(
+      options.sourcemap,
+      Some(rolldown_common::SourceMapType::File | rolldown_common::SourceMapType::Hidden)
+    )
+  {
+    return Vec::new();
+  }
+  cache
+    .cached_native_chunks
+    .values()
+    .filter(|cached| {
+      cache.last_reused_chunk_filenames.contains(&cached.chunk.filename)
+        && (cache.omit_reused_chunk_bytes || cached.sourcemap_asset.is_none())
+    })
+    .filter_map(|cached| cached.chunk.sourcemap_filename.clone())
+    .collect()
+}
+
+pub fn validate_output_names(
+  output: &[rolldown_common::Output],
+  omitted_sourcemap_filenames: &[String],
+) -> anyhow::Result<()> {
+  let mut names = FxHashSet::default();
+  let filenames = omitted_sourcemap_filenames
+    .iter()
+    .map(String::as_str)
+    .chain(output.iter().map(rolldown_common::Output::filename));
+  for filename in filenames {
+    anyhow::ensure!(
+      names.insert(filename.to_lowercase()),
+      "conflicting native record output filename: {filename}",
+    );
+  }
+  Ok(())
+}
+
+pub fn commonjs_definition_exports(chunk_graph: &ChunkGraph, idx: ChunkIdx) -> Vec<CompactStr> {
+  let mut exports =
+    super::chunk::render_chunk_exports::get_export_items(&chunk_graph.chunk_table[idx])
+      .into_iter()
+      .map(|(name, _)| name)
+      .filter(|name| name.as_str() != "default")
+      .collect::<Vec<_>>();
+  exports.push(chunk_graph.native_commonjs_definitions[&idx].wrapper_export.clone());
+  exports
+}
+
+/// Registration edges must not evaluate a CommonJS record. Retained ES imports still do.
+pub fn commonjs_import_suffix<'a>(
+  link_output: &LinkStageOutput,
+  chunk_graph: &'a ChunkGraph,
+  importer: &Chunk,
+  importee: ChunkIdx,
+) -> Option<&'a str> {
+  let definition = chunk_graph.native_commonjs_definitions.get(&importee)?;
+  let target = chunk_graph.chunk_table[importee].entry_module_idx()?;
+  let evaluates = importer.modules.iter().any(|idx| {
+    link_output.module_table[*idx].as_normal().is_some_and(|module| {
+      link_output.stmt_infos[module.idx].iter_enumerated().any(|(stmt_idx, stmt)| {
+        link_output.metas[module.idx].stmt_info_included.has_bit(stmt_idx)
+          && stmt.import_records.iter().any(|record_idx| {
+            let record = &module.import_records[*record_idx];
+            record.kind == ImportKind::Import && record.resolved_module == Some(target)
+          })
+      })
+    })
+  });
+  (!evaluates).then_some(definition.suffix.as_str())
+}
 
 #[must_use]
 pub fn deferred_json_import_path(importer: &Chunk, importee: &Chunk) -> String {
