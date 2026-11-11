@@ -109,7 +109,7 @@ on a failed build.
 
 ```rust
 pub struct ScanStageCache {
-  snapshot: Option<NormalizedScanStageOutput>,
+  snapshot: Option<Box<NormalizedScanStageOutput>>,
   pub barrel_state: BarrelState,
   pub module_id_to_idx: FxHashMap<ModuleId, VisitState>,
   pub importers: IndexVec<ModuleIdx, Vec<ImporterRecord>>,

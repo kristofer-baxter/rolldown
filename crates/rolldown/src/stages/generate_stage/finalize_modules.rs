@@ -235,7 +235,8 @@ impl GenerateStage<'_> {
       let can_cache_finalized = self.cache.is_some()
         && !self.inline_state.has_records()
         && self.resolved_paths.is_none()
-        && !self.options.is_dev_mode_enabled();
+        && (!self.options.is_dev_mode_enabled()
+          || !crate::utils::native_records::enabled(self.options));
       let runtime_id = self.link_output.runtime.id();
       let chunk_runtime_digests: IndexVec<ChunkIdx, [u128; 2]> = if can_cache_finalized {
         use std::hash::Hash;
@@ -263,6 +264,22 @@ impl GenerateStage<'_> {
           })
           .collect::<Vec<_>>()
           .into()
+      } else {
+        IndexVec::default()
+      };
+      let module_canonical_names = if can_cache_finalized && self.options.is_dev_mode_enabled() {
+        let mut names: IndexVec<ModuleIdx, Vec<(rolldown_common::SymbolRef, &str)>> =
+          IndexVec::from_vec(
+            (0..self.link_output.module_table.modules.len()).map(|_| Vec::new()).collect(),
+          );
+        for (cidx, chunk) in chunk_graph.chunk_table.chunks.iter_enumerated() {
+          for (&symbol, name) in &chunk.canonical_names {
+            if chunk_graph.module_to_chunk[symbol.owner] == Some(cidx) {
+              names[symbol.owner].push((symbol, name.as_str()));
+            }
+          }
+        }
+        names
       } else {
         IndexVec::default()
       };
@@ -307,6 +324,7 @@ impl GenerateStage<'_> {
               final_esm_init_metadata,
               chunk_runtime_digests[chunk_idx],
               &importee_reexport_wrap_digest,
+              if self.options.is_dev_mode_enabled() { &module_canonical_names[idx] } else { &[] },
             )
           } else {
             None
@@ -432,7 +450,11 @@ impl GenerateStage<'_> {
               idx,
               crate::types::scan_stage_cache::CachedFinalizedModule {
                 digest,
-                sources: crate::types::scan_stage_cache::CachedModuleSources(None),
+                sources: if self.options.is_dev_mode_enabled() {
+                  wrapped.clone()
+                } else {
+                  crate::types::scan_stage_cache::CachedModuleSources(None)
+                },
               },
             );
           }
@@ -612,11 +634,18 @@ impl GenerateStage<'_> {
     final_esm_init_metadata: &Sealed<FinalEsmInitMetadata>,
     runtime_digest: [u128; 2],
     importee_reexport_wrap_digest: &IndexVec<ModuleIdx, Option<(usize, (u128, u128))>>,
+    canonical_names: &[(rolldown_common::SymbolRef, &str)],
   ) -> Option<[u128; 2]> {
     use std::hash::Hash;
 
     let cache = self.cache.as_ref()?;
     if module_idx == self.link_output.runtime.id()
+      || meta.is_tla_or_contains_tla_dependency
+      || module
+        .import_records
+        .iter()
+        .any(|record| record.kind == rolldown_common::ImportKind::DynamicImport)
+      || !module.new_url_references.is_empty()
       || !module.ecma_view.rolldown_file_url_references.is_empty()
       || !module.ecma_view.mutations.is_empty()
       || module.ecma_view.json_module_none_self_reference_included_symbol.is_some()
@@ -737,6 +766,41 @@ impl GenerateStage<'_> {
     };
 
     let mut h = DualHasher::new();
+    let mut names_acc = (0u128, 0u128);
+    for (symbol, name) in canonical_names {
+      let mut entry = DualHasher::new();
+      // Facade ids are allocated per link; their emitted names are the stable input.
+      let symbol_index =
+        if symbol_db.is_facade_symbol(*symbol) { None } else { Some(symbol.symbol.index()) };
+      entry.write_val(&(symbol_index, name));
+      let [d0, d1] = entry.finish();
+      names_acc = (names_acc.0.wrapping_add(d0), names_acc.1.wrapping_add(d1));
+    }
+    h.write_unordered(17, canonical_names.len(), names_acc);
+    h.write_val(&(
+      self.options.is_dev_mode_enabled(),
+      crate::utils::native_records::enabled(self.options),
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options),
+      module.stable_id.as_str(),
+      module.exports_kind as u8,
+    ));
+    h.write_val(&crate::utils::import_options::json_namespace_has_properties(
+      module,
+      &self.link_output.module_table.modules,
+      |idx| self.link_output.unreachable_modules.reaches(idx),
+    ));
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+      && self.options.is_dev_mode_enabled()
+      && !crate::utils::native_records::enabled(self.options)
+      && module.exports_kind == rolldown_common::ExportsKind::Esm
+    {
+      h.write_val(&crate::hmr::utils::bundled_exports_observed_by_importers(
+        module,
+        &self.link_output.module_table.modules,
+        &self.link_output.metas,
+        symbol_db,
+      ));
+    }
     h.write_val(&(
       scan_gen,
       module_idx.raw(),
@@ -902,7 +966,8 @@ impl GenerateStage<'_> {
       chunk.kind,
       rolldown_common::ChunkKind::EntryPoint { module: em, .. } if em == module_idx
     );
-    if meta.namespace_included || is_chunk_entry_module {
+    // Development registration exposes exports even when ordinary namespace emission would not.
+    if meta.namespace_included || is_chunk_entry_module || self.options.is_dev_mode_enabled() {
       let mut rexp_acc = (0u128, 0u128);
       for (name, export) in &meta.resolved_exports {
         let mut eh = DualHasher::new();

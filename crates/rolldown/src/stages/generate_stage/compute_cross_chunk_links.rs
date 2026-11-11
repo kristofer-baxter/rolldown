@@ -2584,6 +2584,15 @@ impl GenerateStage<'_> {
           // back to the resolver so the chunk at least stays parseable.
           preserved_then_taken = true;
           base
+        } else if self.options.is_dev_mode_enabled()
+          && !crate::utils::native_records::enabled(self.options)
+        {
+          let canonical = self.link_output.symbol_db.canonical_ref_for(*chunk_export);
+          resolver.resolve_stable(
+            base,
+            self.link_output.module_table[canonical.owner].stable_id().as_str(),
+            |_, _| true,
+          )
         } else {
           resolver.resolve(base, |_, _| true)
         };

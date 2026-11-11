@@ -83,6 +83,23 @@ impl Bundler {
     self.cache.last_fast_native_relink
   }
 
+  /// Core linking and generation wall times of the last build, including fast-path fallbacks.
+  pub fn last_core_stage_times(&self) -> (std::time::Duration, std::time::Duration) {
+    (self.cache.last_core_link_time, self.cache.last_core_generate_time)
+  }
+
+  /// Retained finalized-module source entries hit by the last generation.
+  pub fn last_reused_finalized_modules(&self) -> usize {
+    self
+      .cache
+      .current_module_was_hit
+      .iter()
+      .filter(|idx| {
+        self.cache.cached_finalized_modules.get(*idx).is_some_and(|entry| entry.sources.0.is_some())
+      })
+      .count()
+  }
+
   pub fn last_link_decisions_unchanged(&self) -> bool {
     self.cache.last_link_decisions_unchanged
   }

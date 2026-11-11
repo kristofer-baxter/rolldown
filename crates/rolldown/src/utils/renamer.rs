@@ -8,8 +8,8 @@ use oxc::syntax::keyword::{GLOBAL_OBJECTS, RESERVED_KEYWORDS};
 use oxc_str::{CompactStr, Ident, IdentHashSet};
 
 use rolldown_common::{
-  EcmaModuleAstUsage, ModuleIdx, NormalModule, OutputFormat, StmtInfoMeta, SymbolRef, SymbolRefDb,
-  SymbolRefDbForModule, WrapKind,
+  EcmaModuleAstUsage, ModuleIdx, ModuleTable, NormalModule, OutputFormat, StmtInfoMeta, SymbolRef,
+  SymbolRefDb, SymbolRefDbForModule, WrapKind,
 };
 use rolldown_utils::concat_string;
 
@@ -88,6 +88,7 @@ pub struct Renamer<'name> {
   canonical_names: FxHashMap<SymbolRef, CompactStr>,
   symbol_db: &'name SymbolRefDb,
   inner_binding_names: InnerBindingNames<'name>,
+  stable_modules: Option<&'name ModuleTable>,
 }
 
 impl<'name> Renamer<'name> {
@@ -124,7 +125,12 @@ impl<'name> Renamer<'name> {
           .map(|s| CompactStr::new(s)),
       ),
       inner_binding_names,
+      stable_modules: None,
     }
+  }
+
+  pub fn use_stable_module_ids(&mut self, modules: &'name ModuleTable) {
+    self.stable_modules = Some(modules);
   }
 
   /// Returns the canonical name for a symbol if it has an explicit entry in this renamer.
@@ -229,12 +235,20 @@ impl<'name> Renamer<'name> {
     // `self.resolver` (mutable, in `resolve`) does not overlap a borrow of `self`.
     let symbol_db = self.symbol_db;
     let inner_binding_names = &self.inner_binding_names;
-    let resolved = self.resolver.resolve(original_name, |candidate, is_original| match kind {
+    let accept = |candidate: &str, is_original| match kind {
       RootBindingKind::Authored => {
         Self::is_name_available_with(symbol_db, candidate, canonical_ref, is_original)
       }
       RootBindingKind::Synthesized => !inner_binding_names.contains(candidate),
-    });
+    };
+    let resolved = match self.stable_modules {
+      Some(modules) => self.resolver.resolve_stable(
+        original_name,
+        modules[canonical_ref.owner].stable_id().as_str(),
+        accept,
+      ),
+      None => self.resolver.resolve(original_name, accept),
+    };
     slot.insert(resolved);
   }
 

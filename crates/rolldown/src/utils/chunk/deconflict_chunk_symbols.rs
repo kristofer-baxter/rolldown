@@ -17,8 +17,8 @@ use crate::{
 };
 use arcstr::ArcStr;
 use rolldown_common::{
-  Chunk, ChunkIdx, ChunkKind, GetLocalDb, ImportKind, ModuleIdx, NormalModule, OutputFormat,
-  StmtInfo, SymbolRef, WrapKind,
+  Chunk, ChunkIdx, ChunkKind, GetLocalDb, ImportKind, ModuleIdx, NormalModule,
+  NormalizedBundlerOptions, OutputFormat, StmtInfo, SymbolRef, WrapKind,
 };
 use rolldown_utils::{concat_string, ecmascript::legitimize_identifier_name};
 use rustc_hash::FxHashMap;
@@ -51,11 +51,12 @@ pub fn deconflict_chunk_symbols(
   chunk: &mut Chunk,
   link_output: &LinkStageOutput,
   order_wrap_state: &OrderWrapState,
-  format: OutputFormat,
+  options: &NormalizedBundlerOptions,
   index_chunk_id_to_name: &FxHashMap<ChunkIdx, ArcStr>,
   chunk_assignments: ChunkAssignments<'_>,
   inline: Option<&InlineNamingInput>,
 ) -> Option<FileInlineNames> {
+  let format = options.format;
   // The modules and chunks whose root-scope declarations land in this file.
   let own_chunk = [chunk_idx];
   let (modules, chunks): (&[ModuleIdx], &[ChunkIdx]) = match inline {
@@ -72,6 +73,9 @@ pub fn deconflict_chunk_symbols(
       .collect(),
   );
   let mut renamer = Renamer::new(&link_output.symbol_db, format, inner_binding_names);
+  if options.is_dev_mode_enabled() && !crate::utils::native_records::enabled(options) {
+    renamer.use_stable_module_ids(&link_output.module_table);
+  }
   reserve_fixed_names(&mut renamer, modules, link_output, format);
 
   if matches!(format, OutputFormat::Iife | OutputFormat::Umd | OutputFormat::Cjs) {

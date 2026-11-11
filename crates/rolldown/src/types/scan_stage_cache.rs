@@ -510,7 +510,7 @@ pub type CachedLazyChunk = (
 #[expect(clippy::struct_excessive_bools, clippy::type_complexity)]
 #[derive(Default, Debug)]
 pub struct ScanStageCache {
-  snapshot: Option<NormalizedScanStageOutput>,
+  snapshot: Option<Box<NormalizedScanStageOutput>>,
   pub barrel_state: BarrelState,
   pub module_id_to_idx: FxHashMap<ModuleId, VisitState>,
   pub importers: IndexVec<ModuleIdx, Vec<ImporterRecord>>,
@@ -600,6 +600,9 @@ pub struct ScanStageCache {
   pub keep_unused_capacity: bool,
   pub last_reused_chunk_filenames: FxHashSet<ArcStr>,
   pub last_fast_native_relink: bool,
+  /// Core stage wall times of the last generation, including a rejected fast-path attempt.
+  pub last_core_link_time: std::time::Duration,
+  pub last_core_generate_time: std::time::Duration,
   pub last_link_decisions_unchanged: bool,
   pub link_decisions_generation: u64,
   /// Why the last generation linked the whole graph rather than relinking what the update
@@ -900,6 +903,8 @@ impl ScanStageCache {
     self.runtime_rendered_chunk = None;
     self.last_reused_chunk_filenames.clear();
     self.last_fast_native_relink = false;
+    self.last_core_link_time = std::time::Duration::ZERO;
+    self.last_core_generate_time = std::time::Duration::ZERO;
     self.last_link_decisions_unchanged = false;
     self.link_decisions_generation = 0;
     self.clear_cell_route_cache();
@@ -912,7 +917,7 @@ impl ScanStageCache {
     self.native_importer_changes.clear();
     self.last_native_graph_change = None;
     self.codegen_last_used.clear();
-    self.snapshot = Some(cache);
+    self.snapshot = Some(Box::new(cache));
   }
 
   #[inline]
@@ -934,7 +939,7 @@ impl ScanStageCache {
   /// Useful when workarounding rustc borrow rules
   pub fn take_snapshot(&mut self) -> Option<NormalizedScanStageOutput> {
     self.clear_cell_route_cache();
-    self.snapshot.take()
+    self.snapshot.take().map(|snapshot| *snapshot)
   }
 
   #[cfg(feature = "experimental")]
@@ -1019,7 +1024,7 @@ impl ScanStageCache {
 
   /// Non-panicking variant of [`Self::get_snapshot`].
   pub fn snapshot(&self) -> Option<&NormalizedScanStageOutput> {
-    self.snapshot.as_ref()
+    self.snapshot.as_deref()
   }
 
   /// Between builds the cache is either empty (no snapshot: only a full scan
@@ -1073,6 +1078,8 @@ impl ScanStageCache {
     self.clear_cell_route_cache();
     let Some(ref mut cache) = self.snapshot else {
       self.last_fast_native_relink = false;
+      self.last_core_link_time = std::time::Duration::ZERO;
+      self.last_core_generate_time = std::time::Duration::ZERO;
       self.last_link_decisions_unchanged = false;
       self.link_decisions_generation = 0;
       self.last_native_relink_fallback = None;
@@ -1086,10 +1093,12 @@ impl ScanStageCache {
       let snapshot: NormalizedScanStageOutput =
         scan_stage_output.try_into().map_err(|e: &'static str| vec![anyhow::anyhow!(e).into()])?;
       self.build_module_index_maps(&snapshot);
-      self.snapshot = Some(snapshot);
+      self.snapshot = Some(Box::new(snapshot));
       return Ok(());
     };
     self.last_fast_native_relink = false;
+    self.last_core_link_time = std::time::Duration::ZERO;
+    self.last_core_generate_time = std::time::Duration::ZERO;
     self.last_link_decisions_unchanged = false;
     self.last_native_relink_fallback = None;
     self.last_rebuilt_chunk_filenames.clear();
