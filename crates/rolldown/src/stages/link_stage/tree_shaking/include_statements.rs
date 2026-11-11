@@ -743,11 +743,18 @@ fn handle_include_symbol(
     // Reading the constant still evaluates its module, so the module's side effects and those of
     // its dependencies stay, as when the constant is not inlined.
     let owner = canonical_ref.owner;
-    let (modules, metas) = (ctx.modules, ctx.metas);
+    let (modules, metas, stmt_infos) = (ctx.modules, ctx.metas, ctx.stmt_infos);
+    let lazy_barrel = ctx.options.experimental.is_lazy_barrel_enabled();
     let has_side_effects =
       *ctx.inlined_constant_owner_side_effects.entry(owner).or_insert_with(|| {
         modules[owner].side_effects().has_side_effects()
           || metas[owner].has_side_effectful_dependency(modules)
+          // Lazy-barrel demand selects which leaf bodies run, even if a selected leaf's value
+          // can be inlined. The package's sideEffects flag must not erase that static demand.
+          || (lazy_barrel
+            && stmt_infos[owner]
+              .iter_enumerated_without_namespace_stmt()
+              .any(|(_, stmt)| stmt.eval_flags.has_side_effect_for_tree_shaking()))
       });
     if has_side_effects {
       ctx.kept_inlined_constant_reads.insert(symbol_ref);

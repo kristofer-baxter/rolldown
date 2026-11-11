@@ -96,7 +96,8 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
     });
     let result = match self.run_inner(override_source).await {
       Err(errs)
-        if crate::utils::native_records::runtime_module_semantics_enabled(&self.ctx.options)
+        if (crate::utils::native_records::runtime_module_semantics_enabled(&self.ctx.options)
+          || self.flat_options.is_lazy_barrel_enabled())
           && !self.is_user_defined_entry
           && !errs.is_empty()
           && errs.iter().all(|error| matches!(error.kind(), EventKind::ParseError)) =>

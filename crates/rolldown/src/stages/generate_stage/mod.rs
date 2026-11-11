@@ -373,7 +373,9 @@ impl<'a> GenerateStage<'a> {
     // Sealing consumes the builder, so nothing downstream can mutate the set.
     let used_symbol_refs = used_symbol_refs_builder.seal();
     self.compute_retained_export_symbols(&used_symbol_refs);
-    if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+      || self.routes_declared_side_effect_free_barrels()
+    {
       self.narrow_consumer_local_namespace_targets(&mut order_state);
     }
 

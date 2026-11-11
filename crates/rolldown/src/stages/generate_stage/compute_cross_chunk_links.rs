@@ -636,11 +636,11 @@ impl GenerateStage<'_> {
     })
   }
 
-  /// The modules that declare the constants that the included statements of a module read, by name
+  /// The constants that the included statements of a module read, by name
   /// or as a namespace member such as `ns.SIZE`, in source order.
-  fn read_constant_owners(&self, module_idx: ModuleIdx) -> FxIndexSet<ModuleIdx> {
+  fn read_constants(&self, module_idx: ModuleIdx) -> FxIndexSet<SymbolRef> {
     let meta = &self.link_output.metas[module_idx];
-    let mut owners = FxIndexSet::default();
+    let mut constants = FxIndexSet::default();
     for (stmt_idx, stmt_info) in self.link_output.stmt_infos[module_idx].iter_enumerated() {
       if !meta.stmt_info_included.has_bit(stmt_idx) {
         continue;
@@ -655,18 +655,18 @@ impl GenerateStage<'_> {
         let Some(symbol_ref) = symbol_ref else { continue };
         let canonical_ref = self.link_output.symbol_db.canonical_ref_for(symbol_ref);
         if self.link_output.global_constant_symbol_map.contains_key(&canonical_ref) {
-          owners.insert(canonical_ref.owner);
+          constants.insert(canonical_ref);
         }
       }
     }
-    owners
+    constants
   }
 
-  /// Whether the output keeps the module that declares an inlined constant, because the module or
-  /// one of its dependencies has side effects.
-  fn keeps_constant_owner(&self, owner: ModuleIdx) -> bool {
-    self.link_output.module_table[owner].side_effects().has_side_effects()
-      || self.link_output.metas[owner]
+  /// Whether this constant read retains initialization, including a selected lazy-barrel leaf.
+  fn keeps_constant_read(&self, symbol: SymbolRef) -> bool {
+    self.link_output.kept_inlined_constant_reads.contains(&symbol)
+      || self.link_output.module_table[symbol.owner].side_effects().has_side_effects()
+      || self.link_output.metas[symbol.owner]
         .has_side_effectful_dependency(&self.link_output.module_table.modules)
   }
 
@@ -701,7 +701,7 @@ impl GenerateStage<'_> {
         };
         let canonical_ref = self.link_output.symbol_db.canonical_ref_for(symbol_ref);
         if self.link_output.global_constant_symbol_map.contains_key(&canonical_ref)
-          && self.keeps_constant_owner(canonical_ref.owner)
+          && self.keeps_constant_read(canonical_ref)
         {
           reads.push((named_import.record_idx, symbol_ref));
         }
@@ -2320,7 +2320,8 @@ impl GenerateStage<'_> {
           // through a barrel, or read as a namespace member; the module that declares it still has
           // to be loaded when it or a dependency has side effects.
           let mut predicted_targets = None;
-          for owner in self.read_constant_owners(module_idx) {
+          for constant in self.read_constants(module_idx) {
+            let owner = constant.owner;
             // A module behind an order wrapper runs when its init is called, so a bare import of
             // its chunk would only load that chunk earlier.
             if self.options.is_strict_execution_order_enabled()
@@ -2328,7 +2329,7 @@ impl GenerateStage<'_> {
             {
               continue;
             }
-            if !self.keeps_constant_owner(owner) {
+            if !self.keeps_constant_read(constant) {
               continue;
             }
             let Some(owner_chunk_idx) = chunk_graph.module_to_chunk[owner] else {

@@ -8,12 +8,14 @@ source: crates/rolldown_testing/src/integration_test.rs
 ```js
 // HIDDEN [\0rolldown/runtime.js]
 // second.js
-var second_exports = /* @__PURE__ */ __exportAll({});
+var second_exports = /* @__PURE__ */ __exportAll({}, 0, 0);
 import * as import_external from "external";
 __reExport(second_exports, import_external);
+__exportAll(second_exports);
 // first.js
-var first_exports = /* @__PURE__ */ __exportAll({});
+var first_exports = /* @__PURE__ */ __exportAll({}, 0, 0);
 __reExport(first_exports, second_exports);
+__exportAll(first_exports);
 var foo = first_exports.foo;
 export { foo };
 

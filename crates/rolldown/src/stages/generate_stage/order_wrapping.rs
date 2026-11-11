@@ -694,9 +694,7 @@ impl GenerateStage<'_> {
   /// for it. A build without code splitting keeps the shared wrapper: its inlined `import()` calls
   /// the wrapper and its chunk placement doesn't reach the leaves through a route.
   pub(super) fn routes_declared_side_effect_free_barrels(&self) -> bool {
-    crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-      && self.options.experimental.is_lazy_barrel_enabled()
-      && !self.options.code_splitting.is_disabled()
+    self.options.experimental.is_lazy_barrel_enabled() && !self.options.code_splitting.is_disabled()
   }
 
   /// Returns whether the chunk topology changed.

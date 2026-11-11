@@ -1044,12 +1044,13 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     if errors.is_empty()
       && (crate::utils::native_records::runtime_module_semantics_enabled(
         &self.shared_context.options,
-      ) || !self
-        .shared_context
-        .deferred_resolution_targets
-        .lock()
-        .expect("resolution failure state poisoned")
-        .is_empty())
+      ) || self.flat_options.is_lazy_barrel_enabled()
+        || !self
+          .shared_context
+          .deferred_resolution_targets
+          .lock()
+          .expect("resolution failure state poisoned")
+          .is_empty())
     {
       // Keep the recovery scanner's large future out of every caller's build future.
       match Box::pin(self.isolate_dynamic_parse_errors(&user_defined_entry_ids)).await {
@@ -1634,10 +1635,12 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       }
     }
     // Explicit deferred-resolution diagnostics must fail closed in ordinary builds too.
-    // Recovering arbitrary parse/link failures remains an opt-in native runtime protocol.
+    // Lazy-barrel promotion may discover a broken static closure behind a dynamic import.
+    // Ordinary builds without either protocol still report parse/link failures at build time.
     let link_failures = if crate::utils::native_records::runtime_module_semantics_enabled(
       &self.shared_context.options,
-    ) {
+    ) || self.flat_options.is_lazy_barrel_enabled()
+    {
       self.scanned_link_failures(&failures)
     } else {
       FxHashMap::default()
@@ -2133,7 +2136,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       // Calculate new exports to process (subtract already processed). A request of the module's
       // own statements names none.
       let new_exports = if demand == Demand::Body {
-        ImportedExports::Partial(FxHashSet::default())
+        // Dynamic stars keep this namespace, including its named re-exports. Those records must
+        // be resolved before linking can bind the namespace's complete getter table.
+        ImportedExports::All
       } else {
         match self.cache.barrel_state.requested_exports.entry(idx) {
           Entry::Occupied(mut occ) => {

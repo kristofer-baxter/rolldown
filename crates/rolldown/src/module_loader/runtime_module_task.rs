@@ -234,7 +234,15 @@ fn get_runtime_base_js(runtime_semantics: bool) -> String {
       .replace(UPSTREAM_EXPORT_AND_INTEROP_HELPERS, RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS);
     format!("var Promise = globalThis.Promise;\nvar __moduleURL = globalThis.URL;\n{base}")
   } else {
-    RUNTIME_BASE_JS.to_string()
+    // Star namespaces need runtime completion even without the native-record protocol.
+    // Keep ordinary interop and initialization unchanged. See internal-docs/runtime-helpers/implementation.md.
+    let (ordinary_exports, _) = UPSTREAM_EXPORT_AND_INTEROP_HELPERS
+      .split_once("export var __toESM")
+      .expect("ordinary interop helper boundary");
+    let (namespace_exports, _) = RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS
+      .split_once("export var __toESM")
+      .expect("namespace interop helper boundary");
+    RUNTIME_BASE_JS.replace(ordinary_exports, namespace_exports)
   }
 }
 
@@ -494,8 +502,20 @@ mod runtime_fixture_tests {
   }
 
   #[test]
-  fn ordinary_runtime_base_is_unmodified() {
-    assert_eq!(super::get_runtime_base_js(false), super::RUNTIME_BASE_JS);
+  fn ordinary_runtime_keeps_initialization_and_interop() {
+    let ordinary = super::get_runtime_base_js(false);
+    assert!(ordinary.contains(super::UPSTREAM_ESM_HELPERS));
+    let (_, interop) =
+      super::UPSTREAM_EXPORT_AND_INTEROP_HELPERS.split_once("export var __toESM").unwrap();
+    assert!(ordinary.contains(&format!("export var __toESM{interop}")));
+    assert!(!ordinary.contains("var Promise = globalThis.Promise;"));
+    let (namespace_exports, _) =
+      super::RUNTIME_SEMANTICS_EXPORT_AND_INTEROP_HELPERS.split_once("export var __toESM").unwrap();
+    assert!(ordinary.contains(namespace_exports));
+    let (ordinary_exports, _) =
+      super::UPSTREAM_EXPORT_AND_INTEROP_HELPERS.split_once("export var __toESM").unwrap();
+    assert_eq!(super::RUNTIME_BASE_JS.matches(ordinary_exports).count(), 1);
+    assert_eq!(ordinary.matches(namespace_exports).count(), 1);
   }
 
   #[test]

@@ -63,23 +63,21 @@ impl GenerateStage<'_> {
     chunk_graph: &mut ChunkGraph,
     used_symbol_refs_builder: &mut UsedSymbolRefsBuilder,
   ) {
-    if !crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
-      return;
-    }
     // Even an unmerged JSON facade must expose the same default-only namespace
     // as a static namespace import, not its bundler-only named bindings. And an
     // unmerged facade whose star exports reach CommonJS modules must expose the
     // namespace object that `__reExport` fills at runtime, whose names its chunk's
     // export list can't carry, also when it is an explicit input, an emitted chunk or a
     // preserved module, whose public exports stay (`route_public_namespace_extractions`).
-    let namespaces = chunk_graph
+    let mut namespaces: FxHashSet<_> = chunk_graph
       .entry_module_to_entry_chunk
       .iter()
       .filter_map(|(&module, &chunk)| {
         let ChunkKind::EntryPoint { meta, .. } = chunk_graph.chunk_table[chunk].kind else {
           return None;
         };
-        let json = meta == ChunkMeta::DynamicImported
+        let json = crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+          && meta == ChunkMeta::DynamicImported
           && !self.options.preserve_modules
           && self.link_output.module_table[module]
             .as_normal()
@@ -90,6 +88,9 @@ impl GenerateStage<'_> {
         .then_some((chunk, module))
       })
       .collect();
+    let importers =
+      self.live_dynamic_importers(chunk_graph, namespaces.iter().map(|&(_, module)| module));
+    namespaces.retain(|&(_, module)| !importers[&module].is_empty());
     self.apply_dynamic_entry_namespace_extractions(
       chunk_graph,
       &namespaces,
@@ -493,8 +494,7 @@ impl GenerateStage<'_> {
         .iter()
         .any(|importer| importer.trigger_chunk.is_some_and(|chunk| chunk != host_idx));
       if host_idx == chunk_idx {
-        if !crosses || !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-        {
+        if !crosses {
           continue;
         }
         self.split_public_entry_chunk(chunk_graph, chunk_idx, module_idx);

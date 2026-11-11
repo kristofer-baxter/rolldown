@@ -1373,6 +1373,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     // https://github.com/rolldown/rolldown/blob/d6d65f9080e427cd9feef56eb7a110fbcf6c1414/crates/rolldown/src/stages/generate_stage/chunk_optimizer.rs#L347-L354
     let runtime_semantics =
       crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options);
+    let namespace_semantics = runtime_semantics || self.star_exports_complete_namespace();
     let json_namespace_is_default_only = runtime_semantics
       && crate::utils::import_options::is_json_module(self.ctx.module)
       && !crate::utils::import_options::json_namespace_has_properties(
@@ -1438,7 +1439,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     // else construct `__exportAll({ prop_name: () => returned, ... })`. A namespace that star exports
     // complete at runtime is a namespace object even without names of its own.
     let fixed = !self.star_exports_complete_namespace();
-    let module_namespace_rhs = if (!runtime_semantics
+    let module_namespace_rhs = if (!namespace_semantics
       || self.ctx.linking_info.is_canonical_exports_empty())
       && fixed
       && arg_obj_expr.properties.is_empty()
@@ -1447,7 +1448,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       Expression::ObjectExpression(oxc::allocator::Box::new_in(arg_obj_expr, self))
     } else {
       let obj_expr = ast::Argument::ObjectExpression(arg_obj_expr.into_in(self.allocator()));
-      let args = if runtime_semantics {
+      let args = if namespace_semantics {
         oxc::allocator::Vec::from_iter_in(
           [
             obj_expr,
@@ -1587,9 +1588,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// Whether star exports add names to the module's namespace object at runtime, through
   /// `__reExport`, rather than its declaration fixing them.
   fn star_exports_complete_namespace(&self) -> bool {
-    crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
-      && (self.ctx.linking_info.has_dynamic_exports
-        || !self.ctx.linking_info.star_exports_from_external_modules.is_empty())
+    self.ctx.linking_info.has_dynamic_exports
+      || !self.ctx.linking_info.star_exports_from_external_modules.is_empty()
   }
 
   /// `__exportAll(ns)`, which the module runs once it has run its star exports: the namespace

@@ -30,6 +30,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 #[cfg(feature = "experimental")]
 mod bundled_hmr;
 
+mod dynamic_namespaces;
 mod sole_root;
 mod structured_defines;
 
