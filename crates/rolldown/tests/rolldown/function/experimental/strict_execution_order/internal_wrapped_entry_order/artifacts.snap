@@ -47,7 +47,7 @@ export { value };
 ```js
 import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
 // m2.js
-var m2_exports = /* @__PURE__ */ __exportAll({ value: () => 2 });
+var m2_exports = /* @__PURE__ */ __exportAll({ value: () => value });
 var value;
 var init_m2 = __esmMin((() => {
 	globalThis.__entryInteropOrder.push("m2");
@@ -73,7 +73,11 @@ export { require_m5 as t };
 
 ```js
 // \0rolldown/runtime.js
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __esmMin = (fn, res, err) => () => {
 	if (err) throw err[0];
 	try {
@@ -83,15 +87,54 @@ var __esmMin = (fn, res, err) => () => {
 	}
 };
 var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
-var __exportAll = (all, no_symbols) => {
-	let target = {};
-	for (var name in all) __defProp(target, name, {
-		get: all[name],
+var __exportAll = (all, no_symbols, fixed) => {
+	let star = __starNamespaces.get(all);
+	if (star) {
+		Object.preventExtensions(star[1]);
+		return all;
+	}
+	if (fixed === void 0) {
+		let target = {};
+		for (var name in all) __defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+		if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+		return target;
+	}
+	let target = __create(null);
+	let names = __getOwnPropNames(all).sort();
+	for (let name of names) __defProp(target, name, {
+		value: void 0,
+		writable: true,
 		enumerable: true
 	});
 	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
-	return target;
+	if (fixed) Object.preventExtensions(target);
+	let namespace = new Proxy(target, {
+		get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+		ownKeys: (target) => {
+			let keys = fixed ? names : __getOwnPropNames(target).sort();
+			return no_symbols ? keys : [...keys, Symbol.toStringTag];
+		},
+		getOwnPropertyDescriptor(target, key) {
+			let descriptor = __getOwnPropDesc(target, key);
+			if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+			return descriptor;
+		},
+		set: () => false,
+		defineProperty(target, key, descriptor) {
+			if (!__hasOwnProp.call(all, key)) return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+			let value = all[key]();
+			return !descriptor.configurable && descriptor.enumerable !== false && descriptor.writable !== false && !("get" in descriptor) && !("set" in descriptor) && (!("value" in descriptor) || Object.is(descriptor.value, value));
+		},
+		preventExtensions: (target) => !Object.isExtensible(target),
+		setPrototypeOf: (_, prototype) => prototype === null
+	});
+	if (!fixed) __starNamespaces.set(namespace, [all, target]);
+	return namespace;
 };
+var __starNamespaces = /* @__PURE__ */ new WeakMap();
 export { __esmMin as n, __exportAll as r, __commonJSMin as t };
 
 ```
@@ -144,7 +187,7 @@ export { value };
 ```js
 import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
 // m2.js
-var m2_exports = /* @__PURE__ */ __exportAll({ value: () => 2 });
+var m2_exports = /* @__PURE__ */ __exportAll({ value: () => value });
 var value;
 var init_m2 = __esmMin((() => {
 	globalThis.__entryInteropOrder.push("m2");
@@ -170,7 +213,11 @@ export { require_m5 as t };
 
 ```js
 // \0rolldown/runtime.js
+var __create = Object.create;
 var __defProp = Object.defineProperty;
+var __getOwnPropDesc = Object.getOwnPropertyDescriptor;
+var __getOwnPropNames = Object.getOwnPropertyNames;
+var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __esmMin = (fn, res, err) => () => {
 	if (err) throw err[0];
 	try {
@@ -180,15 +227,54 @@ var __esmMin = (fn, res, err) => () => {
 	}
 };
 var __commonJSMin = (cb, mod) => () => (mod || (cb((mod = { exports: {} }).exports, mod, mod.exports), cb = null), mod.exports);
-var __exportAll = (all, no_symbols) => {
-	let target = {};
-	for (var name in all) __defProp(target, name, {
-		get: all[name],
+var __exportAll = (all, no_symbols, fixed) => {
+	let star = __starNamespaces.get(all);
+	if (star) {
+		Object.preventExtensions(star[1]);
+		return all;
+	}
+	if (fixed === void 0) {
+		let target = {};
+		for (var name in all) __defProp(target, name, {
+			get: all[name],
+			enumerable: true
+		});
+		if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
+		return target;
+	}
+	let target = __create(null);
+	let names = __getOwnPropNames(all).sort();
+	for (let name of names) __defProp(target, name, {
+		value: void 0,
+		writable: true,
 		enumerable: true
 	});
 	if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: "Module" });
-	return target;
+	if (fixed) Object.preventExtensions(target);
+	let namespace = new Proxy(target, {
+		get: (target, key) => __hasOwnProp.call(all, key) ? all[key]() : target[key],
+		ownKeys: (target) => {
+			let keys = fixed ? names : __getOwnPropNames(target).sort();
+			return no_symbols ? keys : [...keys, Symbol.toStringTag];
+		},
+		getOwnPropertyDescriptor(target, key) {
+			let descriptor = __getOwnPropDesc(target, key);
+			if (descriptor && __hasOwnProp.call(all, key)) descriptor.value = all[key]();
+			return descriptor;
+		},
+		set: () => false,
+		defineProperty(target, key, descriptor) {
+			if (!__hasOwnProp.call(all, key)) return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+			let value = all[key]();
+			return !descriptor.configurable && descriptor.enumerable !== false && descriptor.writable !== false && !("get" in descriptor) && !("set" in descriptor) && (!("value" in descriptor) || Object.is(descriptor.value, value));
+		},
+		preventExtensions: (target) => !Object.isExtensible(target),
+		setPrototypeOf: (_, prototype) => prototype === null
+	});
+	if (!fixed) __starNamespaces.set(namespace, [all, target]);
+	return namespace;
 };
+var __starNamespaces = /* @__PURE__ */ new WeakMap();
 export { __esmMin as n, __exportAll as r, __commonJSMin as t };
 
 ```
