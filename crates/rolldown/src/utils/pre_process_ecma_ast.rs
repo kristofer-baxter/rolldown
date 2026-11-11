@@ -276,7 +276,12 @@ impl PreProcessEcmaAst {
           || crate::utils::native_records::enabled(bundle_options)
           || bundle_options.is_strict_execution_order_enabled()
           || bundle_options.minify.is_enabled())
-          && super::temporal_reads::preserve_temporal_reads(program, &scoping, allocator)
+          && super::temporal_reads::preserve_temporal_reads(
+            program,
+            &scoping,
+            allocator,
+            bundle_options.treeshake.manual_pure_functions(),
+          )
         {
           scoping = self.recreate_scoping(&mut None, program);
         }

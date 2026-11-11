@@ -31,6 +31,7 @@ use tokio::{sync::Notify, task::JoinHandle};
 mod bundled_hmr;
 
 mod dynamic_namespaces;
+mod manual_purity;
 mod sole_root;
 mod structured_defines;
 mod temporal_imports;
