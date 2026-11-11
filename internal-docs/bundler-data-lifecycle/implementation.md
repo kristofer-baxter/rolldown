@@ -141,6 +141,12 @@ reusable chunks, since the caller has not published that generation. Retired nat
 CommonJS modules retire their public evaluation facade, registration factory and
 source map together. See [the Rust consumption contract](../../docs/apis/rust-crates.md#native-commonjs-registration-and-evaluation).
 
+Mixed static-import and require edges to one CommonJS dependency retain two routes:
+ordinary bindings use the evaluating facade, while the require wrapper imports the
+registration factory's private wrapper export. `commonjs_import_routes` supplies
+rendering, output import metadata and chunk decision hashing, so a changed mixed
+edge or factory suffix cannot reuse an obsolete single-route chunk.
+
 `ScanStageCache` must survive a _failed_ build whole, not just a successful one
 — otherwise the next HMR/incremental build reads a broken cache and panics. The
 invariant is: **between builds, `Bundler::cache` is always whole** — `snapshot`

@@ -136,6 +136,188 @@ async fn emitted_commonjs_retry_matches_node_and_preserves_cached_getters() -> R
 }
 
 #[tokio::test]
+async fn mixed_commonjs_imports_and_requires_keep_distinct_routes() -> Result<()> {
+  for imports_first in [false, true] {
+    for import in ["import value,* as namespace from './dep.cjs';", "import './dep.cjs';"] {
+      let require = "events.push('body');const required=require('./dep.cjs');";
+      let observe = if import.contains("namespace") {
+        "events.push(value===required,namespace.default===required);"
+      } else {
+        ""
+      };
+      let source = format!(
+        "{}{}events.push(required.answer,required.activeCycle);{observe}\
+         events.push((await import('./dep.cjs')).default===required);",
+        if imports_first { import } else { require },
+        if imports_first { require } else { import },
+      );
+      let fixture = Fixture::new(&[
+        ("main.js", &source),
+        (
+          "dep.cjs",
+          "events.push('dep');exports.answer=42;\
+           exports.activeCycle=require('./cycle.cjs').active;",
+        ),
+        ("cycle.cjs", "exports.active=require('./dep.cjs').answer===42;"),
+        (
+          "reference.js",
+          &format!(
+            "import{{createRequire}}from'node:module';const require=createRequire(import.meta.url);{source}"
+          ),
+        ),
+        ("observe.js", "await import('./dist/main.js');"),
+      ])?;
+      let expected = fixture.execute("./reference.js")?;
+      assert_eq!(expected[0], "dep", "static evaluation precedes body in both source orders");
+      for native in [false, true] {
+        for minify in [false, true] {
+          let mut options = options(&fixture);
+          options.minify = Some(RawMinifyOptions::Bool(minify));
+          let mut bundler = Bundler::new(options)?;
+          bundler.set_native_commonjs_records(native)?;
+          let output = bundler.incremental_generate(ScanMode::Full).await?;
+          if native {
+            let main = output
+              .assets
+              .iter()
+              .find_map(|output| match output {
+                Output::Chunk(chunk) if chunk.filename == "main.js" => Some(chunk),
+                _ => None,
+              })
+              .context("main chunk")?;
+            assert!(
+              main.imports.iter().any(|name| name == "dep.js")
+                && main.imports.iter().any(|name| name == "dep.js.cjs-factory.js"),
+              "mixed evaluation and registration edges must retain both URLs: {:?}",
+              main.imports,
+            );
+            assert!(main.code.contains("./dep.js.cjs-factory.js"));
+          }
+          fixture.output(&output)?;
+          assert_eq!(
+            fixture.execute("./observe.js")?,
+            expected,
+            "imports_first={imports_first}, import={import}, native={native}, minify={minify}"
+          );
+          bundler.close().await?;
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn mixed_commonjs_import_failures_leave_require_retries_usable() -> Result<()> {
+  for imports_first in [false, true] {
+    let import = "import value from './dep.cjs';";
+    let require = "events.push('body');const required=require('./dep.cjs');";
+    let source = format!(
+      "{}{}events.push(required===value);",
+      if imports_first { import } else { require },
+      if imports_first { require } else { import },
+    );
+    let fixture = Fixture::new(&[
+      ("main.js", &source),
+      (
+        "reference-main.js",
+        &format!(
+          "import{{createRequire}}from'node:module';const require=createRequire(import.meta.url);{source}"
+        ),
+      ),
+      (
+        "dep.cjs",
+        "globalThis.attempts=(globalThis.attempts??0)+1;events.push(`dep:${attempts}`);\
+         exports.partial=true;exports.active=require('./cycle.cjs').active;\
+         if(attempts===1)throw Error('first attempt');exports.answer=42;",
+      ),
+      ("cycle.cjs", "exports.active=require('./dep.cjs').partial===true;"),
+      ("retry.cjs", "const value=require('./dep.cjs');events.push(value.answer,value.active);"),
+      (
+        "reference.js",
+        "try{await import('./reference-main.js')}catch(error){events.push(error.message)}\
+         await import('./retry.cjs');",
+      ),
+      (
+        "observe.js",
+        "try{await import('./dist/main.js')}catch(error){events.push(error.message)}\
+         await import('./dist/retry.js');",
+      ),
+    ])?;
+    let expected = fixture.execute("./reference.js")?;
+    assert_eq!(expected, json!(["dep:1", "first attempt", "dep:2", 42, true]));
+    let mut options = options(&fixture);
+    options.input = Some(vec![
+      InputItem { name: Some("main".into()), import: "./main.js".into() },
+      InputItem { name: Some("retry".into()), import: "./retry.cjs".into() },
+    ]);
+    let mut bundler = Bundler::new(options)?;
+    bundler.set_native_commonjs_records(true)?;
+    fixture.output(&bundler.incremental_generate(ScanMode::Full).await?)?;
+    assert_eq!(fixture.execute("./observe.js")?, expected, "imports_first={imports_first}");
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn mixed_commonjs_import_routes_refresh_across_relinks() -> Result<()> {
+  for omit in [false, true] {
+    let fixture = Fixture::new(&[
+      ("main.js", ""),
+      ("dep.cjs", "events.push('dep');exports.answer=42;"),
+      ("observe.js", "await import('./dist/main.js');"),
+    ])?;
+    let mut bundler = Bundler::new(dev_options(&fixture))?;
+    bundler.set_native_commonjs_records(true)?;
+    bundler.set_omit_reused_chunk_bytes(omit);
+    for (round, (import, require)) in
+      [(true, false), (true, true), (false, true), (true, true), (true, false)]
+        .into_iter()
+        .enumerate()
+    {
+      let source = format!(
+        "{}events.push('body');{}events.push({});",
+        if import { "import value from './dep.cjs';" } else { "" },
+        if require { "const required=require('./dep.cjs');" } else { "" },
+        if import && require {
+          "value===required,required.answer"
+        } else if require {
+          "required.answer"
+        } else {
+          "value.answer"
+        },
+      );
+      fixture.write("main.js", &source)?;
+      fixture.write(
+        "reference.js",
+        &format!("import{{createRequire}}from'node:module';const require=createRequire(import.meta.url);{source}"),
+      )?;
+      let expected = fixture.execute("./reference.js")?;
+      let scan = if round == 0 { ScanMode::Full } else { partial_scan(&fixture, "main.js") };
+      let output = bundler.incremental_generate(scan).await?;
+      let main = output
+        .assets
+        .iter()
+        .find_map(|output| match output {
+          Output::Chunk(chunk) if chunk.filename == "main.js" => Some(chunk),
+          _ => None,
+        })
+        .context("main chunk")?;
+      assert_eq!(main.imports.iter().any(|name| name == "dep.js"), import);
+      assert!(
+        main.imports.iter().any(|name| name == "dep.js.cjs-factory.js"),
+        "default interop also imports the cached require wrapper"
+      );
+      publish(&fixture, &output, &bundler)?;
+      assert_eq!(fixture.execute("./observe.js")?, expected, "round={round}, omit={omit}");
+    }
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn commonjs_factory_registration_does_not_evaluate_and_public_imports_share_identity()
 -> Result<()> {
   let fixture = Fixture::new(&[

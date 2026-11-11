@@ -183,13 +183,22 @@ pub fn commonjs_definition_exports(chunk_graph: &ChunkGraph, idx: ChunkIdx) -> V
   exports
 }
 
-/// Registration edges must not evaluate a CommonJS record. Authored ES imports still do.
-pub fn commonjs_import_suffix<'a>(
+/// Routes a preserved CommonJS dependency's ordinary bindings and require wrapper separately.
+#[derive(Debug)]
+pub struct CommonJsImportRoutes<'a> {
+  pub primary_suffix: Option<&'a str>,
+  pub registration: Option<SymbolRef>,
+  pub definition: &'a CommonJsDefinition,
+}
+
+/// Registration edges must not evaluate a CommonJS record, even alongside authored ES imports.
+/// See internal-docs/bundler-data-lifecycle/implementation.md for the shared route/cache invariant.
+pub fn commonjs_import_routes<'a>(
   link_output: &LinkStageOutput,
   chunk_graph: &'a ChunkGraph,
   importer: &Chunk,
   importee: ChunkIdx,
-) -> Option<&'a str> {
+) -> Option<CommonJsImportRoutes<'a>> {
   let definition = chunk_graph.native_commonjs_definitions.get(&importee)?;
   let target = chunk_graph.chunk_table[importee].entry_module_idx()?;
   let evaluates = importer.modules.iter().any(|idx| {
@@ -200,7 +209,21 @@ pub fn commonjs_import_suffix<'a>(
         .any(|record| record.kind == ImportKind::Import && record.resolved_module == Some(target))
     })
   });
-  (!evaluates).then_some(definition.suffix.as_str())
+  let registration = evaluates
+    .then(|| link_output.metas[target].wrapper_ref.expect("CommonJS wrapper"))
+    .map(|wrapper| link_output.symbol_db.canonical_ref_for(wrapper))
+    .filter(|wrapper| {
+      importer.imports_from_other_chunks.get(&importee).is_some_and(|items| {
+        items
+          .iter()
+          .any(|item| link_output.symbol_db.canonical_ref_for(item.import_ref) == *wrapper)
+      })
+    });
+  Some(CommonJsImportRoutes {
+    primary_suffix: (!evaluates).then_some(definition.suffix.as_str()),
+    registration,
+    definition,
+  })
 }
 
 #[must_use]

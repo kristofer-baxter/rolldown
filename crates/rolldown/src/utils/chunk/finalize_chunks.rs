@@ -356,14 +356,23 @@ pub async fn finalize_assets(
               .map(|importee_asset_idx| index_ins_chunk_to_filename[*importee_asset_idx].clone())
               .collect::<Vec<_>>()
           };
-          if let Some(suffix) = crate::utils::native_records::commonjs_import_suffix(
+          if let Some(routes) = crate::utils::native_records::commonjs_import_routes(
             link_output,
             chunk_graph,
             chunk,
             *importee_idx,
           ) {
-            for filename in &mut filenames {
-              *filename = format!("{filename}{suffix}").into();
+            if let Some(suffix) = routes.primary_suffix {
+              for filename in &mut filenames {
+                *filename = format!("{filename}{suffix}").into();
+              }
+            }
+            if routes.registration.is_some() {
+              let factories = filenames
+                .iter()
+                .map(|filename| format!("{filename}{}", routes.definition.suffix).into())
+                .collect::<Vec<_>>();
+              filenames.extend(factories);
             }
           }
           filenames
