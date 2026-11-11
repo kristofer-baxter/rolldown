@@ -785,7 +785,7 @@ impl<'a> ReplaceGlobalDefines<'a> {
     outer_keys: Option<Vec<CompactStr>>,
   ) {
     self.structured_destructuring = None;
-    let structured_target = self.structured_rhs_target(right);
+    let structured_target = self.destructuring_rhs_target(right);
     if let Some(outer) = outer_keys
       && let AssignmentTarget::ObjectAssignmentTarget(pat) = left
       && (self.can_destructure_rhs(right) || structured_target.is_some())
@@ -810,7 +810,7 @@ impl<'a> ReplaceGlobalDefines<'a> {
   #[inline(never)]
   fn prepare_declarator_destructuring(&mut self, id: &BindingPattern<'a>, init: &Expression<'a>) {
     self.structured_destructuring = None;
-    let structured_target = self.structured_rhs_target(init);
+    let structured_target = self.destructuring_rhs_target(init);
     if let BindingPattern::ObjectPattern(pat) = id
       && (self.can_destructure_rhs(init) || structured_target.is_some())
     {
@@ -857,17 +857,21 @@ impl<'a> ReplaceGlobalDefines<'a> {
     })
   }
 
-  fn structured_rhs_target(&self, expr: &Expression<'a>) -> Option<Address> {
-    if self.config.0.structured_objects.is_empty() {
-      return None;
-    }
+  fn destructuring_rhs_target(&self, expr: &Expression<'a>) -> Option<Address> {
     let mut target = expr.without_parentheses();
     // DefinePlugin propagates a pattern through one direct await, not calls, sequences,
     // conditionals, a second await, or an observed assignment result.
     if let Expression::AwaitExpression(awaited) = target {
       target = awaited.argument.without_parentheses();
     }
-    self.structured_object_value(target).map(|_| target.address())
+    // Prefix-only import.meta definitions synthesize the requested parent properties, not a
+    // replacement expression for import.meta itself. Track this exact node across await too;
+    // each selected child still materializes its complete value, regardless of metadata.
+    let synthetic_import_meta = matches!(target, Expression::ImportMeta(_))
+      && self.config.0.import_meta.is_none()
+      && !self.config.0.import_meta_prefix.is_empty();
+    (synthetic_import_meta || self.structured_object_value(target).is_some())
+      .then(|| target.address())
   }
 
   fn replace_structured_destructuring(&mut self, expr: &mut Expression<'a>) -> bool {
@@ -877,11 +881,15 @@ impl<'a> ReplaceGlobalDefines<'a> {
     let Some(plan) = self.structured_destructuring.take() else {
       return false;
     };
-    let Some(value) = self.structured_object_value(expr).map(str::to_owned) else {
-      return false;
-    };
-    *expr = self.parse_value_with_selection(&value, Some(&plan.keys));
-    true
+    if let Some(value) = self.structured_object_value(expr).map(str::to_owned) {
+      *expr = self.parse_value_with_selection(&value, Some(&plan.keys));
+      true
+    } else {
+      let outer_keys = self.destructuring_keys.replace(plan.keys);
+      let replaced = self.replace_destructuring_prefix_defines(expr);
+      self.destructuring_keys = outer_keys;
+      replaced
+    }
   }
 
   fn collect_object_pattern_keys(pat: &ObjectPattern<'a>) -> Option<Vec<CompactStr>> {
@@ -1241,7 +1249,8 @@ impl<'a> ReplaceGlobalDefines<'a> {
     let Some(props) = props else {
       return false;
     };
-    if !needed_keys.iter().all(|k| props.contains_key(k.as_str())) {
+    let import_meta = matches!(expr, Expression::ImportMeta(_));
+    if !import_meta && !needed_keys.iter().all(|k| props.contains_key(k.as_str())) {
       return false;
     }
     let mut code = String::from("({");
@@ -1251,7 +1260,15 @@ impl<'a> ReplaceGlobalDefines<'a> {
       }
       code.push_str(&to_property_key(key.as_str()));
       code.push(':');
-      code.push_str(props[key.as_str()].as_str());
+      if let Some(value) = props.get(key.as_str()) {
+        code.push_str(value.as_str());
+      } else {
+        // An unknown parent key is still a native import.meta read (e.g. url or a missing key).
+        code.push_str("import.meta[");
+        code
+          .push_str(&serde_json::to_string(key.as_str()).expect("property key string serializes"));
+        code.push(']');
+      }
     }
     code.push_str("})");
     *expr = self.parse_value(&code);

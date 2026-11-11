@@ -841,6 +841,7 @@ impl GenerateStage<'_> {
   ) -> Option<(ModuleIdx, ChunkIdx, FxHashSet<ModuleIdx>)> {
     let sole_root = self.sole_root_entry()?;
     if !self.link_output.metas[sole_root].is_included
+      || !self.link_output.metas[sole_root].wrap_kind().is_none()
       || self.link_output.metas.iter().any(|meta| meta.is_tla_or_contains_tla_dependency)
     {
       return None;
@@ -858,12 +859,8 @@ impl GenerateStage<'_> {
       return None;
     }
     let expected = self.expected_order_for_root(sole_root);
-    let (actual, triggers) =
+    let (mut actual, triggers) =
       self.actual_order_for_root(sole_root, sole_chunk, chunk_graph, import_edges);
-    if !self.at_risk_modules(&expected, &actual, &triggers).is_empty() {
-      return None;
-    }
-    let mut actual_set: FxHashSet<ModuleIdx> = actual.iter().copied().collect();
     let mut top_level_imported_interop = FxHashSet::default();
     for &module_idx in &actual {
       if !self.link_output.metas[module_idx].wrap_kind().is_none() {
@@ -890,6 +887,18 @@ impl GenerateStage<'_> {
         }
       }
     }
+    // The general traversal follows every require record, including calls inside functions.
+    // Such a wrapped body is neither an eager chunk effect nor guaranteed to have run at boot.
+    // Keep its lazy wrapper, but exclude it from both the boot-order comparison and certificate.
+    // See internal-docs/linking/module-execution-order/implementation.md.
+    actual.retain(|&module_idx| {
+      self.link_output.metas[module_idx].wrap_kind().is_none()
+        || top_level_imported_interop.contains(&module_idx)
+    });
+    if !self.at_risk_modules(&expected, &actual, &triggers).is_empty() {
+      return None;
+    }
+    let actual_set: FxHashSet<ModuleIdx> = actual.iter().copied().collect();
     for &module_idx in &chunk_graph.chunk_table[sole_chunk].modules {
       if module_idx == runtime_idx || !self.link_output.metas[module_idx].is_included {
         continue;
@@ -898,21 +907,6 @@ impl GenerateStage<'_> {
         if !actual_set.contains(&module_idx) {
           return None;
         }
-      } else if !top_level_imported_interop.contains(&module_idx) {
-        if self.is_order_sensitive(module_idx) {
-          return None;
-        }
-        actual_set.remove(&module_idx);
-      }
-    }
-    for &module_idx in &actual {
-      if !self.link_output.metas[module_idx].wrap_kind().is_none()
-        && !top_level_imported_interop.contains(&module_idx)
-      {
-        if self.is_order_sensitive(module_idx) {
-          return None;
-        }
-        actual_set.remove(&module_idx);
       }
     }
     Some((sole_root, sole_chunk, actual_set))

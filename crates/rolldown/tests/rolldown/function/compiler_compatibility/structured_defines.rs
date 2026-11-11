@@ -40,6 +40,111 @@ fn cases_source(cases: &[&str], target: &str) -> String {
 }
 
 #[tokio::test]
+async fn import_meta_parent_destructuring_preserves_await_and_complete_child_values() -> Result<()>
+{
+  let cases = [
+    "const{env}=TARGET;events.push(env.A,env.B,env.C,env.unused)",
+    "const{env}=await TARGET;events.push(env.A,env.B,env.C,env.unused)",
+    "let env;({env}=TARGET);events.push(env.A,env.B,env.C,env.unused)",
+    "let env;({env}=await TARGET);events.push(env.A,env.B,env.C,env.unused)",
+    "const{[`e\\u006ev`]:env}=await TARGET;events.push(env.A,env.B,env.C,env.unused)",
+    "const{env:{A}}=await TARGET;events.push(A)",
+    "const{env,NOPE}=await TARGET;events.push(env.A,NOPE)",
+    "const{env,NOPE}=TARGET;events.push(env.A,NOPE)",
+    "const{env,url}=await TARGET;events.push(env.A,typeof url)",
+  ];
+  let fixture = Fixture::new(&[("main.js", &cases_source(&cases, "import.meta"))])?;
+  for marked in [false, true, false] {
+    for minify in [false, true] {
+      let mut options = options(
+        &fixture,
+        "import.meta.env",
+        "({A:'first',B:2,C:true,unused:(events.push('env-value'),4)})",
+        marked,
+      );
+      options.define.as_mut().expect("define map").extend([
+        ("import.meta.env.A".to_owned(), "'first'".to_owned()),
+        ("import.meta.env.B".to_owned(), "2".to_owned()),
+        ("import.meta.env.C".to_owned(), "true".to_owned()),
+        ("import.meta.other".to_owned(), "(()=>{throw Error('other materialized')})()".to_owned()),
+      ]);
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      assert_eq!(
+        run(&fixture, options.clone()).await?,
+        json!([
+          "env-value",
+          "first",
+          2,
+          true,
+          4,
+          "env-value",
+          "first",
+          2,
+          true,
+          4,
+          "env-value",
+          "first",
+          2,
+          true,
+          4,
+          "env-value",
+          "first",
+          2,
+          true,
+          4,
+          "env-value",
+          "first",
+          2,
+          true,
+          4,
+          "env-value",
+          "first",
+          "env-value",
+          "first",
+          null,
+          "env-value",
+          "first",
+          null,
+          "env-value",
+          "first",
+          "string"
+        ]),
+        "marked={marked}, minify={minify}"
+      );
+      options.define.as_mut().expect("define map").insert(
+        "import.meta.env".to_owned(),
+        "({A:'first',B:2,C:true,unused:(()=>{throw Error('env-expression')})()})".to_owned(),
+      );
+      assert_eq!(
+        run(&fixture, options).await?,
+        json!(vec!["env-expression"; cases.len()]),
+        "parent selection must not prune a selected child: marked={marked}, minify={minify}"
+      );
+    }
+    for minify in [false, true] {
+      let mut options = options(
+        &fixture,
+        "import.meta",
+        "({env:{A:'first',B:2,C:true,unused:4},other:(()=>{throw Error('parent-expression')})()})",
+        false,
+      );
+      options
+        .define
+        .as_mut()
+        .expect("define map")
+        .insert("import.meta.env.A".to_owned(), "'first'".to_owned());
+      options.minify = Some(RawMinifyOptions::Bool(minify));
+      assert_eq!(
+        run(&fixture, options).await?,
+        json!(vec!["parent-expression"; cases.len()]),
+        "an explicit unmarked import.meta expression must stay complete: minify={minify}"
+      );
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn structured_defines_select_properties_only_with_explicit_metadata() -> Result<()> {
   let cases = [
     "const{used}=TARGET;events.push(used)",

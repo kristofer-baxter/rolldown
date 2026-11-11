@@ -57,6 +57,155 @@ fn probe(fixture: &Fixture, code: &str) -> Result<serde_json::Value> {
 }
 
 #[tokio::test]
+async fn hmr_linked_source_kind_preserves_top_level_this_and_namespace_shape() -> Result<()> {
+  for native in [true, false] {
+    for (kind, context) in [
+      ("linked-commonjs", ""),
+      ("scanned-commonjs", ""),
+      ("linked-esm", ""),
+      ("scanned-esm", ""),
+      ("linked-commonjs", "globalThis"),
+      ("linked-esm", "globalThis"),
+    ] {
+      let commonjs = kind.ends_with("commonjs");
+      let source = |value| {
+        let syntax = match kind {
+          "scanned-commonjs" => "module.exports=exports;",
+          "scanned-esm" => "export{};",
+          _ => "",
+        };
+        format!(
+          "globalThis.depRuns=(globalThis.depRuns??0)+{value};\
+           if(this){{this.marker={value};globalThis.thisSeen=true}}\
+           globalThis.arrowIsThis=(()=>this)()===this;\
+           globalThis.functionReceiver=({{value:17,read(){{return this.value}}}}).read();\
+           globalThis.classReceiver=(class{{static value=23;static read(){{return this.value}}}}).read();\
+           {syntax}"
+        )
+      };
+      let importee = if kind == "linked-commonjs" { "driver" } else { "dep" };
+      let fixture = Fixture::new(&[
+        (
+          "main.js",
+          &format!(
+            "import './legacy/{importee}.js';\
+             globalThis.load=()=>import('./legacy/dep.js');import.meta.hot.accept();"
+          ),
+        ),
+        ("legacy/package.json", "{}"),
+        ("legacy/dep.js", &source(1)),
+        ("legacy/driver.js", "require('./dep.js');module.exports={};"),
+      ])?;
+      fixture.write(
+        "reference.mjs",
+        &if commonjs {
+          "const dep=(await import('node:module')).createRequire(import.meta.url)('./legacy/dep.js');\
+           events.push(depRuns,thisSeen,dep.marker,arrowIsThis,functionReceiver,classReceiver);"
+            .to_owned()
+        } else {
+          fixture.write("reference-esm.mjs", &format!("{}export{{}};", source(1)))?;
+          "await import('./reference-esm.mjs');\
+           events.push(depRuns,globalThis.thisSeen??null,null,arrowIsThis,functionReceiver,classReceiver);"
+            .to_owned()
+        },
+      )?;
+      assert_eq!(
+        fixture.execute("./reference.mjs")?,
+        serde_json::json!([
+          1,
+          if commonjs { Some(true) } else { None },
+          if commonjs { Some(1) } else { None },
+          true,
+          17,
+          23
+        ]),
+        "Node source-kind reference: {kind}"
+      );
+      let mut config = options(&fixture, native, !native);
+      config.context = Some(context.into());
+      let mut bundler = Bundler::new(config)?;
+      fixture.output(&bundler.incremental_generate(ScanMode::Full).await?)?;
+      let mut stamps = HmrStampTable::default();
+      let (evaluated, ..) = bundler.compute_top_level_evaluated_modules(&stamps);
+      let mut shipped = evaluated.clone();
+      let next = Arc::new(AtomicU32::new(0));
+      for value in [10, 100] {
+        fixture.write("legacy/dep.js", &source(value))?;
+        let changes = FxIndexMap::from_iter([(
+          fixture.0.join("legacy/dep.js").to_string_lossy().into_owned(),
+          WatcherChangeKind::Update,
+        )]);
+        let updates = bundler
+          .compute_hmr_update_for_file_changes(
+            &changes,
+            &[ClientHmrInput {
+              client_id: "fixture",
+              shipped: &shipped,
+              top_level_evaluated: &evaluated,
+            }],
+            &mut stamps,
+            Arc::clone(&next),
+            false,
+            false,
+          )
+          .await?;
+        ensure!(updates.len() == 1, "one client must receive one update");
+        let HmrUpdate::Patch(patch) = &updates[0].update else {
+          anyhow::bail!("expected a real factory patch: {:?}", updates[0].update)
+        };
+        fixture.write(&format!("patch-{value}.mjs"), &patch.code)?;
+        shipped.extend(patch.carried.iter().cloned());
+      }
+      let observed = probe(
+        &fixture,
+        &format!(
+          r"
+          const commonjs={commonjs};
+          const customContext={custom_context};
+          const [id]=[...runtime.moduleCache].find(([id])=>id.endsWith('legacy/dep.js'));
+          const shape=ns=>[Object.prototype.toString.call(ns),Object.getPrototypeOf(ns)===null,
+            Object.isExtensible(ns),Object.keys(ns).sort()];
+          const initial=shape(await globalThis.load());
+          assert.deepEqual(initial,commonjs
+            ? ['[object Object]',false,true,['default','marker']]
+            : ['[object Module]',true,false,[]]);
+          const check=(value,total)=>{{
+            const raw=runtime.loadExports(id);
+            const ns=commonjs?runtime.__toESM(raw,true):raw;
+            assert.deepEqual(shape(ns),initial,'initial/patch namespace parity');
+            assert.equal(globalThis.depRuns,total);
+            assert.equal(globalThis.thisSeen,commonjs||customContext?true:undefined);
+            assert.equal(commonjs?ns.default.marker:undefined,commonjs?value:undefined);
+            assert.equal(globalThis.marker,!commonjs&&customContext?value:undefined);
+            assert.equal(globalThis.arrowIsThis,true);
+            assert.equal(globalThis.functionReceiver,17);
+            assert.equal(globalThis.classReceiver,23);
+          }};
+          await check(1,1);
+          for(const [value,total] of [[10,11],[100,111]]){{
+            await import(`./patch-${{value}}.mjs`);
+            // Exercise the generated compiler records without a consumer HMR transaction engine.
+            runtime.removeModuleCache(id);
+            runtime.initModule(id);
+            await check(value,total);
+          }}
+          events.push('initial and two patched generations agree');
+          ",
+          custom_context = !context.is_empty()
+        ),
+      )?;
+      assert_eq!(
+        observed,
+        serde_json::json!(["initial and two patched generations agree"]),
+        "native={native}, kind={kind}, context={context:?}"
+      );
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn bundled_hmr_refreshes_wide_import_observation_after_relink() -> Result<()> {
   let fixture = Fixture::new(&[])?;
   let mut imports = String::new();

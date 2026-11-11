@@ -53,8 +53,8 @@ pub struct HmrAstFinalizer<'me, 'ast> {
   /// as its importers that the graph reaches decide (`json_namespace_has_properties`).
   pub json_namespace_properties: bool,
   pub use_pife_for_module_wrappers: bool,
-  /// The `context` option, which a top-level `this` reads in a module that the scan didn't
-  /// find CommonJS, as in the main build; `void 0` when empty.
+  /// The `context` option, which top-level `this` reads unless the rendered kind is CommonJS,
+  /// as in the main build; `void 0` when empty.
   pub context: &'me str,
   pub runtime_module_semantics: bool,
 

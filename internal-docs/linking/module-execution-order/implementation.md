@@ -31,6 +31,12 @@ Execution order alone cannot certify a lexical read inside a hoisted function: a
 
 Preprocessing keeps potentially temporal reads opaque through DCE. Finalization restores native lexical reads or replaces them with checks for lowered bindings. Minified CommonJS modules also need observable checks because chunk compression assumes local reads do not throw; their hoisted bindings and flags stay inside the CommonJS evaluator closure, including when native records hoist the wrapper itself. Initialization flags become true only at the declaration's original execution point. These checks do not enable native routing, records, or HMR.
 
+## Sole-root boot order
+
+On-demand wrapping can certify the eager modules of a synchronous, acyclic sole entry as already evaluated when its dynamic entries load. Colocation is not evaluation: a module wrapped for `require()` may share the entry chunk while its body runs only when a function calls it. The general order traversal follows those require records conservatively, but the boot certificate excludes their wrapped bodies unless an included top-level static import triggers them. Their sensitivity must not invalidate the eager modules' certificate or unnecessarily wrap unrelated deferred entries.
+
+The excluded bodies keep their require wrappers and are not marked boot-evaluated. A later require or dynamic import must still run them exactly once. Wrapped sole entries, top-level await, additional user entries and reachable chunk cycles retain the conservative fallback. See `sole_root_boot_evaluated` in `stages/generate_stage/order_analysis.rs`.
+
 ## Algorithm
 
 The pass is an **iterative post-order DFS** with an explicit `execution_stack: Vec<Status>`. Using an explicit stack (rather than recursion) avoids stack overflow on deep module graphs, which are common in real-world codebases.
