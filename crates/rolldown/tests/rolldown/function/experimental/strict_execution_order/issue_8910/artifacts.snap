@@ -11,7 +11,7 @@ import { n as __esmMin } from "./rolldown-runtime.js";
 var node_0;
 __esmMin((() => {
 	globalThis.__acyclic_output_fuzz_0 = 0;
-	import("./node12.js").then((n) => (n.n(), n.r));
+	import("./node1.js").then((n) => (n.t(), n.n));
 	node_0 = {};
 	node_0.value = 0;
 }))();
@@ -19,14 +19,6 @@ __esmMin((() => {
 ```
 
 ## node1.js
-
-```js
-import { t as require_node1 } from "./node12.js";
-export default require_node1();
-
-```
-
-## node12.js
 
 ```js
 import { n as __esmMin, r as __exportAll, t as __commonJSMin } from "./rolldown-runtime.js";
@@ -45,7 +37,8 @@ var require_node1 = /* @__PURE__ */ __commonJSMin(((exports) => {
 	init_node2();
 	exports.node_1 = 1;
 }));
-export { init_node2 as n, node2_exports as r, require_node1 as t };
+export default require_node1();
+export { node2_exports as n, init_node2 as t };
 
 ```
 
@@ -69,7 +62,7 @@ import { n as __esmMin } from "./rolldown-runtime.js";
 var node_0;
 __esmMin((() => {
 	globalThis.__acyclic_output_fuzz_0 = 0;
-	import("./node12.js").then((n) => (n.n(), n.r));
+	import("./node1.js").then((n) => (n.t(), n.n));
 	node_0 = {};
 	node_0.value = 0;
 }))();
@@ -77,14 +70,6 @@ __esmMin((() => {
 ```
 
 ### node1.js
-
-```js
-import { t as require_node1 } from "./node12.js";
-export default require_node1();
-
-```
-
-### node12.js
 
 ```js
 import { n as __esmMin, r as __exportAll, t as __commonJSMin } from "./rolldown-runtime.js";
@@ -103,7 +88,8 @@ var require_node1 = /* @__PURE__ */ __commonJSMin(((exports) => {
 	init_node2();
 	exports.node_1 = 1;
 }));
-export { init_node2 as n, node2_exports as r, require_node1 as t };
+export default require_node1();
+export { node2_exports as n, init_node2 as t };
 
 ```
 

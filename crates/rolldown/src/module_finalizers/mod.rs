@@ -1146,7 +1146,9 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       }
       ast::MemberExpression::PrivateFieldExpression(_) => return None,
     };
-    if let ast::Expression::Identifier(ident) = object {
+    if let ast::Expression::Identifier(ident) =
+      crate::utils::temporal_reads::temporal_read_argument(object)
+    {
       return self.try_inline_enum_member(ident, property_name);
     }
     // `ns.Direction.Up` — namespace-import resolution. Only for direct (non-chain)
@@ -1185,11 +1187,15 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     outer_expr: &ast::StaticMemberExpression<'_>,
   ) -> Option<ast::Expression<'ast>> {
     // The object must be a StaticMemberExpression (e.g., `ns.c`)
-    let ast::Expression::StaticMemberExpression(inner_expr) = &outer_expr.object else {
+    let ast::Expression::StaticMemberExpression(inner_expr) =
+      crate::utils::temporal_reads::temporal_read_argument(&outer_expr.object)
+    else {
       return None;
     };
     // The inner object must be an identifier (e.g., `ns`)
-    let ast::Expression::Identifier(ns_ident) = &inner_expr.object else {
+    let ast::Expression::Identifier(ns_ident) =
+      crate::utils::temporal_reads::temporal_read_argument(&inner_expr.object)
+    else {
       return None;
     };
 
@@ -1591,8 +1597,43 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// Whether star exports add names to the module's namespace object at runtime, through
   /// `__reExport`, rather than its declaration fixing them.
   fn star_exports_complete_namespace(&self) -> bool {
-    self.ctx.linking_info.has_dynamic_exports
-      || !self.ctx.linking_info.star_exports_from_external_modules.is_empty()
+    if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
+      self.ctx.linking_info.has_dynamic_exports
+        || !self.ctx.linking_info.star_exports_from_external_modules.is_empty()
+    } else {
+      matches!(self.ctx.options.platform, rolldown_common::Platform::Browser)
+        && self.star_exports_reach_commonjs()
+        && (self.ctx.options.is_strict_execution_order_enabled()
+          || self.ctx.modules.iter().filter_map(rolldown_common::Module::as_normal).any(|m| {
+            m.import_records.iter().any(|rec| {
+              rec.kind == rolldown_common::ImportKind::DynamicImport
+                && rec.resolved_module == Some(self.ctx.idx)
+            })
+          }))
+    }
+  }
+
+  fn star_exports_reach_commonjs(&self) -> bool {
+    if !self.ctx.linking_info.has_dynamic_exports {
+      return false;
+    }
+    let mut queue = std::collections::VecDeque::from([self.ctx.idx]);
+    let mut visited = FxHashSet::default();
+    while let Some(module_idx) = queue.pop_front() {
+      if !visited.insert(module_idx) {
+        continue;
+      }
+      let Some(module) = self.ctx.modules[module_idx].as_normal() else {
+        continue;
+      };
+      if matches!(module.exports_kind, rolldown_common::ExportsKind::CommonJs) {
+        return true;
+      }
+      for importee_idx in module.star_export_module_ids() {
+        queue.push_back(importee_idx);
+      }
+    }
+    false
   }
 
   /// `__exportAll(ns)`, which the module runs once it has run its star exports: the namespace
@@ -1901,7 +1942,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// constant keeps its TypeError, and direct `eval` could assign any binding.
   fn collect_native_let_symbols(&mut self, program: &ast::Program<'ast>) {
     let may_own_initial_bindings = crate::hmr::utils::HmrAstBuilder::native_record(self)
-      || (self.ctx.options.is_dev_mode_enabled()
+      || (crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+        && self.ctx.options.is_dev_mode_enabled()
         && !crate::utils::native_records::enabled(self.ctx.options)
         && self.ctx.module.exports_kind == rolldown_common::ExportsKind::Esm);
     if !may_own_initial_bindings || self.ctx.module.meta.has_eval() {
@@ -2034,13 +2076,17 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   ) -> Option<ast::SimpleAssignmentTarget<'ast>> {
     let (id_ref, property) = match target {
       ast::SimpleAssignmentTarget::StaticMemberExpression(member_expr) => {
-        let ast::Expression::Identifier(id_ref) = &member_expr.object else {
+        let ast::Expression::Identifier(id_ref) =
+          crate::utils::temporal_reads::temporal_read_argument(&member_expr.object)
+        else {
           return None;
         };
         (id_ref, CjsMemberProperty::Static(member_expr.property.name.as_str()))
       }
       ast::SimpleAssignmentTarget::ComputedMemberExpression(member_expr) => {
-        let ast::Expression::Identifier(id_ref) = &member_expr.object else {
+        let ast::Expression::Identifier(id_ref) =
+          crate::utils::temporal_reads::temporal_read_argument(&member_expr.object)
+        else {
           return None;
         };
         (id_ref, CjsMemberProperty::Computed(&member_expr.expression))
@@ -2094,7 +2140,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       CjsMemberProperty::Computed(expr) => {
         // Finalize the computed key expression (e.g. inline constants) so that an
         // inlined value is emitted instead of a reference to a tree-shaken binding.
-        let finalized_expr = match expr {
+        let finalized_expr = match crate::utils::temporal_reads::temporal_read_argument(expr) {
           ast::Expression::Identifier(ident_ref) => self
             .try_rewrite_identifier_reference_expr(ident_ref, false)
             .unwrap_or_else(|| expr.clone_in(self.allocator())),

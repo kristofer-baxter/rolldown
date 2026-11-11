@@ -725,11 +725,13 @@ impl<'ast> HmrAstFinalizer<'_, 'ast> {
     );
     // An update reads every getter once, right after its factory runs, so V8 compiles them with the factory: a
     // parenthesized getter skips the separate lazy compile that each first call would otherwise pay.
-    for property in &mut arg_obj_expr.properties {
-      if let ObjectPropertyKind::ObjectProperty(property) = property
-        && let Expression::ArrowFunctionExpression(getter) = &mut property.value
-      {
-        getter.pife = true;
+    if self.runtime_module_semantics {
+      for property in &mut arg_obj_expr.properties {
+        if let ObjectPropertyKind::ObjectProperty(property) = property
+          && let Expression::ArrowFunctionExpression(getter) = &mut property.value
+        {
+          getter.pife = true;
+        }
       }
     }
 

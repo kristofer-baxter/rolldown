@@ -7,11 +7,13 @@ source: crates/rolldown_testing/src/integration_test.rs
 
 ```js
 console.log("element 1");
-console.log("element 2");
+// dep2.js
+const element$1 = "element 2";
+console.log(element$1);
 console.log("element 3");
 // main.js
 const Foo = () => {};
-const result = /* @__PURE__ */ React.createElement(Foo, null, "testelement 2");
+const result = /* @__PURE__ */ React.createElement(Foo, null, "test" + element$1);
 export { result };
 
 ```

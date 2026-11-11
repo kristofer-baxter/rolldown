@@ -272,10 +272,13 @@ impl PreProcessEcmaAst {
         Self::restore_resource_bindings(&mut scoping, &resource_bindings);
         // Oxc DCE assumes TDZ errors cannot occur. Keep lexical reads opaque until
         // finalization restores native lexical reads or inserts wrapper/minifier guards.
+        let may_be_commonjs =
+          !program.body.iter().any(oxc::ast::ast::Statement::is_module_declaration);
         if (runtime_semantics
           || crate::utils::native_records::enabled(bundle_options)
           || bundle_options.is_strict_execution_order_enabled()
-          || bundle_options.minify.is_enabled())
+          || (may_be_commonjs
+            && matches!(bundle_options.minify, rolldown_common::MinifyOptions::Enabled(_))))
           && super::temporal_reads::preserve_temporal_reads(
             program,
             &scoping,

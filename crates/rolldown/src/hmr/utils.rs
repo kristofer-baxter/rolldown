@@ -612,7 +612,8 @@ impl ScopeHoistingFinalizer<'_, '_> {
 impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast> {
   fn owns_initial_bindings(&self) -> bool {
     self.native_record()
-      || (self.ctx.options.is_dev_mode_enabled()
+      || (crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+        && self.ctx.options.is_dev_mode_enabled()
         && !crate::utils::native_records::enabled(self.ctx.options)
         && self.exports_kind() == rolldown_common::ExportsKind::Esm
         && self.bundled_exports_need_initial_bindings())
@@ -703,7 +704,8 @@ impl<'any, 'ast> HmrAstBuilder<'any, 'ast> for ScopeHoistingFinalizer<'any, 'ast
     // Wrapped bundled records track completion through their evaluator. Unwrapped records
     // still need these flags to reject pending or failed initialization.
     if !self.native_record()
-      && self.ctx.order_wrap_state.esm_init_target(self.ctx.idx, self.ctx.linking_info).is_some()
+      && (!crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
+        || self.ctx.order_wrap_state.esm_init_target(self.ctx.idx, self.ctx.linking_info).is_some())
     {
       return None;
     }

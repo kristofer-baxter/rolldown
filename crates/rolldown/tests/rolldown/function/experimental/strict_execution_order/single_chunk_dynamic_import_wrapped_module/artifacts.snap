@@ -19,8 +19,10 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		label = "shared";
 	}));
 	// lazy-dep.js
+	var helperValue;
 	var init_lazy_dep = __esmMin((() => {
 		globalThis.log.push("lazy-dep");
+		helperValue = "dep";
 	}));
 	// lazy.js
 	var lazy_exports = /* @__PURE__ */ __exportAll({
@@ -32,7 +34,7 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		init_shared();
 		init_lazy_dep();
 		mark("lazy-body");
-		value = "dep";
+		value = helperValue;
 		sharedLabel = label;
 	}));
 	// main.js
@@ -76,8 +78,10 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		label = "shared";
 	}));
 	// lazy-dep.js
+	var helperValue;
 	var init_lazy_dep = __esmMin((() => {
 		globalThis.log.push("lazy-dep");
+		helperValue = "dep";
 	}));
 	// lazy.js
 	var lazy_exports = /* @__PURE__ */ __exportAll({
@@ -89,7 +93,7 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		init_shared();
 		init_lazy_dep();
 		mark("lazy-body");
-		value = "dep";
+		value = helperValue;
 		sharedLabel = label;
 	}));
 	// main.js
@@ -129,8 +133,10 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		label = "shared";
 	}));
 	// lazy-dep.js
+	var helperValue;
 	var init_lazy_dep = __esmMin((() => {
 		globalThis.log.push("lazy-dep");
+		helperValue = "dep";
 	}));
 	// lazy.js
 	var lazy_exports = /* @__PURE__ */ __exportAll({
@@ -142,7 +148,7 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		init_shared();
 		init_lazy_dep();
 		mark("lazy-body");
-		value = "dep";
+		value = helperValue;
 		sharedLabel = label;
 	}));
 	// main.js
@@ -187,8 +193,10 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		label = "shared";
 	}));
 	// lazy-dep.js
+	var helperValue;
 	var init_lazy_dep = __esmMin((() => {
 		globalThis.log.push("lazy-dep");
+		helperValue = "dep";
 	}));
 	// lazy.js
 	var lazy_exports = /* @__PURE__ */ __exportAll({
@@ -200,7 +208,7 @@ var singleChunkDynamicImportWrappedModule = (function(exports) {
 		init_shared();
 		init_lazy_dep();
 		mark("lazy-body");
-		value = "dep";
+		value = helperValue;
 		sharedLabel = label;
 	}));
 	// main.js

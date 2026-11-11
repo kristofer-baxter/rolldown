@@ -24,9 +24,9 @@ var require_b = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 	module.exports = "b";
 }));
 // node_modules/pure-cycle-leaf/index.js
-var x;
+var __initialized, x;
 var init_pure_cycle_leaf = __esmMin((() => {
-	x = "x";
+	x = "x", __initialized = true;
 }));
 var init_barrel = __esmMin((() => {
 	require_a();
@@ -37,7 +37,7 @@ var init_barrel = __esmMin((() => {
 function init_main() {
 	return (init_main = __esmMin((() => {
 		init_barrel();
-		globalThis.__events.push(`main:x`);
+		globalThis.__events.push(`main:${__checkTDZ(__initialized, "x"), x}`);
 	})))();
 }
 init_main();
@@ -70,9 +70,9 @@ var require_b = /* @__PURE__ */ __commonJSMin(((exports, module) => {
 	module.exports = "b";
 }));
 // node_modules/pure-cycle-leaf/index.js
-var x;
+var __initialized, x;
 var init_pure_cycle_leaf = __esmMin((() => {
-	x = "x";
+	x = "x", __initialized = true;
 }));
 var init_barrel = __esmMin((() => {
 	require_a();
@@ -83,7 +83,7 @@ var init_barrel = __esmMin((() => {
 function init_main() {
 	return (init_main = __esmMin((() => {
 		init_barrel();
-		globalThis.__events.push(`main:x`);
+		globalThis.__events.push(`main:${__checkTDZ(__initialized, "x"), x}`);
 	})))();
 }
 init_main();

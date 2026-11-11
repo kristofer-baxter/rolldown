@@ -214,6 +214,10 @@ impl GenerateStage<'_> {
     // share, can move into the entry chunk only once each shared module that imports it has moved
     // there too. So the moves repeat until a pass moves nothing, which leaves no shared chunk that
     // the entry must load before it runs.
+    let repeat_until_fixed_point =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+        || (self.options.is_strict_execution_order_enabled()
+          && self.options.experimental.chunk_optimization.is_some());
     let mut changed = false;
     loop {
       let mut moved_in_pass = false;
@@ -233,7 +237,7 @@ impl GenerateStage<'_> {
         false
       });
       changed |= moved_in_pass;
-      if !moved_in_pass || pending.is_empty() {
+      if !repeat_until_fixed_point || !moved_in_pass || pending.is_empty() {
         break;
       }
     }
@@ -364,6 +368,9 @@ impl GenerateStage<'_> {
     if !matches!(module.exports_kind, ExportsKind::Esm) || !meta.has_dynamic_exports {
       return false;
     }
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.options);
+    let mut has_recognized_cjs_star = runtime_semantics;
     let mut queue = VecDeque::from([entry_module_idx]);
     let mut visited = FxHashSet::default();
     while let Some(module_idx) = queue.pop_front() {
@@ -373,6 +380,12 @@ impl GenerateStage<'_> {
       let Module::Normal(module) = &self.link_output.module_table[module_idx] else {
         return false;
       };
+      if matches!(module.exports_kind, ExportsKind::CommonJs)
+        && (!module.named_exports.is_empty()
+          || module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::ModuleRef))
+      {
+        has_recognized_cjs_star = true;
+      }
       for record in &module.import_records {
         if record.meta.contains(ImportRecordMeta::IsExportStar)
           && let Some(importee_idx) = record.resolved_module
@@ -381,7 +394,7 @@ impl GenerateStage<'_> {
         }
       }
     }
-    true
+    has_recognized_cjs_star
   }
 
   /// Whether `import()` of this dynamic entry can be preserved by exporting the

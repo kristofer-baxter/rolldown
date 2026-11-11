@@ -34,11 +34,16 @@ function init_barrel_cjs_0() {
 }
 // forwarder-a.mjs
 var forwarder_a_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ a: () => import_a.a });
-// entry-a.cjs
-const { a } = (require_rolldown_runtime.__esmMin((() => {
+var init_forwarder_a = require_rolldown_runtime.__esmMin((() => {
 	init_barrel_cjs_0();
-}))(), require_rolldown_runtime.__toCommonJS(forwarder_a_exports));
-module.exports = { a };
+}));
+// entry-a.cjs
+var __initialized, a;
+({a: { set value(__value) {
+	a = __value;
+	__initialized = true;
+} }.value} = (init_forwarder_a(), require_rolldown_runtime.__toCommonJS(forwarder_a_exports)));
+module.exports = { a: (require_rolldown_runtime.__checkTDZ(__initialized, "a"), a) };
 
 ```
 
@@ -59,11 +64,16 @@ function init_barrel_cjs_1() {
 }
 // forwarder-b.mjs
 var forwarder_b_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ b: () => import_b.b });
-// entry-b.cjs
-const { b } = (require_rolldown_runtime.__esmMin((() => {
+var init_forwarder_b = require_rolldown_runtime.__esmMin((() => {
 	init_barrel_cjs_1();
-}))(), require_rolldown_runtime.__toCommonJS(forwarder_b_exports));
-module.exports = { b };
+}));
+// entry-b.cjs
+var __initialized, b;
+({b: { set value(__value) {
+	b = __value;
+	__initialized = true;
+} }.value} = (init_forwarder_b(), require_rolldown_runtime.__toCommonJS(forwarder_b_exports)));
+module.exports = { b: (require_rolldown_runtime.__checkTDZ(__initialized, "b"), b) };
 
 ```
 
@@ -71,6 +81,12 @@ module.exports = { b };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
+Object.defineProperty(exports, "__checkTDZ", {
+	enumerable: true,
+	get: function() {
+		return __checkTDZ;
+	}
+});
 Object.defineProperty(exports, "__commonJSMin", {
 	enumerable: true,
 	get: function() {
@@ -133,11 +149,16 @@ function init_barrel_cjs_0() {
 }
 // forwarder-a.mjs
 var forwarder_a_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ a: () => import_a.a });
-// entry-a.cjs
-const { a } = (require_rolldown_runtime.__esmMin((() => {
+var init_forwarder_a = require_rolldown_runtime.__esmMin((() => {
 	init_barrel_cjs_0();
-}))(), require_rolldown_runtime.__toCommonJS(forwarder_a_exports));
-module.exports = { a };
+}));
+// entry-a.cjs
+var __initialized, a;
+({a: { set value(__value) {
+	a = __value;
+	__initialized = true;
+} }.value} = (init_forwarder_a(), require_rolldown_runtime.__toCommonJS(forwarder_a_exports)));
+module.exports = { a: (require_rolldown_runtime.__checkTDZ(__initialized, "a"), a) };
 
 ```
 
@@ -158,11 +179,16 @@ function init_barrel_cjs_1() {
 }
 // forwarder-b.mjs
 var forwarder_b_exports = /* @__PURE__ */ require_rolldown_runtime.__exportAll({ b: () => import_b.b });
-// entry-b.cjs
-const { b } = (require_rolldown_runtime.__esmMin((() => {
+var init_forwarder_b = require_rolldown_runtime.__esmMin((() => {
 	init_barrel_cjs_1();
-}))(), require_rolldown_runtime.__toCommonJS(forwarder_b_exports));
-module.exports = { b };
+}));
+// entry-b.cjs
+var __initialized, b;
+({b: { set value(__value) {
+	b = __value;
+	__initialized = true;
+} }.value} = (init_forwarder_b(), require_rolldown_runtime.__toCommonJS(forwarder_b_exports)));
+module.exports = { b: (require_rolldown_runtime.__checkTDZ(__initialized, "b"), b) };
 
 ```
 
@@ -170,6 +196,12 @@ module.exports = { b };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
+Object.defineProperty(exports, "__checkTDZ", {
+	enumerable: true,
+	get: function() {
+		return __checkTDZ;
+	}
+});
 Object.defineProperty(exports, "__commonJSMin", {
 	enumerable: true,
 	get: function() {

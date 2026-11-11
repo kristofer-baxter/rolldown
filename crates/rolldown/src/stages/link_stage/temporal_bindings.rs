@@ -400,10 +400,11 @@ impl LinkStage<'_> {
     let native_records = crate::utils::native_records::enabled(self.options);
     let runtime_semantics =
       crate::utils::native_records::runtime_module_semantics_enabled(self.options);
+    let full_minify = matches!(self.options.minify, rolldown_common::MinifyOptions::Enabled(_));
     if !native_records
       && !runtime_semantics
       && !self.options.is_strict_execution_order_enabled()
-      && !self.options.minify.is_enabled()
+      && !full_minify
     {
       return;
     }
@@ -428,7 +429,9 @@ impl LinkStage<'_> {
       if module.exports_kind.is_commonjs() {
         // Native lexical declarations suffice until chunk compression, which assumes
         // that local reads never throw. Keep their checks observable through that pass.
-        if !self.options.minify.is_enabled() {
+        if !(full_minify
+          || self.options.is_strict_execution_order_enabled() && self.options.minify.is_enabled())
+        {
           continue;
         }
       } else if !(native_records

@@ -52,23 +52,23 @@ assert.equal(import_cjs.a, void 0);
 
 ```
 - ../esm-export-cjs-export.js
-(0:0) "module." --> (5:0) "module."
-(0:7) "exports = " --> (5:7) "exports = "
-(0:17) "1;\n" --> (5:17) "1;\n"
+(0:0) "module." --> (18:0) "module."
+(0:7) "exports = " --> (18:7) "exports = "
+(0:17) "1;\n" --> (18:17) "1;\n"
 - ../esm-import-cjs-export.js
-(1:0) "module." --> (12:1) "module."
-(1:7) "exports = " --> (12:8) "exports = "
-(1:17) "1;\n" --> (12:18) "1;\n"
+(1:0) "module." --> (25:1) "module."
+(1:7) "exports = " --> (25:8) "exports = "
+(1:17) "1;\n" --> (25:18) "1;\n"
 - ../cjs.js
-(0:0) "module." --> (16:1) "module."
-(0:7) "exports = " --> (16:8) "exports = "
-(0:17) "1;\n" --> (16:18) "1;\n"
+(0:0) "module." --> (29:1) "module."
+(0:7) "exports = " --> (29:8) "exports = "
+(0:17) "1;\n" --> (29:18) "1;\n"
 - ../esm-import-cjs-require.js
-(3:0) "assert." --> (21:0) "assert."
-(3:7) "equal(" --> (21:7) "equal("
-(3:13) "a, " --> (21:13) "import_cjs."
-(3:13) "a, " --> (21:24) "a, "
-(3:16) "undefined" --> (21:27) "void "
-(3:16) "undefined" --> (21:32) "0"
-(3:25) ");\n" --> (21:33) ");\n"
+(3:0) "assert." --> (34:0) "assert."
+(3:7) "equal(" --> (34:7) "equal("
+(3:13) "a, " --> (34:13) "import_cjs."
+(3:13) "a, " --> (34:24) "a, "
+(3:16) "undefined" --> (34:27) "void "
+(3:16) "undefined" --> (34:32) "0"
+(3:25) ");\n" --> (34:33) ");\n"
 ```

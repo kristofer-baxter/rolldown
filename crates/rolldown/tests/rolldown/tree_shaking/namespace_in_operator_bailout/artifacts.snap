@@ -15,9 +15,8 @@ var require_cjs = /* @__PURE__ */ __commonJSMin(((exports) => {
 	exports.b = "b";
 }));
 // reexport_cjs.js
-var reexport_cjs_exports = /* @__PURE__ */ __exportAll({}, 0, 0);
+var reexport_cjs_exports = /* @__PURE__ */ __exportAll({});
 __reExport(reexport_cjs_exports, /* @__PURE__ */ __toESM(require_cjs()));
-__exportAll(reexport_cjs_exports);
 // main.js
 var import_cjs = /* @__PURE__ */ __toESM(require_cjs());
 assert.strictEqual("join" in path, true);

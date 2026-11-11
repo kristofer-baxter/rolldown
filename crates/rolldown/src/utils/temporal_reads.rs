@@ -6,7 +6,7 @@ use oxc::{
   },
   ast_visit::{VisitJs, VisitJsMut, walk_js_mut},
   semantic::Scoping,
-  span::SPAN,
+  span::{GetSpan, SPAN},
   syntax::symbol::SymbolFlags,
 };
 use rustc_hash::FxHashSet;
@@ -260,9 +260,10 @@ pub fn preserve_temporal_reads<'ast>(
       if !self.symbols.contains(&symbol) {
         return;
       }
+      let span = expression.span();
       let value = expression.take_in(&self.builder);
       *expression = Expression::new_call_expression(
-        SPAN,
+        span,
         Expression::new_identifier(SPAN, TEMPORAL_READ, &self.builder),
         None,
         [ast::Argument::from(value)],
