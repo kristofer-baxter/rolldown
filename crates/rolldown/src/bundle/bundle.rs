@@ -385,6 +385,11 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       .write_bundle(&mut output.assets, &self.options, &mut output.warnings)
       .await?;
 
+    // See internal-docs/bundler-data-lifecycle/implementation.md for the post-write boundary.
+    let omitted_sourcemap_filenames =
+      crate::utils::native_records::omitted_sourcemap_filenames(&self.options, &self.cache);
+    self.validate_native_output_names(output, &omitted_sourcemap_filenames)?;
+
     output.warnings.append(&mut self.warnings);
 
     Ok(unpublished)

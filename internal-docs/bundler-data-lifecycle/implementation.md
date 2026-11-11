@@ -127,6 +127,11 @@ guard releases the active publication but retains output for replay. A later wri
 from the same reference replaces its pending bytes; distinct references with the
 same filename fail closed.
 
+Native output names are checked both before disk writing and after mutable
+`writeBundle` hooks, before publication. A post-write validation failure leaves
+pending emissions available for retry. As with other `writeBundle` failures, files
+have already been written; rejecting publication does not roll back disk writes.
+
 After each successful `generateBundle` or `writeBundle` hook, pending emissions
 capture the exposed bundle values, including removals and renames, before draining
 new emissions. Emitted assets and prebuilt chunks carry their stable emitter
