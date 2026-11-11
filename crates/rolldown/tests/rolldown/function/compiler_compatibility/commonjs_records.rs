@@ -286,6 +286,101 @@ async fn emitted_commonjs_retry_matches_node_and_preserves_cached_getters() -> R
 }
 
 #[tokio::test]
+async fn unused_commonjs_imports_do_not_evaluate_deferred_requires() -> Result<()> {
+  for native in [false, true] {
+    for treeshake in [false, true] {
+      for minify in [false, true] {
+        for pure in [false, true] {
+          for import in [
+            "",
+            "import unused from './lib/dep.cjs';",
+            "import './lib/dep.cjs';",
+            "import used from './lib/dep.cjs';export const eager=used;",
+          ] {
+            let fixture = Fixture::new(&[
+              ("main.js", &format!("{import}export const load=()=>require('./lib/dep.cjs');")),
+              ("lib/package.json", &format!(r#"{{"sideEffects":{}}}"#, !pure)),
+              ("lib/dep.cjs", "events.push('dep');module.exports=42;"),
+              (
+                "observe.js",
+                "const main=await import('./dist/main.js');events.push('initial');\
+                 events.push(main.load(),main.load());",
+              ),
+            ])?;
+            let mut options = options(&fixture);
+            options.treeshake = TreeshakeOptions::Boolean(treeshake);
+            options.minify = Some(RawMinifyOptions::Bool(minify));
+            let mut bundler = Bundler::new(options)?;
+            bundler.set_native_commonjs_records(native)?;
+            fixture.output(&bundler.incremental_generate(ScanMode::Full).await?)?;
+            let actual = fixture.execute("./observe.js")?;
+            // Opt-out records keep their existing evaluating default export.
+            let eager =
+              !import.is_empty() && (!native || !treeshake || !pure || import.contains("export"));
+            let expected = if eager {
+              json!(["dep", "initial", 42, 42])
+            } else {
+              json!(["initial", "dep", 42, 42])
+            };
+            assert_eq!(
+              actual, expected,
+              "native={native}, treeshake={treeshake}, minify={minify}, pure={pure}, import={import:?}"
+            );
+            bundler.close().await?;
+          }
+        }
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn unused_commonjs_imports_follow_retained_edges_across_relinks() -> Result<()> {
+  for omit in [false, true] {
+    let fixture = Fixture::new(&[
+      ("main.js", ""),
+      ("lib/package.json", r#"{"sideEffects":false}"#),
+      ("lib/dep.cjs", "events.push('dep');module.exports=42;"),
+      (
+        "observe.js",
+        "const main=await import('./dist/main.js');events.push('initial');\
+         events.push(main.load(),main.load());",
+      ),
+    ])?;
+    let mut options = options(&fixture);
+    options.treeshake = TreeshakeOptions::Boolean(true);
+    let mut bundler = Bundler::new(options)?;
+    bundler.set_native_commonjs_records(true)?;
+    bundler.set_omit_reused_chunk_bytes(omit);
+    for (round, import) in [
+      "import unused from './lib/dep.cjs';",
+      "import used from './lib/dep.cjs';export const eager=used;",
+      "import unused from './lib/dep.cjs';",
+      "",
+      "import './lib/dep.cjs';",
+      "import used from './lib/dep.cjs';export const eager=used;",
+    ]
+    .into_iter()
+    .enumerate()
+    {
+      fixture
+        .write("main.js", &format!("{import}export const load=()=>require('./lib/dep.cjs');"))?;
+      let scan = if round == 0 { ScanMode::Full } else { partial_scan(&fixture, "main.js") };
+      publish(&fixture, &bundler.incremental_generate(scan).await?, &bundler)?;
+      let expected = if import.contains("export") {
+        json!(["dep", "initial", 42, 42])
+      } else {
+        json!(["initial", "dep", 42, 42])
+      };
+      assert_eq!(fixture.execute("./observe.js")?, expected, "round={round}, omit={omit}");
+    }
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
 async fn mixed_commonjs_imports_and_requires_match_node() -> Result<()> {
   for imports_first in [false, true] {
     for import in ["import value,* as namespace from './dep.cjs';", "import './dep.cjs';"] {

@@ -183,7 +183,7 @@ pub fn commonjs_definition_exports(chunk_graph: &ChunkGraph, idx: ChunkIdx) -> V
   exports
 }
 
-/// Registration edges must not evaluate a CommonJS record. Authored ES imports still do.
+/// Registration edges must not evaluate a CommonJS record. Retained ES imports still do.
 pub fn commonjs_import_suffix<'a>(
   link_output: &LinkStageOutput,
   chunk_graph: &'a ChunkGraph,
@@ -194,10 +194,13 @@ pub fn commonjs_import_suffix<'a>(
   let target = chunk_graph.chunk_table[importee].entry_module_idx()?;
   let evaluates = importer.modules.iter().any(|idx| {
     link_output.module_table[*idx].as_normal().is_some_and(|module| {
-      module
-        .import_records
-        .iter()
-        .any(|record| record.kind == ImportKind::Import && record.resolved_module == Some(target))
+      link_output.stmt_infos[module.idx].iter_enumerated().any(|(stmt_idx, stmt)| {
+        link_output.metas[module.idx].stmt_info_included.has_bit(stmt_idx)
+          && stmt.import_records.iter().any(|record_idx| {
+            let record = &module.import_records[*record_idx];
+            record.kind == ImportKind::Import && record.resolved_module == Some(target)
+          })
+      })
     })
   });
   (!evaluates).then_some(definition.suffix.as_str())
