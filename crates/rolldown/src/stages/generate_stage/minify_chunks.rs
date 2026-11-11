@@ -12,7 +12,7 @@ use rolldown_ecmascript::EcmaCompiler;
 use rolldown_error::BuildResult;
 use rolldown_sourcemap::collapse_sourcemaps;
 use rolldown_utils::rayon::{IntoParallelRefMutIterator, ParallelIterator};
-use rustc_hash::{FxHashMap, FxHashSet};
+use rustc_hash::FxHashSet;
 
 use crate::type_alias::IndexInstantiatedChunks;
 
@@ -288,7 +288,7 @@ impl GenerateStage<'_> {
     options: &NormalizedBundlerOptions,
     has_mangle_override: bool,
     outputs: &[Output],
-  ) -> Option<FxHashMap<arcstr::ArcStr, String>> {
+  ) -> Option<FxHashSet<String>> {
     let mangle_active = has_mangle_override
       || chunk_minify_options(&options.minify)
         .is_some_and(|(_, minify_options, _, _)| minify_options.mangle_properties.is_some());
@@ -296,24 +296,23 @@ impl GenerateStage<'_> {
       outputs
         .iter()
         .filter_map(|output| match output {
-          Output::Chunk(chunk) => Some((chunk.filename.clone(), chunk.code.clone())),
+          Output::Chunk(chunk) => Some(chunk.code.clone()),
           Output::Asset(_) => None,
         })
         .collect()
     })
   }
 
-  /// Rejects added or rewritten JavaScript chunks that bypassed the shared property map.
+  /// Rejects JavaScript code that bypassed the shared property map, regardless of filename.
   pub(crate) fn validate_mangle_properties_output(
-    minified_chunks: &Option<FxHashMap<arcstr::ArcStr, String>>,
+    minified_chunks: &Option<FxHashSet<String>>,
     outputs: &[Output],
   ) -> BuildResult<()> {
     if let Some(minified_chunks) = minified_chunks
       && let Some(changed) = outputs.iter().find_map(|output| {
         let Output::Chunk(chunk) = output else { return None };
-        (!test_d_ts_pattern(chunk.filename.as_str())
-          && minified_chunks.get(&chunk.filename) != Some(&chunk.code))
-        .then_some(&chunk.filename)
+        (!test_d_ts_pattern(chunk.filename.as_str()) && !minified_chunks.contains(&chunk.code))
+          .then_some(&chunk.filename)
       })
     {
       return Err(

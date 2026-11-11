@@ -384,7 +384,10 @@ async fn incremental_plain_object_pruning_discovers_new_importer_reads() -> Resu
 }
 
 #[derive(Debug)]
-struct ReplaceMangledChunk(Arc<AtomicBool>);
+struct ReplaceMangledChunk {
+  replace: Arc<AtomicBool>,
+  rename: bool,
+}
 
 impl Plugin for ReplaceMangledChunk {
   fn name(&self) -> Cow<'static, str> {
@@ -400,10 +403,14 @@ impl Plugin for ReplaceMangledChunk {
     _ctx: &PluginContext,
     args: &mut HookGenerateBundleArgs<'_>,
   ) -> HookNoopReturn {
-    if !self.0.load(Ordering::SeqCst) {
+    if !self.replace.load(Ordering::SeqCst) {
       for output in args.bundle.iter_mut() {
         if let Output::Chunk(chunk) = output {
-          Arc::make_mut(chunk).name = "hook-metadata".into();
+          let chunk = Arc::make_mut(chunk);
+          chunk.name = "hook-metadata".into();
+          if self.rename && chunk.filename.as_str() == "main.js" {
+            chunk.filename = "renamed.js".into();
+          }
         }
       }
       args.bundle.push(Output::Asset(Arc::new(rolldown_common::OutputAsset {
@@ -426,99 +433,113 @@ impl Plugin for ReplaceMangledChunk {
         &format!("events.push({}.shared_", &captures[1]),
         1,
       );
-      Arc::make_mut(chunk).code = format!("{rewritten}\n/* hook replacement */").into();
+      let chunk = Arc::make_mut(chunk);
+      chunk.code = format!("{rewritten}\n/* hook replacement */").into();
+      if self.rename {
+        chunk.filename = "renamed.js".into();
+      }
     }
     Ok(())
   }
 }
 
 #[tokio::test]
-async fn shared_property_mangling_rejects_same_filename_code_replacements() -> Result<()> {
+async fn shared_property_mangling_allows_metadata_changes_but_rejects_code_replacements()
+-> Result<()> {
   for override_options in [false, true] {
     for active in [false, true] {
-      let fixture = Fixture::new(&[
-        ("main.js", "import{value}from'./owner.js';events.push(value.shared_,value['occupied_']);"),
-        ("other.js", "import{value}from'./owner.js';events.push(value.shared_,value.occupied_);"),
-        ("owner.js", "export const value={shared_:7,occupied_:8};"),
-      ])?;
-      let mut options = fixture.options();
-      options
-        .input
-        .as_mut()
-        .expect("entries")
-        .push(InputItem { name: Some("other".into()), import: "./other.js".into() });
-      let mangle = active
-        .then(|| oxc::minifier::ManglePropertiesOptions::from_pattern("_$").expect("pattern"));
-      options.minify = Some(RawMinifyOptions::Object(RawMinifyOptionsDetailed {
-        mangle: None,
-        mangle_properties: if override_options {
-          None
-        } else {
-          mangle.clone().map(|options| {
-            Box::new(RawManglePropertiesOptions {
-              options,
-              patterns: ManglePropertiesPatterns {
-                include: ManglePropertiesPattern { source: "_$".into(), flags: String::new() },
-                exclude: None,
-              },
+      for rename in [false, true] {
+        let fixture = Fixture::new(&[
+          (
+            "main.js",
+            "import{value}from'./owner.js';events.push(value.shared_,value['occupied_']);",
+          ),
+          ("other.js", "import{value}from'./owner.js';events.push(value.shared_,value.occupied_);"),
+          ("owner.js", "export const value={shared_:7,occupied_:8};"),
+        ])?;
+        let mut options = fixture.options();
+        options
+          .input
+          .as_mut()
+          .expect("entries")
+          .push(InputItem { name: Some("other".into()), import: "./other.js".into() });
+        let mangle = active
+          .then(|| oxc::minifier::ManglePropertiesOptions::from_pattern("_$").expect("pattern"));
+        options.minify = Some(RawMinifyOptions::Object(RawMinifyOptionsDetailed {
+          mangle: None,
+          mangle_properties: if override_options {
+            None
+          } else {
+            mangle.clone().map(|options| {
+              Box::new(RawManglePropertiesOptions {
+                options,
+                patterns: ManglePropertiesPatterns {
+                  include: ManglePropertiesPattern { source: "_$".into(), flags: String::new() },
+                  exclude: None,
+                },
+              })
             })
+          },
+          compress: Some(Default::default()),
+          remove_whitespace: true,
+          ascii_only: false,
+        }));
+        options.experimental =
+          Some(ExperimentalOptions { incremental_build: Some(true), ..Default::default() });
+        let replace = Arc::new(AtomicBool::new(true));
+        let mut bundler = Bundler::with_plugins(
+          options,
+          vec![Plugin::new_shared(ReplaceMangledChunk { replace: Arc::clone(&replace), rename })],
+        )?;
+        let filename = if rename { "renamed.js" } else { "main.js" };
+        let entry = format!("./dist/{filename}");
+        let result = bundler
+          .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
+            if override_options {
+              bundle.set_mangle_properties(mangle.clone());
+            }
+            let scanned = bundle.scan_modules(ScanMode::Full).await?;
+            bundle.bundle_generate(scanned).await
           })
-        },
-        compress: Some(Default::default()),
-        remove_whitespace: true,
-        ascii_only: false,
-      }));
-      options.experimental =
-        Some(ExperimentalOptions { incremental_build: Some(true), ..Default::default() });
-      let replace = Arc::new(AtomicBool::new(true));
-      let mut bundler = Bundler::with_plugins(
-        options,
-        vec![Plugin::new_shared(ReplaceMangledChunk(Arc::clone(&replace)))],
-      )?;
-      let result = bundler
-        .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
-          if override_options {
-            bundle.set_mangle_properties(mangle.clone());
+          .await;
+        if active {
+          match result {
+            Ok(output) => {
+              fixture.output(&output)?;
+              anyhow::bail!(
+                "same-name replacement escaped shared mapping: {:?}",
+                fixture.execute(&entry)?
+              );
+            }
+            Err(errors) => {
+              let message = format!("{errors:?}");
+              ensure!(
+                message.contains(filename) && message.contains("generateBundle"),
+                "the diagnostic must identify the late code change: {message}"
+              );
+            }
           }
-          let scanned = bundle.scan_modules(ScanMode::Full).await?;
-          bundle.bundle_generate(scanned).await
-        })
-        .await;
-      if active {
-        match result {
-          Ok(output) => {
-            fixture.output(&output)?;
-            anyhow::bail!(
-              "same-name replacement escaped shared mapping: {:?}",
-              fixture.execute("./dist/main.js")?
-            );
-          }
-          Err(errors) => {
-            let message = format!("{errors:?}");
-            ensure!(
-              message.contains("main.js") && message.contains("generateBundle"),
-              "the diagnostic must identify the late code change: {message}"
-            );
-          }
+        } else {
+          fixture.output(&result?)?;
+          assert_eq!(fixture.execute(&entry)?, serde_json::json!([7, 8]));
         }
-      } else {
-        fixture.output(&result?)?;
-        assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!([7, 8]));
+        replace.store(false, Ordering::SeqCst);
+        let recovered = bundler
+          .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
+            if override_options {
+              bundle.set_mangle_properties(mangle.clone());
+            }
+            let scanned = bundle.scan_modules(ScanMode::Full).await?;
+            bundle.bundle_generate(scanned).await
+          })
+          .await?;
+        fixture.output(&recovered)?;
+        assert_eq!(fixture.execute(&entry)?, serde_json::json!([7, 8]));
+        ensure!(recovered.assets.iter().any(|asset| asset.filename() == "hook.txt"));
+        fixture.output(&bundler.generate().await?)?;
+        assert_eq!(fixture.execute(&entry)?, serde_json::json!([7, 8]));
+        bundler.close().await?;
       }
-      replace.store(false, Ordering::SeqCst);
-      let recovered = bundler
-        .with_cached_bundle_experimental(BundleMode::IncrementalFullBuild, async |bundle| {
-          if override_options {
-            bundle.set_mangle_properties(mangle.clone());
-          }
-          let scanned = bundle.scan_modules(ScanMode::Full).await?;
-          bundle.bundle_generate(scanned).await
-        })
-        .await?;
-      fixture.output(&recovered)?;
-      assert_eq!(fixture.execute("./dist/main.js")?, serde_json::json!([7, 8]));
-      ensure!(recovered.assets.iter().any(|asset| asset.filename() == "hook.txt"));
-      bundler.close().await?;
     }
   }
   Ok(())
