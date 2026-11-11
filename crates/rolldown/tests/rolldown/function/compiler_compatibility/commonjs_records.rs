@@ -60,6 +60,156 @@ fn dev_options(fixture: &Fixture) -> BundlerOptions {
   options
 }
 
+#[tokio::test]
+async fn define_introduced_static_require_requests_execute_in_native_records() -> Result<()> {
+  check_defined_static_requests("require").await
+}
+
+#[tokio::test]
+async fn define_introduced_static_dynamic_import_requests_execute_in_native_records() -> Result<()>
+{
+  check_defined_static_requests("import").await
+}
+
+async fn check_defined_static_requests(kind: &str) -> Result<()> {
+  for (request, filename) in [
+    ("'./dep.cjs'", "dep.cjs"),
+    ("'./' + 'dep.cjs'", "dep.cjs"),
+    ("('./' + 'dep') + `.cjs`", "dep.cjs"),
+    ("(`./` + ('dep' + `.cjs`))", "dep.cjs"),
+    ("'./\\uD83D' + '\\uDE00.cjs'", "😀.cjs"),
+    ("'./\\uD800' + '.cjs'", "�.cjs"),
+  ] {
+    for (dev, native) in [(true, true), (false, true), (false, false)] {
+      for treeshake in [false, true] {
+        let value = format!("{kind}({request})");
+        let read = if kind == "require" {
+          "globalThis.read=()=>VALUE+0;"
+        } else {
+          "globalThis.read=async()=>(await VALUE).default+0;"
+        };
+        let source = format!("{read}{}", if dev { "import.meta.hot.accept();" } else { "" });
+        let fixture = Fixture::new(&[
+          ("main.mjs", &source),
+          (filename, "module.exports=1;globalThis.depRuns=(globalThis.depRuns??0)+1;"),
+          (
+            "observe.js",
+            "await import('./dist/main.js');events.push(await read(),await read(),depRuns);",
+          ),
+        ])?;
+        let mut options = if dev { dev_options(&fixture) } else { options(&fixture) };
+        options.input.as_mut().expect("entry")[0].import = "./main.mjs".into();
+        options.treeshake = TreeshakeOptions::Boolean(treeshake);
+        options.define = Some(std::iter::once(("VALUE".to_owned(), value.clone())).collect());
+        let mut bundler = Bundler::new(options)?;
+        bundler.set_native_commonjs_records(native)?;
+        let case = format!("{value}, dev={dev}, native={native}, treeshake={treeshake}");
+        for version in [1, 2] {
+          let scan = if version == 1 {
+            ScanMode::Full
+          } else {
+            fixture
+              .write(filename, "module.exports=2;globalThis.depRuns=(globalThis.depRuns??0)+1;")?;
+            partial_scan(&fixture, filename)
+          };
+          let output = bundler.incremental_generate(scan).await?;
+          publish(&fixture, &output, &bundler)?;
+          assert_eq!(
+            fixture.execute("./observe.js").with_context(|| case.clone())?,
+            json!([version, version, 1]),
+            "{case}, version={version}"
+          );
+        }
+        bundler.close().await?;
+      }
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn define_introduced_runtime_requests_preserve_specifier_evaluation() -> Result<()> {
+  for (request, effects) in [
+    ("'./' + globalThis.depPath", Vec::new()),
+    ("(events.push('specifier'),'./dep.cjs')", vec!["specifier"]),
+    ("'./' + (events.push('specifier'),'dep.cjs')", vec!["specifier"]),
+    ("'./' + {toString(){events.push('coerce');return 'dep.cjs'}}", vec!["coerce"]),
+    ("(()=>{events.push('specifier');return './dep.cjs'})()", vec!["specifier"]),
+    ("('./dep.cjs','./dep.cjs')", Vec::new()),
+    ("`./${'dep'}.cjs`", Vec::new()),
+    ("'./' + ['dep.cjs']", Vec::new()),
+  ] {
+    for kind in ["require", "import"] {
+      let mut expected = effects.iter().copied().map(serde_json::Value::from).collect::<Vec<_>>();
+      expected.push(json!("runtime"));
+      if kind == "require" {
+        expected.push(json!("./dep.cjs"));
+      }
+      expected.push(json!(9));
+      check_defined_runtime_request(kind, &format!("{kind}({request})"), json!(expected)).await?;
+    }
+  }
+  for (value, expected) in [
+    ("require?.('./'+'dep.cjs')", json!(["runtime", "./dep.cjs", 9])),
+    ("require(...['./'+'dep.cjs'])", json!(["runtime", "./dep.cjs", 9])),
+    ("globalThis.require('./'+'dep.cjs')", json!(["runtime", "./dep.cjs", 9])),
+    (
+      "((require)=>require('./'+'dep.cjs'))(globalThis.require)",
+      json!(["runtime", "./dep.cjs", 9]),
+    ),
+    (
+      "require('./'+'dep.cjs',events.push('argument'))",
+      json!(["argument", "runtime", "./dep.cjs", 9]),
+    ),
+  ] {
+    check_defined_runtime_request("require", value, expected).await?;
+  }
+  check_defined_runtime_request("ignored-import", "'./'+'dep.cjs'", json!(["runtime", 9])).await?;
+  Ok(())
+}
+
+async fn check_defined_runtime_request(
+  kind: &str,
+  value: &str,
+  expected: serde_json::Value,
+) -> Result<()> {
+  for native in [true, false] {
+    let read = match kind {
+      "require" => "globalThis.read=()=>VALUE+0;",
+      "ignored-import" => {
+        "globalThis.read=async()=>(await import(/* @vite-ignore */ VALUE)).default+0;"
+      }
+      _ => "globalThis.read=async()=>(await VALUE).default+0;",
+    };
+    let fixture = Fixture::new(&[
+      ("main.mjs", &format!("{read}import.meta.hot.accept();")),
+      ("dep.cjs", "throw Error('runtime-only target must not enter the graph');"),
+      (
+        "observe.js",
+        "globalThis.depPath='dep.cjs';\
+         globalThis.require=request=>{events.push('runtime',String(request));return 9};\
+         await import('./dist/main.js');events.push(await read());",
+      ),
+    ])?;
+    let mut options = dev_options(&fixture);
+    options.input.as_mut().expect("entry")[0].import = "./main.mjs".into();
+    options.define = Some(std::iter::once(("VALUE".to_owned(), value.to_owned())).collect());
+    let mut bundler = Bundler::new(options)?;
+    bundler.set_native_commonjs_records(native)?;
+    let output = bundler.incremental_generate(ScanMode::Full).await?;
+    assert!(
+      output.assets.iter().all(|output| !matches!(output, Output::Chunk(chunk)
+        if chunk.facade_module_id.as_ref().is_some_and(|id| id.ends_with("dep.cjs")))),
+      "{value}, native={native} must remain a runtime request"
+    );
+    fixture.output(&output)?;
+    fixture.write("dist/dep.cjs", "events.push('runtime');module.exports=9;")?;
+    assert_eq!(fixture.execute("./observe.js")?, expected, "{value}, native={native}");
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
 #[test]
 fn assembled_commonjs_helpers_retry_failures_and_keep_active_cycles() -> Result<()> {
   let runtime = fs::read_to_string(

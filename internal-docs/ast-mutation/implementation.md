@@ -14,6 +14,8 @@ Rolldown's bundling pipeline has three stages that interact with the AST:
 - **Link** - `LinkStage::link` performs cross-module work such as symbol binding, export resolution, tree shaking, and cross-module optimization. It still does not mutate the AST, but it can derive additional side tables from scan-time records.
 - **Generate / Finalize** - `ScopeHoistingFinalizer`, driven from `GenerateStage::generate`, is the main stage that mutates the AST in place. It visits interesting nodes, calls `node_id()`, and queries the side tables to decide what to rewrite.
 
+Pre-scan normalization folds pure string-literal and substitution-free-template concatenations in ordinary `require()` and dynamic `import()` requests, including expressions introduced by `define`. It runs independently of tree shaking, before the final semantic rebuild, so development builds record and finalize these dependencies rather than delegating them to a runtime loader. Oxc's `JSStrBuilder` joins UTF-16 values before request resolution converts lone surrogates to Unicode scalar values. Identifiers, template substitutions, coercions, calls, and sequences are not evaluated by this normalization; their runtime behavior remains intact.
+
 Between passes, Rolldown does not hold direct references to AST nodes. Lifetimes and parallel cross-module work make that impractical. The durable identity for a node within one module AST is therefore its `NodeId`.
 
 ## NodeId Contract

@@ -4,7 +4,9 @@ use oxc::allocator::{Allocator, ReplaceWith, TakeIn};
 use oxc::ast::ast::{self, BindingPattern, Declaration, Statement};
 use oxc::ast::builder::{AstBuilder, GetAstBuilder};
 use oxc::ast_visit::{VisitJsMut, walk_js_mut};
-use oxc::span::{SPAN, Span};
+use oxc::span::{GetSpan, SPAN, Span};
+use oxc::syntax::operator::BinaryOperator;
+use oxc_str::JSStrBuilder;
 use rolldown_ecmascript_utils::StatementExt;
 use rustc_hash::FxHashSet;
 
@@ -51,6 +53,39 @@ impl<'ast, 'a> PreProcessor<'ast, 'a> {
 
   pub fn take_defer_spans(&mut self) -> Vec<Span> {
     std::mem::take(&mut self.defer_spans)
+  }
+
+  fn normalize_module_request(&self, request: &mut ast::Expression<'ast>) {
+    fn append_strings<'ast>(
+      expression: &ast::Expression<'ast>,
+      value: &mut JSStrBuilder<'ast>,
+    ) -> Option<()> {
+      match expression.get_inner_expression() {
+        ast::Expression::StringLiteral(literal) => value.push_js_str(literal.value),
+        ast::Expression::TemplateLiteral(template) => value.push_js_str(template.single_quasi()?),
+        ast::Expression::BinaryExpression(binary)
+          if binary.operator == BinaryOperator::Addition =>
+        {
+          append_strings(&binary.left, value)?;
+          append_strings(&binary.right, value)?;
+        }
+        _ => return None,
+      }
+      Some(())
+    }
+
+    if !matches!(request.get_inner_expression(), ast::Expression::BinaryExpression(binary)
+      if binary.operator == BinaryOperator::Addition)
+    {
+      return;
+    }
+    // Defines run without DCE in development. Normalize before semantic ids and import records
+    // are assigned; see internal-docs/ast-mutation/implementation.md.
+    let mut value = JSStrBuilder::new_in(self);
+    if append_strings(request, &mut value).is_some() {
+      *request =
+        ast::Expression::new_string_literal(request.span(), value.into_js_str(), None, self);
+    }
   }
 
   /// Replace `it` with an empty statement when it is a `LabeledStatement`
@@ -232,7 +267,21 @@ impl<'ast> VisitJsMut<'ast> for PreProcessor<'ast, '_> {
       self.defer_spans.push(it.span);
       it.phase = None;
     }
+    if it.phase.is_none() {
+      self.normalize_module_request(&mut it.source);
+    }
     walk_js_mut::walk_import_expression(self, it);
+  }
+
+  fn visit_call_expression(&mut self, it: &mut ast::CallExpression<'ast>) {
+    if !it.optional
+      && it.callee.is_specific_id("require")
+      && it.arguments.len() == 1
+      && let Some(request) = it.arguments[0].as_expression_mut()
+    {
+      self.normalize_module_request(request);
+    }
+    walk_js_mut::walk_call_expression(self, it);
   }
 
   fn visit_expression(&mut self, it: &mut ast::Expression<'ast>) {
