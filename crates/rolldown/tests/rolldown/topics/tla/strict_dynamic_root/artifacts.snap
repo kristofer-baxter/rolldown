@@ -28,7 +28,7 @@ export { value };
 ### main.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // main.js
 var loaded;
 function init_main() {
@@ -45,21 +45,19 @@ export { loaded };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
+export { __esmMin as t };
 
 ```
 
 ### tla-target.js
 
 ```js
-import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // tla-target.js
 var value;
 function init_tla_target() {
-	return (init_tla_target = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			value = await Promise.resolve("tla");
-		});
+	return (init_tla_target = __esmMin((async () => {
+		value = await Promise.resolve("tla");
 	})))();
 }
 await init_tla_target();

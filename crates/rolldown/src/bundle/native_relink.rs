@@ -1551,7 +1551,6 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         "added_module_dynamic_importers"
       );
       check_module!(module.ecma_view.enum_member_value_map.is_empty(), "added_module_enums");
-      check_module!(module.ecma_view.mutations.is_empty(), "added_module_mutations");
       check_module!(
         module.ecma_view.json_module_none_self_reference_included_symbol.is_none(),
         "added_module_json"
@@ -1563,7 +1562,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         "added_module_urls"
       );
       check_module!(
-        module.ecma_view.import_attribute_map.is_empty(),
+        module.import_records.iter().all(|record| record.attributes.is_empty()),
         "added_module_import_attributes"
       );
       check_module!(module.ecma_view.hashbang_range.is_none(), "added_module_hashbang");
@@ -1892,8 +1891,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     }
 
     // An appended CommonJS module's importers, all relinked, share its interop, as
-    // `determine_safely_merge_cjs_ns` merges it, and what it requires is required by another
-    // module, as `wrap_modules` marks it.
+    // `determine_safely_merge_cjs_ns` merges it.
     for &idx in &plan.added {
       let Some(module) = snapshot.module_table.modules[idx].as_normal() else {
         continue;
@@ -2186,15 +2184,14 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     check_or_none!(
       old_n.ecma_view.enum_member_value_map.is_empty()
         && new_n.ecma_view.enum_member_value_map.is_empty()
-        && new_n.ecma_view.mutations.is_empty()
         && new_n.ecma_view.json_module_none_self_reference_included_symbol.is_none()
         && new_n.ecma_view.dummy_record_set.is_empty()
         && new_n.ecma_view.rolldown_file_url_references.is_empty()
         && old_n.ecma_view.new_url_references.is_empty()
         && new_n.ecma_view.new_url_references.is_empty()
         && (is_commonjs || new_n.ecma_view.cjs_reexport_import_record_ids.is_empty())
-        && old_n.ecma_view.import_attribute_map.is_empty()
-        && new_n.ecma_view.import_attribute_map.is_empty()
+        && old_n.import_records.iter().all(|record| record.attributes.is_empty())
+        && new_n.import_records.iter().all(|record| record.attributes.is_empty())
         && (same_importers || importers_gained_appended)
         && old_n.ecma_view.dynamic_importers == new_n.ecma_view.dynamic_importers,
       "ecma_view_maps"

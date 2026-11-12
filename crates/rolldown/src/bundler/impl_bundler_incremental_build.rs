@@ -26,6 +26,19 @@ impl Bundler {
     // installed above, making the next HMR cycle panic in `get_snapshot()`.
     // See internal-docs/bundler-data-lifecycle/implementation.md ("Cache integrity on a failed build").
     let ret = with_fn(&mut bundle).await;
+    // A failed scan or scan-only pass never reaches `bundle_write`/`bundle_generate`, whose
+    // `finalize_output` clears JS-side caches on exit. Load promises must not outlive the build
+    // whose native module infos they refer to.
+    let ret = match ret {
+      Ok(val) => match bundle.invalidate_js_side_cache_after_scan_only().await {
+        Ok(()) => Ok(val),
+        Err(err) => Err(err),
+      },
+      Err(errs) => {
+        bundle.invalidate_js_side_cache_on_early_exit().await;
+        Err(errs)
+      }
+    };
     bundle.set_mangle_properties(None);
     if ret.is_err() && bundle.cache.native_commonjs_records {
       bundle.cache.invalidate_native_relink();

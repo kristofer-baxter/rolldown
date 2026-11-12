@@ -4,7 +4,7 @@ use oxc::{
   span::SPAN,
 };
 use rolldown_common::{
-  ImportAttribute, ImportKind, ImportRecordMeta, IndexModules, ModuleIdx, NormalModule,
+  ImportAttributes, ImportKind, ImportRecordMeta, IndexModules, ModuleIdx, NormalModule,
 };
 
 pub const HAS_NON_EMPTY_IMPORT_OPTIONS: ImportRecordMeta =
@@ -14,16 +14,8 @@ pub const HAS_JSON_TYPE_IMPORT_OPTIONS: ImportRecordMeta =
 pub const HAS_TEXT_TYPE_IMPORT_OPTIONS: ImportRecordMeta =
   ImportRecordMeta::from_bits_retain(1 << 13);
 
-pub fn is_json_import_attribute(attr: &ImportAttribute) -> bool {
-  let rendered = attr.to_string();
-  let Some(inner) = rendered
-    .strip_prefix("with { ")
-    .or_else(|| rendered.strip_prefix("assert { "))
-    .and_then(|s| s.strip_suffix(" }"))
-  else {
-    return false;
-  };
-  inner.split(", ").any(|entry| entry == r#"type: "json""# || entry == r#""type": "json""#)
+pub fn is_json_import_attribute(attr: &ImportAttributes) -> bool {
+  attr.get("type") == Some("json")
 }
 
 pub fn is_json_module(module: &NormalModule) -> bool {
@@ -62,7 +54,7 @@ pub fn json_namespace_has_properties(
 
 /// Whether `module` is the proxy that module HMR puts between a lazy `import()` and its target.
 pub fn is_lazy_proxy(module: &NormalModule) -> bool {
-  module.id.contains(LAZY_PROXY_QUERY)
+  module.id.contains(LAZY_PROXY_QUERY) || rolldown_common::is_lazy_proxy(&module.id)
 }
 
 /// The marker of the proxy that module HMR puts between a lazy `import()` and its target.
@@ -85,10 +77,10 @@ fn importers<'a>(
 /// without a static `with` clause.
 fn imports_as_javascript_auto(importer: &NormalModule, target: &NormalModule) -> bool {
   !importer.ecma_view.def_format.is_esm()
-    && importer.import_records.iter_enumerated().any(|(record_idx, record)| {
+    && importer.import_records.iter().any(|record| {
       record.resolved_module == Some(target.idx)
         && matches!(record.kind, ImportKind::Import | ImportKind::DynamicImport)
-        && !importer.ecma_view.import_attribute_map.contains_key(&record_idx)
+        && (record.kind == ImportKind::DynamicImport || record.attributes.is_empty())
     })
 }
 

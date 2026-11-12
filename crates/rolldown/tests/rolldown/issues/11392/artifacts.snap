@@ -45,7 +45,7 @@ export { data_default as default };
 ### data2.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // data.json
 var data_default;
 function init_data() {
@@ -60,16 +60,14 @@ export { init_data as n, data_default as t };
 ### main.js
 
 ```js
-import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 import assert from "node:assert";
 // main.js
 var ns;
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			ns = await import("./data.js");
-			assert.strictEqual(ns.default.k, 1);
-		});
+	return (init_main = __esmMin((async () => {
+		ns = await import("./data.js");
+		assert.strictEqual(ns.default.k, 1);
 	})))();
 }
 await init_main();
@@ -80,6 +78,6 @@ await init_main();
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
+export { __esmMin as t };
 
 ```

@@ -22,20 +22,15 @@ console.log(123);
 ```js
 // HIDDEN [\0rolldown/runtime.js]
 function init_foo() {
-	return (init_foo = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			await 1e3;
-		});
+	return (init_foo = __esmMin((async () => {
+		await 1e3;
 	})))();
 }
 // main.js
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		var __asyncDependencies0 = [];
-		__startAsync(__asyncDependencies0, init_foo());
-		return __finishAsync(__asyncDependencies0, () => {
-			console.log(123);
-		});
+	return (init_main = __esmMin((async () => {
+		await init_foo();
+		console.log(123);
 	})))();
 }
 await init_main();

@@ -65,11 +65,9 @@ function sleep(ms) {
 }
 var value;
 function init_deep() {
-	return (init_deep = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			await sleep(100);
-			value = "hello";
-		});
+	return (init_deep = __esmMin((async () => {
+		await sleep(100);
+		value = "hello";
 	})))();
 }
 // middle.js
@@ -78,33 +76,25 @@ function setup() {
 }
 var manager;
 function init_middle() {
-	return (init_middle = __esmAsync((() => {
-		var __asyncDependencies0 = [];
-		__startAsync(__asyncDependencies0, init_deep());
-		return __finishAsync(__asyncDependencies0, () => {
-			manager = {
-				value,
-				ready: false
-			};
-		});
+	return (init_middle = __esmMin((async () => {
+		await init_deep();
+		manager = {
+			value,
+			ready: false
+		};
 	})))();
 }
 // barrel.js
 function init_barrel() {
-	return (init_barrel = __esmAsync((() => {
-		var __asyncDependencies0 = [];
-		__startAsync(__asyncDependencies0, init_middle());
-		return __finishAsync(__asyncDependencies0, () => {});
+	return (init_barrel = __esmMin((async () => {
+		await init_middle();
 	})))();
 }
 // main.js
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		var __asyncDependencies0 = [];
-		__startAsync(__asyncDependencies0, init_barrel());
-		return __finishAsync(__asyncDependencies0, () => {
-			setup();
-		});
+	return (init_main = __esmMin((async () => {
+		await init_barrel();
+		setup();
 	})))();
 }
 await init_main();

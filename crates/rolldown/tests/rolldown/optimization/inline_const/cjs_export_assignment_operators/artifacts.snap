@@ -29,7 +29,7 @@ var import_dep = (/* @__PURE__ */ __commonJSMin(((exports) => {
 })))();
 assert.strictEqual(import_dep.add ? "truthy" : "falsy", "falsy");
 assert.strictEqual(import_dep.logicalAnd ? "truthy" : "falsy", "falsy");
-assert.strictEqual(import_dep.constant ? "truthy" : "falsy", "truthy");
+assert.strictEqual("truthy", "truthy");
 assert.strictEqual(import_dep.add, NaN);
 assert.strictEqual(import_dep.subtract, NaN);
 assert.strictEqual(import_dep.multiply, NaN);
@@ -79,7 +79,7 @@ var import_dep = (/* @__PURE__ */ __commonJSMin(((exports) => {
 })))();
 assert.strictEqual(import_dep.add ? "truthy" : "falsy", "falsy");
 assert.strictEqual(import_dep.logicalAnd ? "truthy" : "falsy", "falsy");
-assert.strictEqual(import_dep.constant ? "truthy" : "falsy", "truthy");
+assert.strictEqual("truthy", "truthy");
 assert.strictEqual(import_dep.add, NaN);
 assert.strictEqual(import_dep.subtract, NaN);
 assert.strictEqual(import_dep.multiply, NaN);
@@ -95,6 +95,6 @@ assert.strictEqual(import_dep.bitXor, 1);
 assert.strictEqual(import_dep.logicalAnd, void 0);
 assert.strictEqual(import_dep.logicalOr, 2);
 assert.strictEqual(import_dep.nullish, 3);
-assert.strictEqual(import_dep.constant, true);
+assert.strictEqual(true, true);
 
 ```

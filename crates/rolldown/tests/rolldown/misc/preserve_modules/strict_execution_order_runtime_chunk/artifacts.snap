@@ -41,19 +41,16 @@ export { lazy };
 ## main.js
 
 ```js
-import { __esmAsync, __finishAsync } from "./rolldown-runtime.js";
+import { __esmMin } from "./rolldown-runtime.js";
 import dep, { init_dep } from "./dep.js";
 // main.js
 var mod;
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		var __asyncDependencies0 = [];
+	return (init_main = __esmMin((async () => {
 		init_dep();
-		return __finishAsync(__asyncDependencies0, async () => {
-			globalThis.__events.push("main " + dep() + "N");
-			mod = await import("./lazy.js");
-			globalThis.__events.push("after " + mod.lazy);
-		});
+		globalThis.__events.push("main " + dep() + "N");
+		mod = await import("./lazy.js");
+		globalThis.__events.push("after " + mod.lazy);
 	})))();
 }
 await init_main();
@@ -64,7 +61,7 @@ await init_main();
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __esmAsync, __esmMin, __finishAsync, __startAsync };
+export { __esmMin };
 
 ```
 

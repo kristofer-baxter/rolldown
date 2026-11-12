@@ -6,7 +6,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## barrel.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 __esmMin((() => {}));
 
 ```
@@ -14,7 +14,7 @@ __esmMin((() => {}));
 ## entry.js
 
 ```js
-import { i as __finishAsync, n as __esmMin, o as __toCommonJS, r as __exportAll, t as __esmAsync } from "./rolldown-runtime.js";
+import { n as __exportAll, r as __toCommonJS, t as __esmMin } from "./rolldown-runtime.js";
 // bar.js
 var bar;
 var init_bar = __esmMin((() => {
@@ -28,12 +28,10 @@ var init_req = __esmMin((() => {
 // entry.js
 var Foo;
 function init_entry() {
-	return (init_entry = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			console.log("bar =", (init_req(), __toCommonJS(req_exports)).bar.name);
-			({Foo} = await import("./lib.js"));
-			console.log("Foo =", Foo);
-		});
+	return (init_entry = __esmMin((async () => {
+		console.log("bar =", (init_req(), __toCommonJS(req_exports)).bar.name);
+		({Foo} = await import("./lib.js"));
+		console.log("Foo =", Foo);
 	})))();
 }
 await init_entry();
@@ -44,7 +42,7 @@ export { Foo };
 ## lib.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // foo.js
 var Foo;
 __esmMin((() => {
@@ -58,7 +56,7 @@ export { Foo };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as a, __finishAsync as i, __esmMin as n, __toCommonJS as o, __exportAll as r, __esmAsync as t };
+export { __exportAll as n, __toCommonJS as r, __esmMin as t };
 
 ```
 
@@ -69,7 +67,7 @@ export { __startAsync as a, __finishAsync as i, __esmMin as n, __toCommonJS as o
 ### barrel.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 __esmMin((() => {}));
 
 ```
@@ -77,7 +75,7 @@ __esmMin((() => {}));
 ### entry.js
 
 ```js
-import { i as __finishAsync, n as __esmMin, o as __toCommonJS, r as __exportAll, t as __esmAsync } from "./rolldown-runtime.js";
+import { n as __exportAll, r as __toCommonJS, t as __esmMin } from "./rolldown-runtime.js";
 // bar.js
 var bar;
 var init_bar = __esmMin((() => {
@@ -91,12 +89,10 @@ var init_req = __esmMin((() => {
 // entry.js
 var Foo;
 function init_entry() {
-	return (init_entry = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			console.log("bar =", (init_req(), __toCommonJS(req_exports)).bar.name);
-			({Foo} = await import("./lib.js"));
-			console.log("Foo =", Foo);
-		});
+	return (init_entry = __esmMin((async () => {
+		console.log("bar =", (init_req(), __toCommonJS(req_exports)).bar.name);
+		({Foo} = await import("./lib.js"));
+		console.log("Foo =", Foo);
 	})))();
 }
 await init_entry();
@@ -107,7 +103,7 @@ export { Foo };
 ### lib.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // foo.js
 var Foo;
 __esmMin((() => {
@@ -121,6 +117,6 @@ export { Foo };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as a, __finishAsync as i, __esmMin as n, __toCommonJS as o, __exportAll as r, __esmAsync as t };
+export { __exportAll as n, __toCommonJS as r, __esmMin as t };
 
 ```

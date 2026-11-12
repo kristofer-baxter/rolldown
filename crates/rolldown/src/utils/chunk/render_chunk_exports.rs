@@ -511,11 +511,11 @@ pub fn render_chunk_exports(
           } else {
             // Assigning `exports['__proto__']` would replace the prototype instead of adding an export.
             concat_string!(
-              "Object.prototype.hasOwnProperty.call(",binding_ref_name, ", '__proto__') &&\n",
-              "  !Object.prototype.hasOwnProperty.call(exports, '__proto__') &&\n",
-              "  Object.defineProperty(exports, '__proto__', { enumerable: true, value: ",binding_ref_name,"['__proto__'] });\n",
               "Object.keys(",binding_ref_name, ").forEach(function (k) {\n",
-              "  if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) exports[k] = ",binding_ref_name,"[k];\n",
+              "  if (k !== 'default' && !Object.prototype.hasOwnProperty.call(exports, k)) {\n",
+              "    if (k === '__proto__') Object.defineProperty(exports, k, { enumerable: true, value: ",binding_ref_name,"[k] });\n",
+              "    else exports[k] = ",binding_ref_name,"[k];\n",
+              "  }\n",
               "});\n"
             )
           };

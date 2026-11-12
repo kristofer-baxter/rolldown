@@ -22,6 +22,10 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
 
     // Each reference is counted once, as it is visited. One visited before its binding was
     // registered stays in the set: see `complete_dynamic_imports_read_before_registration`.
+    if ident.name == "arguments" && self.is_global_identifier_reference(ident) {
+      return self.update_dynamic_import_arguments_usage_info();
+    }
+
     if !self
       .dynamic_import_usage_info
       .dynamic_import_binding_reference_id

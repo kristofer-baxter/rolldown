@@ -1,6 +1,5 @@
 use std::{
-  any::Any,
-  panic::{AssertUnwindSafe, catch_unwind},
+  panic::AssertUnwindSafe,
   sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -10,22 +9,7 @@ use std::{
 use futures::FutureExt;
 use rolldown_common::SharedNormalizedBundlerOptions;
 use rolldown_plugin::SharedPluginDriver;
-
-fn panic_payload_message(payload: &(dyn Any + Send)) -> String {
-  if let Some(message) = payload.downcast_ref::<String>() {
-    message.clone()
-  } else if let Some(message) = payload.downcast_ref::<&str>() {
-    (*message).to_string()
-  } else {
-    "non-string panic payload".to_string()
-  }
-}
-
-fn discard_panic_payload(payload: Box<dyn Any + Send>) {
-  if let Err(nested_payload) = catch_unwind(AssertUnwindSafe(|| drop(payload))) {
-    std::mem::forget(nested_payload);
-  }
-}
+use rolldown_std_utils::{discard_panic_payload, panic_payload_message};
 
 /// A lightweight handle to access bundle state after the `Bundle` has been consumed.
 ///

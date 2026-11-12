@@ -56,7 +56,9 @@ pub fn shrink_scanned_module(
   ecma_view.imported_ids.shrink_to_fit();
   ecma_view.dynamically_imported_ids.shrink_to_fit();
   ecma_view.hmr_info.deps.shrink_to_fit();
-  ecma_view.sourcemap_chain.shrink_to_fit();
+  if let Some(chain) = std::sync::Arc::get_mut(&mut ecma_view.sourcemap_chain) {
+    chain.shrink_to_fit();
+  }
   ecma_view.self_referenced_class_decl_symbol_ids.shrink_to_fit();
   ecma_view.new_url_references.shrink_to_fit();
   ecma_view.namespace_in_checks.shrink_to_fit();
@@ -66,7 +68,6 @@ pub fn shrink_scanned_module(
   ecma_view.dummy_record_set.shrink_to_fit();
   ecma_view.constant_export_map.shrink_to_fit();
   ecma_view.enum_member_value_map.shrink_to_fit();
-  ecma_view.import_attribute_map.shrink_to_fit();
   ecma_view.cjs_reexport_import_record_ids.shrink_to_fit();
   ecma_view.dynamic_import_called_names.shrink_to_fit();
   symbols.classic_data.raw.shrink_to_fit();
@@ -183,7 +184,6 @@ pub fn shrink_link_tables(link_output: &mut LinkStageOutput) {
       // the scan-stage snapshot, never on `link_output.module_table`.
       normal.ecma_view.imported_ids = FxIndexSet::default();
       normal.ecma_view.dynamically_imported_ids = FxIndexSet::default();
-      normal.ecma_view.mutations.shrink_to_fit();
     }
   });
   for index in 0..link_output.symbol_db.inner().len() {

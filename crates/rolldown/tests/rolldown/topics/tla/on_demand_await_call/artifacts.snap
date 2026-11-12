@@ -40,30 +40,23 @@ function init_normal_lib() {
 // tla-dep.js
 var value$2;
 function init_tla_dep() {
-	return (init_tla_dep = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			value$2 = await Promise.resolve("tla-dep");
-		});
+	return (init_tla_dep = __esmMin((async () => {
+		value$2 = await Promise.resolve("tla-dep");
 	})))();
 }
 // tla-lib.js
 var value$1;
 function init_tla_lib() {
-	return (init_tla_lib = __esmAsync((() => {
-		var __asyncDependencies0 = [];
-		__startAsync(__asyncDependencies0, init_tla_dep());
-		return __finishAsync(__asyncDependencies0, () => {
-			value$1 = value$2 + "+tla-lib";
-		});
+	return (init_tla_lib = __esmMin((async () => {
+		await init_tla_dep();
+		value$1 = value$2 + "+tla-lib";
 	})))();
 }
 // main.js
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		var __asyncDependencies0 = [];
+	return (init_main = __esmMin((async () => {
 		init_normal_lib();
-		__startAsync(__asyncDependencies0, init_tla_lib());
-		return __finishAsync(__asyncDependencies0, () => {});
+		await init_tla_lib();
 	})))();
 }
 await init_main();

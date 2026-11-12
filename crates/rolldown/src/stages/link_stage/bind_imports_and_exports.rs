@@ -473,19 +473,13 @@ impl LinkStage<'_> {
         continue;
       };
       let named_import = &module.named_imports[&imported_as];
-      let module_request =
-        module.import_records[named_import.record_idx].module_request.to_string();
-      self.diagnostics.push(BuildDiagnostic::missing_export(
+      self.diagnostics.push(BuildDiagnostic::lazy_barrel_unloaded_binding(
         module.id.to_string(),
         module.stable_id.to_string(),
-        module_request.clone(),
-        module_request,
         module.source.clone(),
+        module.import_records[named_import.record_idx].module_request.to_string(),
         named_import.imported.to_string(),
         named_import.span_imported,
-        Some(
-          "This import is used, but `experimental.lazyBarrel` did not load a module needed to resolve it. This is a Rolldown bug, set `experimental.lazyBarrel: false` to work around it.".to_string(),
-        ),
       ));
     }
   }
@@ -1941,11 +1935,12 @@ impl BindImportsAndExportsContext<'_> {
 
     if matches!(&named_import.imported, Specifier::Literal(literal_imported) if literal_imported.as_str() != "default")
       && crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-      && importer
-        .ecma_view
-        .import_attribute_map
-        .get(&named_import.record_idx)
-        .is_some_and(crate::utils::import_options::is_json_import_attribute)
+      && (importer.import_records[named_import.record_idx]
+        .meta
+        .contains(crate::utils::import_options::HAS_JSON_TYPE_IMPORT_OPTIONS)
+        || crate::utils::import_options::is_json_import_attribute(
+          &importer.import_records[named_import.record_idx].attributes,
+        ))
       && crate::utils::import_options::is_json_module(importee)
     {
       return ImportStatus::NoMatch;
@@ -2339,13 +2334,13 @@ impl BindImportsAndExportsContext<'_> {
         crate::utils::native_records::runtime_module_semantics_enabled(self.options)
           && matches!(&tracker.imported, Specifier::Literal(imported) if imported.as_str() != "default")
           && crate::utils::import_options::is_json_module(importee)
-          && self.index_modules[tracker.importer]
-            .as_normal()
-            .and_then(|importer| {
-              let named_import = importer.named_imports.get(&tracker.imported_as)?;
-              importer.ecma_view.import_attribute_map.get(&named_import.record_idx)
+          && self.index_modules[tracker.importer].as_normal().is_some_and(|importer| {
+            importer.named_imports.get(&tracker.imported_as).is_some_and(|named_import| {
+              let rec = &importer.import_records[named_import.record_idx];
+              rec.meta.contains(crate::utils::import_options::HAS_JSON_TYPE_IMPORT_OPTIONS)
+                || crate::utils::import_options::is_json_import_attribute(&rec.attributes)
             })
-            .is_some_and(crate::utils::import_options::is_json_import_attribute);
+          });
       if !attributed_json_named_import
         && (self.options.shim_missing_exports || matches!(importee.module_type, ModuleType::Empty))
         && matches!(ret, MatchImportKind::NoMatch)
@@ -2470,6 +2465,7 @@ pub fn bind_appended_module_imports(
   };
   binding_ctx.match_imports_with_exports(module_idx);
   binding_ctx.diagnostics.is_empty()
+    && binding_ctx.lazy_barrel_uncertain_bindings.is_empty()
     && binding_ctx.external_import_binding_merger.is_empty()
     && binding_ctx.external_import_namespace_merger.is_empty()
     && binding_ctx.lazy_barrel_uncertain_bindings.is_empty()
@@ -2531,6 +2527,7 @@ fn has_skipped_star_export(
         .is_none_or(|star_module_idx| has_skipped_star_export(modules, star_module_idx, visited))
   })
 }
+
 fn shim_missing_export(
   module: &NormalModule,
   exported_name: &CompactStr,

@@ -75,14 +75,12 @@ export { __esmMin as t };
 ### main.js
 
 ```js
-import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // main.js
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			await import("./page-b.js").then(console.log);
-			await import("./page-a.js").then(console.log);
-		});
+	return (init_main = __esmMin((async () => {
+		await import("./page-b.js").then(console.log);
+		await import("./page-a.js").then(console.log);
 	})))();
 }
 await init_main();
@@ -92,7 +90,7 @@ await init_main();
 ### page-a.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 import assert from "node:assert";
 // common.js
 function foo() {
@@ -123,7 +121,7 @@ export { render };
 ### page-b.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 import assert from "node:assert";
 // page-b.js
 function render() {}
@@ -141,6 +139,6 @@ export { render };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
+export { __esmMin as t };
 
 ```

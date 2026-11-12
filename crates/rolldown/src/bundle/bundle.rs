@@ -12,7 +12,7 @@ use super::super::{
 };
 use anyhow::Context;
 use arcstr::ArcStr;
-use rolldown_common::{GetLocalDb, GetLocalDbMut, Module, ScanMode, SymbolRefDb};
+use rolldown_common::{GetLocalDb, GetLocalDbMut, Module, Output, ScanMode, SymbolRefDb};
 use rolldown_devtools::{action, trace_action, trace_action_enabled};
 use rolldown_error::{BatchedBuildDiagnostic, BuildDiagnostic, BuildResult, Severity};
 use rolldown_fs::{FileSystem, OsFileSystem};
@@ -54,6 +54,7 @@ pub struct Bundle<Fs: FileSystem + Clone + 'static = OsFileSystem> {
   pub(crate) warnings: Vec<BuildDiagnostic>,
   pub(crate) cache: ScanStageCache,
   pub(crate) bundle_span: tracing::Span,
+  pub(crate) invalidated_js_side_cache: bool,
 }
 
 impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
@@ -86,7 +87,13 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let result = async {
       self.trace_action_session_meta();
       trace_action!(action::BuildStart { action: "BuildStart" });
-      let scan_stage_output = self.scan_modules(ScanMode::Full).await?;
+      let scan_stage_output = match self.scan_modules(ScanMode::Full).await {
+        Ok(output) => output,
+        Err(errs) => {
+          self.invalidate_js_side_cache_on_early_exit().await;
+          return Err(errs);
+        }
+      };
 
       let ret = self.bundle_write(scan_stage_output).await;
       trace_action!(action::BuildEnd { action: "BuildEnd" });
@@ -104,7 +111,13 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let result = async {
       self.trace_action_session_meta();
       trace_action!(action::BuildStart { action: "BuildStart" });
-      let scan_stage_output = self.scan_modules(ScanMode::Full).await?;
+      let scan_stage_output = match self.scan_modules(ScanMode::Full).await {
+        Ok(output) => output,
+        Err(errs) => {
+          self.invalidate_js_side_cache_on_early_exit().await;
+          return Err(errs);
+        }
+      };
 
       let ret = self.bundle_generate(scan_stage_output).await.map(|mut output| {
         output.warnings.append(&mut self.warnings);
@@ -121,14 +134,21 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
   #[tracing::instrument(level = "debug", skip_all, parent = &self.bundle_span)]
   /// This method intentionally get the ownership of `self` to show that the method cannot be called multiple times.
   pub async fn scan(mut self) -> BuildResult<()> {
-    let mut scan_stage_output = self.scan_modules(ScanMode::Full).await?;
-    self.merge_immutable_fields_for_cache(
-      scan_stage_output.symbol_ref_db,
-      scan_stage_output.index_ecma_ast,
-      &mut scan_stage_output.module_table,
-    );
-
-    Ok(())
+    let result = async {
+      let mut scan_stage_output = self.scan_modules(ScanMode::Full).await?;
+      self.merge_immutable_fields_for_cache(
+        scan_stage_output.symbol_ref_db,
+        scan_stage_output.index_ecma_ast,
+        &mut scan_stage_output.module_table,
+      );
+      Ok(())
+    }
+    .await;
+    match (result, self.invalidate_js_side_cache_after_scan_only().await) {
+      (Ok(()), Ok(())) => Ok(()),
+      (Err(errs), _) => Err(errs),
+      (Ok(()), Err(err)) => Err(err),
+    }
   }
 
   pub fn cache_snapshot(&self) -> Option<&NormalizedScanStageOutput> {
@@ -417,10 +437,30 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
   /// A plugin may read `chunk.code` in `generateBundle` or `writeBundle` before a later hook fails, so the
   /// JS side must drop its per-build caches on every exit of the output stage, not only on success.
   /// Emissions stay unpublished until every requested output step and this final callback succeed.
+  pub(crate) async fn invalidate_js_side_cache_on_early_exit(&mut self) {
+    if !self.invalidated_js_side_cache {
+      self.invalidated_js_side_cache = true;
+      if let Some(invalidate_js_side_cache) = &self.options.invalidate_js_side_cache {
+        let _ = invalidate_js_side_cache.call().await;
+      }
+    }
+  }
+
+  pub(crate) async fn invalidate_js_side_cache_after_scan_only(&mut self) -> BuildResult<()> {
+    if !self.invalidated_js_side_cache {
+      self.invalidated_js_side_cache = true;
+      if let Some(invalidate_js_side_cache) = &self.options.invalidate_js_side_cache {
+        invalidate_js_side_cache.call().await?;
+      }
+    }
+    Ok(())
+  }
+
   async fn finalize_output(
     &mut self,
     result: BuildResult<UnpublishedBundleOutput>,
   ) -> BuildResult<BundleOutput> {
+    self.invalidated_js_side_cache = true;
     let result = if let Some(invalidate_js_side_cache) = &self.options.invalidate_js_side_cache {
       match (result, invalidate_js_side_cache.call().await) {
         (Ok(output), Ok(())) => Ok(output),
@@ -669,7 +709,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
 
       // `link_stage_output` is dead from here on (its `symbol_db` was just taken
       // for the cache merge); ship the remaining heavy fields (module_table,
-      // metas, stmt_infos, ...) to a rayon worker so their free() happens off
+      // metas, stmt_infos, ...) to the deferred-drop worker so their free() happens off
       // the critical path.
       crate::utils::defer_drop::spawn_drop(link_stage_output);
     } else {
@@ -730,6 +770,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       }
     }
 
+    Self::trace_action_output_chunk_graph_ready(&output.assets);
     Ok(UnpublishedBundleOutput { output, emitted_output_guard })
   }
 
@@ -1144,6 +1185,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     self.cache.last_link_decisions_unchanged =
       self.cache.last_fast_native_relink && decisions_unchanged;
     self.cache.last_native_graph_change = native_graph_change;
+    Self::trace_action_output_chunk_graph_ready(&output.assets);
     Some(Ok(UnpublishedBundleOutput { output, emitted_output_guard }))
   }
 
@@ -1161,6 +1203,29 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       errors.extend(BatchedBuildDiagnostic::from(error).into_vec());
     }
     errors
+  }
+
+  fn trace_action_output_chunk_graph_ready(output: &[Output]) {
+    if trace_action_enabled!() {
+      // See internal-docs/devtools/implementation.md. Plugins can rename, delete,
+      // or change imports in generateBundle, so the output is the graph source.
+      let chunks = output
+        .iter()
+        .filter_map(|asset| match asset {
+          Output::Chunk(chunk) => Some(action::OutputChunk {
+            file_name: chunk.filename.to_string(),
+            name: chunk.name.to_string(),
+            bytes: chunk.code.len() as u64,
+            is_entry: chunk.is_entry || chunk.is_dynamic_entry,
+            facade_module_id: chunk.facade_module_id.as_ref().map(ToString::to_string),
+            imports: chunk.imports.iter().map(ToString::to_string).collect(),
+            dynamic_imports: chunk.dynamic_imports.iter().map(ToString::to_string).collect(),
+          }),
+          Output::Asset(_) => None,
+        })
+        .collect();
+      trace_action!(action::OutputChunkGraphReady { action: "OutputChunkGraphReady", chunks });
+    }
   }
 
   pub fn restore_cache_from_scan(&mut self, mut scan_stage_output: NormalizedScanStageOutput) {

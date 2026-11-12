@@ -1,13 +1,3 @@
 {
-  "config": {
-    "experimental": {
-      "resolveNewUrlToAsset": true
-    }
-  },
-  "configVariants": [
-    {
-      "strictExecutionOrder": true,
-      "_snapshot": false
-    }
-  ]
+  "config": {}
 }

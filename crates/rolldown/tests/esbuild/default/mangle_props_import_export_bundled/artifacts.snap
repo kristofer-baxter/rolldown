@@ -38,12 +38,11 @@ export default require_entry_cjs();
 import { o as __toESM, r as init_esm, t as require_cjs } from "./cjs.js";
 // entry-esm.js
 init_esm();
-var import_cjs = /* @__PURE__ */ __toESM(require_cjs());
 let bar_ = [
 	"foo",
-	import_cjs.cjs_foo_,
+	(/* @__PURE__ */ __toESM(require_cjs())).cjs_foo_,
 	"foo",
-	import_cjs.cjs_foo_
+	"foo"
 ];
 export { bar_ };
 

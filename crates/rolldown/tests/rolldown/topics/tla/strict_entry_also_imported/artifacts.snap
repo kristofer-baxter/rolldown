@@ -45,17 +45,14 @@ export { value };
 ### b.js
 
 ```js
-import { i as __startAsync, r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 import { n as value, t as init_entry_a } from "./entry-a.js";
 // entry-b.js
 var combined;
 function init_entry_b() {
-	return (init_entry_b = __esmAsync((() => {
-		var __asyncDependencies0 = [];
-		__startAsync(__asyncDependencies0, init_entry_a());
-		return __finishAsync(__asyncDependencies0, () => {
-			combined = `b:${value}`;
-		});
+	return (init_entry_b = __esmMin((async () => {
+		await init_entry_a();
+		combined = `b:${value}`;
 	})))();
 }
 await init_entry_b();
@@ -66,14 +63,12 @@ export { combined };
 ### entry-a.js
 
 ```js
-import { r as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // entry-a.js
 var value;
 function init_entry_a() {
-	return (init_entry_a = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			value = await Promise.resolve("a");
-		});
+	return (init_entry_a = __esmMin((async () => {
+		value = await Promise.resolve("a");
 	})))();
 }
 export { value as n, init_entry_a as t };
@@ -84,7 +79,7 @@ export { value as n, init_entry_a as t };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as i, __esmMin as n, __finishAsync as r, __esmAsync as t };
+export { __esmMin as t };
 
 ```
 

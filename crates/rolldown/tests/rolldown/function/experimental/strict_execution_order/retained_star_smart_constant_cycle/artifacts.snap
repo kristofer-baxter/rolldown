@@ -87,7 +87,7 @@ export { __exportAll as n, __esmMin as t };
 ### const.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // const.js
 var y;
 function init_const() {
@@ -102,16 +102,14 @@ export { y as n, init_const as t };
 ### main.js
 
 ```js
-import { i as __finishAsync, t as __esmAsync } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 // main.js
 var pageA;
 function init_main() {
-	return (init_main = __esmAsync((() => {
-		return __finishAsync([], async () => {
-			await import("./page-b.js").then((n) => (n.t(), n.n));
-			pageA = await import("./page-a.js");
-			if (pageA.y !== 1e3 || pageA.common !== "common" || pageA._ !== void 0) throw new Error("partial dynamic import observed the wrong constant");
-		});
+	return (init_main = __esmMin((async () => {
+		await import("./page-b.js").then((n) => (n.t(), n.n));
+		pageA = await import("./page-a.js");
+		if (pageA.y !== 1e3 || pageA.common !== "common" || pageA._ !== void 0) throw new Error("partial dynamic import observed the wrong constant");
 	})))();
 }
 await init_main();
@@ -121,7 +119,7 @@ await init_main();
 ### page-a.js
 
 ```js
-import { n as __esmMin } from "./rolldown-runtime.js";
+import { t as __esmMin } from "./rolldown-runtime.js";
 import { n as y, t as init_const } from "./const.js";
 import "./page-b.js";
 // common.js
@@ -151,7 +149,7 @@ export { _, common, y };
 ### page-b.js
 
 ```js
-import { n as __esmMin, r as __exportAll } from "./rolldown-runtime.js";
+import { n as __exportAll, t as __esmMin } from "./rolldown-runtime.js";
 import { n as y, t as init_const } from "./const.js";
 // bridge.js
 function x() {
@@ -177,6 +175,6 @@ export { x as i, page_b_exports as n, init_bridge as r, init_page_b as t };
 
 ```js
 // HIDDEN [\0rolldown/runtime.js]
-export { __startAsync as a, __finishAsync as i, __esmMin as n, __exportAll as r, __esmAsync as t };
+export { __exportAll as n, __esmMin as t };
 
 ```

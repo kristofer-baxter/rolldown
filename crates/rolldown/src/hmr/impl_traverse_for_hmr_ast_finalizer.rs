@@ -4,7 +4,7 @@ use oxc::{
   span::SPAN,
 };
 use oxc_traverse::Traverse;
-use rolldown_common::{EcmaModuleAstUsage, ExportsKind, ThisExprReplaceKind};
+use rolldown_common::{EcmaModuleAstUsage, ThisExprReplaceKind};
 use rolldown_ecmascript::{
   CJS_EXPORTS_REF_STR, CJS_MODULE_REF_STR, CJS_ROLLDOWN_EXPORTS_REF,
   CJS_ROLLDOWN_EXPORTS_REF_IDENT, CJS_ROLLDOWN_MODULE_REF, CJS_ROLLDOWN_MODULE_REF_IDENT,
@@ -396,22 +396,20 @@ impl<'ast> Traverse<'ast, ()> for HmrAstFinalizer<'_, 'ast> {
     ctx: &mut oxc_traverse::TraverseCtx<'ast, ()>,
   ) {
     crate::utils::temporal_reads::unwrap_temporal_read(node);
-    // Rewrite top-level `this` as the main build does, by the kind that the scan decided
-    // (`this_expr_replace_map`, which leaves `this` inside classes and functions alone).
-    // The scan's map predates link-time CommonJS promotion; honor the rendered kind as
-    // `promote_to_commonjs` does in the main build, rather than exposing the factory record.
-    // See internal-docs/linking/determine-module-exports-kind/implementation.md.
+    // The scan map excludes nested function/class receivers. For its top-level expressions,
+    // use the rendered kind, including modules the linker promotes to CommonJS.
     if let ast::Expression::ThisExpression(this_expr) = node
       && let Some(kind) = self.module.ecma_view.this_expr_replace_map.get(&this_expr.node_id())
     {
-      *node = if self.exports_kind == ExportsKind::CommonJs
-        || matches!(kind, ThisExprReplaceKind::Exports)
-      {
-        Expression::new_id_ref_expr(SPAN, CJS_ROLLDOWN_EXPORTS_REF, self)
-      } else if self.context.is_empty() {
-        ast::Expression::new_void_0(SPAN, self)
-      } else {
-        Expression::new_id_ref_expr(SPAN, self.context, self)
+      let kind = if self.exports_kind.is_commonjs() { ThisExprReplaceKind::Exports } else { *kind };
+      *node = match kind {
+        ThisExprReplaceKind::Exports => {
+          Expression::new_id_ref_expr(SPAN, CJS_ROLLDOWN_EXPORTS_REF, self)
+        }
+        ThisExprReplaceKind::Context if self.context.is_empty() => {
+          ast::Expression::new_void_0(SPAN, self)
+        }
+        ThisExprReplaceKind::Context => Expression::new_id_ref_expr(SPAN, self.context, self),
       };
       return;
     }

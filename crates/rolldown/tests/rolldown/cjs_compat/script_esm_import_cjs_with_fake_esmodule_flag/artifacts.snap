@@ -38,7 +38,7 @@ import assert from "node:assert";
 var import_fake_esmodule = /* @__PURE__ */ __toESM(require_fake_esmodule());
 const { __extends } = import_fake_esmodule.default;
 assert.strictEqual(__extends(), "EXTENDS");
-assert.strictEqual(import_fake_esmodule.default.__awaiter(), "AWAITER");
+assert.strictEqual(import_fake_esmodule.__awaiter(), "AWAITER");
 assert.strictEqual(import_fake_esmodule.default, import_fake_esmodule.default);
 assert.strictEqual(import_fake_esmodule.__extends, __extends);
 const dyn = await import("./fake-esmodule2.js").then((m) => /* @__PURE__ */ __toESM(m.default));

@@ -507,9 +507,11 @@ async fn bundled_hmr_lazy_factories_read_latest_used_and_unobserved_exports() ->
       shared.cells.value[1](record('shared.js').exports.value);
       events.push(globalThis.savedRead());
     }
-    await import('./lazy.mjs');
+    runtime.loadLazyChunk=()=>import('./lazy.mjs');
+    const routeNs=await globalThis.openRoute();
     assert.equal(globalThis.routeRuns,1,'lazy code executes only on activation');
     const route=record('route.js');
+    assert.deepEqual(routeNs.values,route.exports.values);
     events.push(route.exports.values);
     ",
   )?;

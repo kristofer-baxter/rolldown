@@ -69,7 +69,6 @@ fn shrink_relink_chunk_metadata(chunk_graph: &mut ChunkGraph) {
     chunk.node_mode_external_ns_names = FxHashMap::default();
     chunk.insert_map = FxHashMap::default();
     chunk.remove_map = FxHashMap::default();
-    chunk.module_idx_to_render_concatenated_module = FxHashMap::default();
     chunk.modules.shrink_to_fit();
     for items in chunk.imports_from_other_chunks.values_mut() {
       items.shrink_to_fit();
@@ -97,20 +96,18 @@ async fn preserve_modules_chunk_name(
   let preserve_modules_root = &options.preserve_modules_root;
   let virtual_dirname = &options.virtual_dirname;
   let cwd = &options.cwd;
-  // The representative name keeps the file stem of the full id, as before.
-  // Rollup also derives the chunk variable name from the full id
-  // (`getAliasName(module.id)`).
   let representative_chunk_name =
-    module_id.as_path().file_stem().and_then(|f| f.to_str()).unwrap_or(module_id);
+    module_id.as_path().file_stem().and_then(|stem| stem.to_str()).unwrap_or(module_id);
 
-  // Like Rollup, the name ignores the id after its first `?` or `#`, also in a
-  // directory name (`getPreserveModulesChunkNameFromModule`, `rollup/src/Chunk.ts`).
-  // The relative path is built from the raw id, with its extension, and sanitized
-  // once at the end: `preserveModulesRoot` and the input base are raw paths, so a
-  // sanitized id may no longer start with them, or may start with another directory
-  // that sanitizes to the same name.
+  // The relative path is built from the raw id and sanitized once at the end:
+  // `preserveModulesRoot` and the input base are raw paths, so a sanitized id may no
+  // longer start with them, or may start with another directory that sanitizes to
+  // the same name.
   let relative_path = {
-    let p = PathBuf::from(clean_url(module_id));
+    // Native record IDs carry captured query views and lazy proxies, not URL decorations.
+    let path =
+      if crate::utils::native_records::enabled(options) { module_id } else { clean_url(module_id) };
+    let p = PathBuf::from(path);
     // Besides genuinely absolute paths, `node_style_absolute` anchors
     // a rooted-but-volume-less id (`/favicon`, `\favicon`) to the
     // cwd volume root (a drive or UNC share): Node and Rollup treat
@@ -350,7 +347,7 @@ impl<'a> GenerateStage<'a> {
         .module_table
         .modules
         .iter()
-        .filter_map(|m| m.as_external().map(|e| e.id.as_str()));
+        .filter_map(|m| m.as_external().map(|e| e.id.raw_id()));
       self.resolved_paths = Some(paths.resolve_all(ids).await);
     }
   }
@@ -1132,7 +1129,7 @@ impl<'a> GenerateStage<'a> {
         .generate_preliminary_filename(
           self.options,
           &pre_rendered_chunk,
-          &pre_generated_chunk_name.chunk_filename,
+          &pre_generated_chunk_name.chunk_name,
           &mut hash_placeholder_generator,
           &used_name_counts,
         )
@@ -1151,7 +1148,7 @@ impl<'a> GenerateStage<'a> {
         .generate_preliminary_sourcemap_filename(
           self.options,
           &pre_rendered_chunk,
-          &pre_generated_chunk_name.chunk_filename,
+          &pre_generated_chunk_name.chunk_name,
           &mut hash_placeholder_generator,
           &used_name_counts,
         )
@@ -1615,9 +1612,7 @@ impl<'a> GenerateStage<'a> {
     let Some(module) = self.link_output.module_table[module_idx].as_normal() else {
       return (None, false, Vec::new());
     };
-    if !module.ecma_view.mutations.is_empty()
-      || module.ecma_view.json_module_none_self_reference_included_symbol.is_some()
-    {
+    if module.ecma_view.json_module_none_self_reference_included_symbol.is_some() {
       return (None, false, Vec::new());
     }
 

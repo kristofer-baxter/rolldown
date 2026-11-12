@@ -23,7 +23,6 @@ use super::{
 impl GenerateStage<'_> {
   pub fn render_normal_module_with(
     options: &rolldown_common::NormalizedBundlerOptions,
-    _link_output: &crate::stages::link_stage::LinkStageOutput,
     module: &NormalModule,
     ast: &EcmaAst,
   ) -> ModuleRenderOutput {
@@ -35,10 +34,7 @@ impl GenerateStage<'_> {
     let initial_indent = if needs_extra_indent { 1 } else { 0 };
     // `NormalModule::render` maps no virtual module, but a native cell's load map
     // points at its donor's authored file; print it as `render` would, mapped.
-    if options.sourcemap.is_some()
-      && module.ecma_view.mutations.is_empty()
-      && crate::utils::native_records::is_native_cell(&module.id)
-    {
+    if options.sourcemap.is_some() && crate::utils::native_records::is_native_cell(&module.id) {
       let mut comments: PrintCommentsOptions = options.comments.into();
       comments.annotation = true;
       let output = EcmaCompiler::print_with(
@@ -65,7 +61,7 @@ impl GenerateStage<'_> {
     module: &NormalModule,
     ast: &EcmaAst,
   ) -> ModuleRenderOutput {
-    Self::render_normal_module_with(self.options, self.link_output, module, ast)
+    Self::render_normal_module_with(self.options, module, ast)
   }
 
   pub fn finalize_and_render_cached_module(
@@ -109,7 +105,7 @@ impl GenerateStage<'_> {
       inline_state: &empty_inline_state,
     };
     let _ = finalizer_ctx.finalize_normal_module(&mut ast, ast_scope);
-    let rendered = Self::render_normal_module_with(ctx.options, ctx.link_output, module, &ast);
+    let rendered = Self::render_normal_module_with(ctx.options, module, &ast);
     drop(ast);
     crate::utils::render_ecma_module::render_ecma_module(module, ctx.options, rendered).sources
   }
@@ -503,19 +499,13 @@ impl GenerateStage<'_> {
       crate::utils::defer_drop::spawn_drop(dead_ast);
     }
 
-    // Runs after every finalizer (including `finalize_inline_copies` above): the fragments
-    // already carry canonical names, so the recipients are never re-finalized, and donor IDs
-    // never meet recipient side tables. See internal-docs/ast-mutation/implementation.md.
     for (idx, mut ast) in deferred_asts {
-      if !transferred_imports.is_empty()
-        && let Some(chunk_idx) = chunk_graph.module_to_chunk[idx]
-        && let Some(recs) = chunk_graph.chunk_table[chunk_idx].insert_map.get(&idx)
-      {
-        // Prepend in `insert_map` order.
+      let chunk_idx = chunk_graph.module_to_chunk[idx].expect("deferred module has a chunk");
+      if let Some(records) = chunk_graph.chunk_table[chunk_idx].insert_map.get(&idx) {
         ast.program.with_mut(|fields| {
           fields.program.body.splice(
             0..0,
-            recs
+            records
               .iter()
               .filter_map(|key| transferred_imports.get(key))
               .flat_map(|fragment| fragment.program().body.iter())
@@ -647,7 +637,6 @@ impl GenerateStage<'_> {
         .any(|record| record.kind == rolldown_common::ImportKind::DynamicImport)
       || !module.new_url_references.is_empty()
       || !module.ecma_view.rolldown_file_url_references.is_empty()
-      || !module.ecma_view.mutations.is_empty()
       || module.ecma_view.json_module_none_self_reference_included_symbol.is_some()
       || chunk.insert_map.contains_key(&module_idx)
       || chunk.remove_map.contains_key(&module_idx)

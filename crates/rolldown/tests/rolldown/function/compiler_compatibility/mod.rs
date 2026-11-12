@@ -922,8 +922,16 @@ impl Plugin for ContextLoadPanic {
   ) -> HookTransformReturn {
     if args.code.contains("LOAD_HELPER") {
       let helper = self.helper.clone();
-      let waiter =
-        tokio::spawn(async move { ctx.load(&helper, None, ModuleDefFormat::Unknown).await });
+      let waiter = tokio::spawn(async move {
+        ctx
+          .load(
+            &helper,
+            rolldown_common::ImportAttributes::default(),
+            None,
+            ModuleDefFormat::Unknown,
+          )
+          .await
+      });
       self.started.notified().await;
       if self.cancel_waiter && self.panic.load(Ordering::SeqCst) {
         waiter.abort();

@@ -1,7 +1,7 @@
 use std::{borrow::Cow, path::PathBuf, time::Duration};
 
 use rolldown::{Bundler, BundlerOptions, InputItem};
-use rolldown_common::ModuleDefFormat;
+use rolldown_common::{ImportAttributes, ModuleDefFormat};
 use rolldown_error::BatchedBuildDiagnostic;
 use rolldown_plugin::{
   HookLoadArgs, HookLoadReturn, HookUsage, Plugin, PluginContext, SharedLoadPluginContext,
@@ -64,7 +64,7 @@ impl Plugin for PanicOnLoad {
 
   async fn load(&self, ctx: SharedLoadPluginContext, args: &HookLoadArgs<'_>) -> HookLoadReturn {
     if args.id.ends_with("entry.js") {
-      ctx.load("\0panic", None, ModuleDefFormat::Unknown).await?;
+      ctx.load("\0panic", ImportAttributes::default(), None, ModuleDefFormat::Unknown).await?;
       return Ok(None);
     }
     panic!("intentional module task panic");

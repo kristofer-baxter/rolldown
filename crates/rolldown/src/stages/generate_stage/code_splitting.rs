@@ -771,6 +771,20 @@ impl GenerateStage<'_> {
   // - https://github.com/rollup/rollup/blob/99d4bee3277b96b30e871fb471f6c7ed55f94850/src/Bundle.ts?plain=1#L267-L278
   // - https://github.com/rollup/rollup/blob/99d4bee3277b96b30e871fb471f6c7ed55f94850/src/utils/commondir.ts?plain=1#L4-L24
   pub fn get_common_dir_of_all_modules(&self, modules: &[Module]) -> Option<String> {
+    /// A module id usable for the common-dir computation: an absolute
+    /// filesystem path, with rooted-but-volume-less ids (`/favicon.ico` from a
+    /// plugin) anchored to the cwd volume root (a drive or UNC share). Such ids
+    /// are classified `Bare` on Windows even though Node treats them as
+    /// absolute; leaving them out here would make the input base and the
+    /// preserve-modules chunk names disagree about where the module lives.
+    fn common_dir_input<'a>(id: &'a ModuleId, cwd: &Path) -> Option<Cow<'a, str>> {
+      if id.is_path() {
+        return Some(Cow::Borrowed(id.raw_id()));
+      }
+      let glued = node_style_absolute(Path::new(id.raw_id()), cwd)?;
+      Some(Cow::Owned(glued.into_owned().expect_into_string()))
+    }
+
     let mut ret: Option<String> = None;
     let iter = modules.iter().filter_map(|m| match m {
       Module::Normal(item) => {
