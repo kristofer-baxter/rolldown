@@ -462,6 +462,15 @@ impl GenerateStage<'_> {
       if !chunk.entry_level_external_module_idx.is_empty() {
         continue;
       }
+      if matches!(options.sourcemap, Some(rolldown_common::SourceMapType::File))
+        && chunk
+          .preliminary_sourcemap_filename
+          .as_ref()
+          .and_then(|name| name.hash_placeholder())
+          .is_some()
+      {
+        continue;
+      }
       let kind_key = match &chunk.kind {
         rolldown_common::ChunkKind::EntryPoint { meta, module, .. } => {
           (1u8, meta.bits(), module.raw())

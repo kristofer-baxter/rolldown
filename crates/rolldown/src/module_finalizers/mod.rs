@@ -233,6 +233,9 @@ pub struct ScopeHoistingFinalizer<'me, 'ast: 'me> {
   /// names. Hoisting reaches only top-level declarations, whose canonical names are unique in the
   /// chunk; anything else looks its binding up by symbol.
   pub temporal_declarations: FxHashMap<CompactStr, SymbolRef>,
+  /// Canonical names of the enclosing `catch` parameters, innermost last, and whether each is a
+  /// module binding. A `var` that redeclares a parameter is bound to the innermost one of that name.
+  pub catch_params: Vec<(&'me str, bool)>,
   pub cur_stmt_index: usize,
   pub keep_name_statement_to_insert: Vec<(usize, CompactStr, CompactStr)>,
   pub top_level_function_names: allocator::Vec<'ast, ast::Statement<'ast>>,
@@ -910,7 +913,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         }
         self.generated_init_esm_importee_ids.insert(importee.idx);
         // `init_foo()` / `await init_foo()`
-        let init_expr = self.wrapped_esm_init_call_expr(importee.idx, stmt.span(), false, true);
+        let init_expr = self.wrapped_esm_init_call_expr(importee.idx, stmt.span(), true, true);
         self.record_static_esm_init_expr(&init_expr);
         *stmt = ast::Statement::new_expression_statement(SPAN, init_expr, self);
 
@@ -1332,6 +1335,17 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     let member_map = module.ecma_view.enum_member_value_map.get(symbol_name)?;
     let meta = member_map.get(property_name)?;
     Some(meta.value.to_expression(self.ast_builder.builder()))
+  }
+
+  fn hoist_top_level_var_bindings(&mut self, names: impl IntoIterator<Item = Ident<'ast>>) {
+    let catch_params = &self.catch_params;
+    self.top_level_var_bindings.extend(names.into_iter().filter(|name| {
+      catch_params
+        .iter()
+        .rev()
+        .find(|(param, _)| *param == name.as_str())
+        .is_none_or(|&(_, is_module_binding)| is_module_binding)
+    }));
   }
 
   fn var_declaration_to_expr_seq_and_bindings(
@@ -2552,6 +2566,38 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     )
   }
 
+  /// `Object.freeze({ __proto__: null, default: <expr> })`
+  ///
+  /// The namespace a CJS `import()` resolves to when the importee chunk is rendered in
+  /// `OutputExports::Default` mode, so `require()` hands back the default export itself.
+  fn default_only_namespace_expr(&self, default_expr: Expression<'ast>) -> Expression<'ast> {
+    let new_property = |name: &'static str, value: Expression<'ast>| {
+      ast::ObjectPropertyKind::new_object_property(
+        SPAN,
+        ast::PropertyKind::Init,
+        ast::PropertyKey::new_static_identifier(SPAN, name, self),
+        value,
+        false,
+        false,
+        false,
+        self,
+      )
+    };
+    Expression::new_call_with_arg(
+      Expression::new_member_access_expr("Object", "freeze", self),
+      ast::Expression::new_object_expression(
+        SPAN,
+        [
+          new_property("__proto__", ast::Expression::new_null_literal(SPAN, self)),
+          new_property("default", default_expr),
+        ],
+        self,
+      ),
+      true,
+      self,
+    )
+  }
+
   fn try_rewrite_inline_dynamic_import_expr(
     &self,
     import_expr: &oxc::allocator::Box<'ast, ImportExpression<'ast>>,
@@ -2881,22 +2927,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                   if matches!(importee_linking_info.wrap_kind(), WrapKind::Esm)
                     && !consumer_local_route
                   {
-                    let (wrapper_ref, _) = self.finalized_expr_for_symbol_ref(
-                      importee_linking_info.wrapper_ref.unwrap(),
-                      false,
-                      false,
-                    );
-                    let mut init_expr = ast::Expression::new_call_expression(
-                      SPAN,
-                      wrapper_ref,
-                      None,
-                      [],
-                      false,
-                      self,
-                    );
-                    if importee_linking_info.is_tla_or_contains_tla_dependency {
-                      init_expr = ast::Expression::new_await_expression(SPAN, init_expr, self);
-                    }
+                    let init_expr =
+                      self.wrapped_esm_init_call_expr(importee.idx, SPAN, true, true);
                     self.record_static_esm_init_expr(&init_expr);
                     program
                       .body
@@ -3448,6 +3480,11 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// 2. If the importee is in a different chunk:
   ///    Convert `import('./some-module.js')` to `import('./some-module.js').then(n => n.ns)`
   ///
+  /// When the importee's chunk is an inline common chunk record, the loaded file only registers the
+  /// record, so the callback reads the record from the registry first:
+  /// `import('./some-module.js').then(n => (n = __share_require(id), n.ns))`. A record without a
+  /// loader is registered wherever this runs, so nothing is loaded: `Promise.resolve().then(...)`.
+  ///
   /// Returns `Some(Expression)` if the import was rewritten, `None` otherwise.
   #[expect(clippy::too_many_lines)]
   fn rewrite_dynamic_import_for_merged_entry(
@@ -3587,6 +3624,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         importee_chunk.exports_to_other_chunks.get(&sym).and_then(|names| names.first())
       });
 
+      let record_read = self.inline_record_read(importee_chunk_idx);
+
       // For ESM-init wrapped modules, we also need the namespace symbol
       let namespace_export_name = if init_target.is_some() || consumer_local_targets.is_some() {
         self.ctx.modules[importee_idx].namespace_object_ref().and_then(|ns_ref| {
@@ -3616,6 +3655,13 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             );
             // Promise.resolve().then(() => require('./some-module.js'))
             Expression::new_promise_resolve_then(require_call_expr, self)
+          } else if self
+            .ctx
+            .inline_state
+            .record(importee_chunk_idx)
+            .is_some_and(|record| record.loader.is_none())
+          {
+            Expression::new_promise_resolve(self)
           } else {
             let import_expr = expr.take_in_box(self);
             Expression::ImportExpression(import_expr)
@@ -3626,6 +3672,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             let finalized_to_esm = self.finalized_expr_for_runtime_symbol("__toESM");
             let mut call_expr = CallExpression::new_then_call_cjs_wrapper_with_to_esm(
               base_expr,
+              record_read,
               name,
               finalized_to_esm,
               self.ctx.module.should_consider_node_esm_spec_for_dynamic_import(),
@@ -3673,6 +3720,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             }
             let call_expr = CallExpression::new_then_call_esm_wrappers_with_namespace(
               base_expr,
+              record_read,
               &wrapper_names,
               ns_name,
               self,
@@ -3686,6 +3734,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
               // An async init is awaited: `.then(n => __importNamespace(n.init_xxx, n.namespace))`.
               let mut call_expr = CallExpression::new_then_call_esm_wrappers_with_namespace(
                 base_expr,
+                None,
                 &[],
                 ns_name,
                 self,
@@ -3702,30 +3751,41 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                     self,
                   )
                 };
-                if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options)
-                {
-                  let import_namespace = Expression::new_call_expression(
+                let mut body_expr = if crate::utils::native_records::runtime_module_semantics_enabled(
+                  self.ctx.options,
+                ) {
+                  Expression::new_call_expression(
                     SPAN,
                     self.finalized_expr_for_runtime_symbol("__importNamespace"),
                     None,
                     [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
                     false,
                     self,
-                  );
-                  arrow.body = ast::ArrowFunctionBody::from(import_namespace);
+                  )
                 } else {
                   arrow.r#async = true;
                   let init_call =
                     Expression::new_call_expression(SPAN, member(name), None, [], false, self);
                   let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
-                  let seq_expr = Expression::new_seq_in_parens(await_init, member(ns_name), self);
-                  arrow.body = ast::ArrowFunctionBody::from(seq_expr);
+                  Expression::new_seq_in_parens(await_init, member(ns_name), self)
+                };
+                if let Some(module) = record_read {
+                  let assignment = Expression::new_assignment_expression(
+                    SPAN,
+                    ast::AssignmentOperator::Assign,
+                    ast::AssignmentTarget::new_assignment_target_identifier(SPAN, "n", self),
+                    module,
+                    self,
+                  );
+                  body_expr = Expression::new_seq_in_parens(assignment, body_expr, self);
                 }
+                arrow.body = ast::ArrowFunctionBody::from(body_expr);
               }
               Some(Expression::CallExpression(call_expr))
             } else if let Some(ns_name) = namespace_export_name {
               let call_expr = CallExpression::new_then_call_esm_wrappers_with_namespace(
                 base_expr,
+                record_read,
                 &[name],
                 ns_name,
                 self,
@@ -3740,7 +3800,8 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
               None
             }
           } else {
-            let call_expr = CallExpression::new_then_extract_property(base_expr, name, self);
+            let call_expr =
+              CallExpression::new_then_extract_property(base_expr, record_read, name, self);
             Some(Expression::CallExpression(call_expr))
           }
         }
@@ -3756,6 +3817,23 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         }
       }
     }
+  }
+
+  /// `__share_require(id)` when `chunk_idx` is an inline common chunk record: its registered copy,
+  /// read by the record chunk's export names. See internal-docs/inline-common-chunks/design.md.
+  fn inline_record_read(&self, chunk_idx: ChunkIdx) -> Option<Expression<'ast>> {
+    let record = self.ctx.inline_state.record(chunk_idx)?;
+    Some(Expression::new_call_with_arg(
+      self.finalized_expr_for_runtime_symbol("__share_require"),
+      Expression::new_string_literal(
+        SPAN,
+        oxc::ast::ast::Str::from_str_in(&record.id, self),
+        None,
+        self,
+      ),
+      false,
+      self,
+    ))
   }
 
   /// `with { type: "json" }`, or `None` without attributes.
@@ -3965,20 +4043,28 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
           expr.options = None;
         }
 
-        let mut import_path = self.ctx.chunk.import_path_for(importee_chunk);
-        if expr.phase == Some(ast::ImportPhase::Defer)
-          && crate::utils::native_records::enabled(self.ctx.options)
-          && crate::utils::import_options::is_json_module(importee)
-        {
-          import_path =
-            crate::utils::native_records::deferred_json_import_path(self.ctx.chunk, importee_chunk);
+        // An inline common chunk record is no file: an `import()` from another chunk loads the
+        // record's loader, if it has one.
+        let loaded_chunk = match self.ctx.inline_state.record(importee_chunk_idx) {
+          Some(record) => record.loader.map(|loader| &self.ctx.chunk_graph.chunk_table[loader]),
+          None => Some(importee_chunk),
+        };
+        if let Some(loaded_chunk) = loaded_chunk {
+          let mut import_path = self.ctx.chunk.import_path_for(loaded_chunk);
+          if expr.phase == Some(ast::ImportPhase::Defer)
+            && crate::utils::native_records::enabled(self.ctx.options)
+            && crate::utils::import_options::is_json_module(importee)
+          {
+            import_path =
+              crate::utils::native_records::deferred_json_import_path(self.ctx.chunk, loaded_chunk);
+          }
+          expr.source = Expression::new_string_literal(
+            expr.source.span(),
+            oxc::ast::ast::Str::from_str_in(&import_path, self),
+            None,
+            self,
+          );
         }
-        expr.source = Expression::new_string_literal(
-          expr.source.span(),
-          oxc::ast::ast::Str::from_str_in(&import_path, self),
-          None,
-          self,
-        );
 
         if expr.phase == Some(ast::ImportPhase::Defer)
           && crate::utils::native_records::enabled(self.ctx.options)
@@ -4003,6 +4089,7 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         // Convert `import('./foo.mjs')` to `Promise.resolve().then(function() { return require('foo.mjs') })`
         // when format is CJS
         if matches!(self.ctx.options.format, OutputFormat::Cjs) {
+          let import_path = self.ctx.chunk.import_path_for(importee_chunk);
           // require('foo.mjs')
           let mut require_call_expr = ast::Expression::new_call_expression(
             SPAN,
@@ -4018,26 +4105,38 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
             self,
           );
 
+          // A chunk rendered in `OutputExports::Default` mode assigns its default export to
+          // `module.exports` itself, so `require('foo.mjs')` already is that value and must not be
+          // read through `.default`.
+          let importee_chunk_is_default_only =
+            matches!(importee_chunk.output_exports, OutputExports::Default);
+
           if importee.exports_kind.is_commonjs() {
             // Inline __toDynamicImportESM: __toESM(require('foo.mjs').default, isNodeMode)
             let to_esm_fn_name = self.finalized_expr_for_runtime_symbol("__toESM");
 
-            // require('foo.mjs').default
-            let require_default_expr = ast::Expression::new_static_member_expression(
-              SPAN,
-              require_call_expr,
-              ast::IdentifierName::new(SPAN, "default", self),
-              false,
-              self,
-            );
+            // require('foo.mjs').default, or require('foo.mjs') when the chunk is default-only
+            let cjs_module_expr = if importee_chunk_is_default_only {
+              require_call_expr
+            } else {
+              ast::Expression::new_static_member_expression(
+                SPAN,
+                require_call_expr,
+                ast::IdentifierName::new(SPAN, "default", self),
+                false,
+                self,
+              )
+            };
 
             // __toESM(require('foo.mjs').default, isNodeMode)
             require_call_expr = Expression::new_to_esm_wrapper(
               to_esm_fn_name,
-              require_default_expr,
+              cjs_module_expr,
               self.ctx.module.should_consider_node_esm_spec_for_dynamic_import(),
               self,
             );
+          } else if importee_chunk_is_default_only {
+            require_call_expr = self.default_only_namespace_expr(require_call_expr);
           }
 
           *node = Expression::new_promise_resolve_then(require_call_expr, self);

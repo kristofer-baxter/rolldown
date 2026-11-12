@@ -50,6 +50,7 @@ mod patch_module_dependencies;
 mod plain_object_reads;
 pub use plain_object_reads::PlainObjectReads;
 pub use plain_object_reads::static_read_key;
+mod prune_constant_branches;
 mod reference_needed_symbols;
 mod refine_stmt_side_effects;
 mod sort_modules;
@@ -427,7 +428,16 @@ impl<'a> LinkStage<'a> {
               .import_records()
               .iter()
               .filter_map(|rec| match rec.kind {
-                ImportKind::DynamicImport | ImportKind::Require | ImportKind::HotAccept => None,
+                // Dynamically imported modules are included automatically by `include_statements`
+                // when code splitting is disabled (`codeSplitting: false`).
+                //
+                // HotAccept is an HMR-only edge that should be filtered out here.
+                // NewUrl needs at most the emitted asset's filename; it never executes the target
+                // module. See internal-docs/plugin-asset-module/implementation.md.
+                ImportKind::DynamicImport
+                | ImportKind::Require
+                | ImportKind::HotAccept
+                | ImportKind::NewUrl => None,
                 _ => rec.resolved_module,
               })
               .collect();
@@ -503,6 +513,7 @@ impl<'a> LinkStage<'a> {
     // `reference_needed_symbols` derives import flags from them.
     self.recompute_analyzed_side_effects();
     self.reference_needed_symbols();
+    self.prune_constant_branches();
     self.include_statements(&unreachable_import_expression_node_ids);
     self.check_lazy_barrel_uncertain_bindings();
     self.patch_module_dependencies();

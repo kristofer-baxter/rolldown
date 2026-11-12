@@ -2,6 +2,7 @@ pub mod asset_dedup_filename;
 pub mod chunk_filenames_function;
 #[cfg(feature = "experimental")]
 pub mod compiler_compatibility;
+pub mod exports_kind_discovery_order;
 pub mod external_interop_invariants;
 pub mod inline_common_chunks;
 pub mod path_external_common_dir;

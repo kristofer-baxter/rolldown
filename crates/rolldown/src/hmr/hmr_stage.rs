@@ -2799,13 +2799,17 @@ fn linked_exports_kind(
   importers.sort_by_key(|importer| {
     (reach.discovery_order(importer.importer_idx), importer.importer_idx.index())
   });
+  if importers.iter().any(|importer| {
+    importer.kind == ImportKind::Require
+      || (importer.kind == ImportKind::DynamicImport && !code_splitting)
+  }) {
+    return Some(ExportsKind::CommonJs);
+  }
   Some(
     importers
       .iter()
       .find_map(|importer| match importer.kind {
         ImportKind::Import if !module.meta.has_lazy_export() => Some(ExportsKind::Esm),
-        ImportKind::Require => Some(ExportsKind::CommonJs),
-        ImportKind::DynamicImport if !code_splitting => Some(ExportsKind::CommonJs),
         _ => None,
       })
       .unwrap_or(ExportsKind::None),

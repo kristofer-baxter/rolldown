@@ -122,6 +122,9 @@ pub struct LinkingMetadata {
   /// Tracks which statements in this module are included after tree-shaking.
   /// Each entry corresponds to a statement in the module's `stmt_infos`.
   pub stmt_info_included: IndexBitSet<StmtInfoIdx>,
+  /// Known branch decisions shared by dependency pruning and AST finalization.
+  /// `if`/ternary: whether the consequent executes; logical expression: whether the RHS executes.
+  pub constant_branches: FxHashMap<NodeId, bool>,
   /// Tracks whether the module is included after tree-shaking.
   pub is_included: bool,
   /// Cached result of `reexports_commonjs_property`: 0 = uncomputed, 1 = false, 2 = true.

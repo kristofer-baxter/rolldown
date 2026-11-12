@@ -181,7 +181,6 @@ pub struct AstScanner<'me, 'ast> {
   /// How many times `exports.name = ...` or `module.exports.name = ...` defines each name.
   commonjs_export_definitions: FxHashMap<CompactStr, u32>,
   /// Whether the current position is at the top level (all parent scopes are block or top-level).
-  /// A cache of [AstScanner::is_valid_tla_scope].
   is_top_level: bool,
   current_comment_idx: usize,
   untranspiled_syntax: UntranspiledSyntax,
@@ -310,11 +309,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
   /// }
   /// ```
   pub fn is_valid_tla_scope(&self) -> bool {
-    self
-      .scope_stack
-      .iter()
-      .rev()
-      .all(|flag| flag.is_top() || flag.is_block() || flag.is_catch_clause())
+    self.scope_stack.iter().rev().all(|flag| !flag.is_var() || flag.is_top())
   }
 
   pub fn is_root_scope(&self) -> bool {

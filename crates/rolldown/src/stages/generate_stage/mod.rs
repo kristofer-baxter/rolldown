@@ -3,10 +3,11 @@ use std::path::{Path, PathBuf};
 use arcstr::ArcStr;
 use futures::future::try_join_all;
 use oxc_index::IndexVec;
+use oxc_str::CompactStr;
 use render_chunk_to_assets::set_emitted_chunk_preliminary_filenames;
 use rolldown_common::{
-  ChunkIdx, ChunkKind, InstantiationKind, ModuleIdx, OutputExports, PackageJson, PathsOutputOption,
-  UsedSymbolRefs, UsedSymbolRefsBuilder,
+  Chunk, ChunkIdx, ChunkKind, InstantiationKind, ModuleIdx, NormalModule, OutputExports,
+  PackageJson, PathsOutputOption, UsedSymbolRefs, UsedSymbolRefsBuilder, WrapKind,
 };
 use rolldown_devtools::{action, trace_action, trace_action_enabled};
 use rolldown_error::{BuildDiagnostic, BuildResult};
@@ -383,7 +384,7 @@ impl<'a> GenerateStage<'a> {
     // live chunks throughout, so their own edges are derived like any other chunk's, and the
     // projection afterwards turns the logical edges into the physical file graph.
     // See internal-docs/inline-common-chunks/implementation.md.
-    if self.select_inline_common_chunks(&chunk_graph, &link_state, &mut order_state) {
+    if self.select_inline_common_chunks(&mut chunk_graph, &link_state, &mut order_state) {
       link_state = self.compute_cross_chunk_link_state(
         &chunk_graph,
         used_symbol_refs.view(),
@@ -886,14 +887,16 @@ impl<'a> GenerateStage<'a> {
       Vec::new()
     };
     let flattened_entries_ref = &flattened_entries;
+    let chunk_table = &chunk_graph.chunk_table;
     let mut index_pre_generated_names: IndexVec<ChunkIdx, PreGeneratedChunkName> =
       if order_matches_previous {
         IndexVec::default()
       } else {
         let cache_ref = self.cache.as_deref();
         let index_pre_generated_names_futures =
-          chunk_graph.chunk_table.iter_enumerated().map(|(chunk_idx, chunk)| {
+          chunk_table.iter_enumerated().map(|(chunk_idx, chunk)| {
             let is_record = self.inline_state.is_record(chunk_idx);
+            let loaded_record = self.inline_state.loaded_record(chunk_idx);
             let cached_pre = cached_by_chunk
               .get(&chunk_idx)
               .and_then(|m_idx| cache_ref?.cached_chunk_namings.get(m_idx))
@@ -989,8 +992,11 @@ impl<'a> GenerateStage<'a> {
                   }
                   // - rollup use the first entered/last executed module as the `[name]` of common chunks.
                   // - esbuild always use 'chunk' as the `[name]`. However we try to make the name more meaningful here.
+                  // The file an `import()` loads for an inline common chunk record has no modules of its
+                  // own and is named like the record.
+                  let named_after = loaded_record.map_or(chunk, |record| &chunk_table[record]);
                   if let Some(module_id) =
-                    chunk.modules.iter().rev().find(|each| **each != runtime_id)
+                    named_after.modules.iter().rev().find(|each| **each != runtime_id)
                   {
                     let module = &modules[*module_id];
                     let name = module.id().representative_name();
@@ -2072,10 +2078,16 @@ impl<'a> GenerateStage<'a> {
     used_symbol_refs: &UsedSymbolRefs,
     order_state: &order_wrap_state::OrderWrapState,
   ) -> BuildResult<()> {
+    let cyclic_modules = if self.options.preserve_modules {
+      order_wrapping::synchronous_cycle_modules(&self.link_output.module_table.modules)
+    } else {
+      FxHashSet::default()
+    };
+
     // Collect all the chunk data we need first
     let mut chunk_export_data = Vec::new();
     for (chunk_idx, chunk) in chunk_graph.chunk_table.iter_enumerated() {
-      if let Some(entry_module) = chunk.user_defined_entry_module(&self.link_output.module_table) {
+      if let Some(entry_module) = self.export_mode_module(chunk, &cyclic_modules) {
         let export_names = get_chunk_export_names(chunk, self.link_output);
         chunk_export_data.push((chunk_idx, entry_module, export_names));
       }
@@ -2113,12 +2125,62 @@ impl<'a> GenerateStage<'a> {
 
     // Set common chunks to Named
     for chunk in chunk_graph.chunk_table.iter_mut() {
-      if chunk.user_defined_entry_module(&self.link_output.module_table).is_none() {
+      if self.export_mode_module(chunk, &cyclic_modules).is_none() {
         chunk.output_exports = OutputExports::Named;
       }
     }
 
     Ok(())
+  }
+
+  /// The module whose exports decide a chunk's `output.exports` mode.
+  ///
+  /// User-defined entries always resolve their own mode. Rollup also applies `output.exports` to
+  /// every other chunk when `preserveModules` is on, since each chunk is a facade for exactly one
+  /// module, so those chunks resolve their own mode as well, with exceptions that keep the
+  /// `Named` fallback:
+  ///
+  /// - The synthetic runtime module, an internal detail with named helpers.
+  /// - A CommonJS-wrapped module. In `Named` mode its chunk exports a lazy `default` getter, so
+  ///   the module runs when an importer reads it, as Node runs it at its `require()` call. A
+  ///   `default`-mode chunk would run it as soon as an importer's file loads.
+  /// - A chunk that also exposes bindings beyond its declared exports, because a `default`-mode
+  ///   chunk can carry nothing else: bundler-internal wrapper or namespace symbols that other
+  ///   chunks reach through it, or `export *` that reaches an external module, directly or
+  ///   through other preserved modules, whose names are installed on `exports` at runtime from
+  ///   the chunk's entry-level external list.
+  /// - A module on a static import or `require()` cycle. A `default`-mode chunk replaces
+  ///   `module.exports`, so an importer that runs while the module is still executing would keep
+  ///   the empty object `require()` returned.
+  fn export_mode_module(
+    &self,
+    chunk: &Chunk,
+    cyclic_modules: &FxHashSet<ModuleIdx>,
+  ) -> Option<&NormalModule> {
+    if let Some(module) = chunk.user_defined_entry_module(&self.link_output.module_table) {
+      return Some(module);
+    }
+    if !self.options.preserve_modules {
+      return None;
+    }
+    let module = chunk.entry_module(&self.link_output.module_table)?;
+    if module.idx == self.link_output.runtime.id() || cyclic_modules.contains(&module.idx) {
+      return None;
+    }
+    if !chunk.entry_level_external_module_idx.is_empty() {
+      return None;
+    }
+    let meta = &self.link_output.metas[module.idx];
+    if matches!(meta.wrap_kind(), WrapKind::Cjs) {
+      return None;
+    }
+    let is_declared_export =
+      |name: &CompactStr| meta.sorted_and_non_ambiguous_resolved_exports.contains_key(name);
+    chunk
+      .exports_to_other_chunks
+      .values()
+      .all(|aliases| aliases.iter().all(is_declared_export))
+      .then_some(module)
   }
 
   fn trace_action_chunks_infos(&self, chunk_graph: &ChunkGraph) {

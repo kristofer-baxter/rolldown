@@ -4273,17 +4273,25 @@ fn linked_exports_kind(
     .filter(|&importer| unreachable.reaches(importer))
     .collect::<Vec<_>>();
   importers.sort_by_key(|&importer| (unreachable.discovery_order(importer), importer.index()));
-  importers
-    .into_iter()
-    .filter_map(|importer| modules[importer].as_normal())
-    .flat_map(|importer| importer.import_records.iter())
-    .filter(|rec| rec.resolved_module == Some(target))
-    .find_map(|rec| match rec.kind {
-      ImportKind::Import if !module.meta.has_lazy_export() => Some(ExportsKind::Esm),
-      ImportKind::Require => Some(ExportsKind::CommonJs),
-      _ => None,
-    })
-    .unwrap_or(ExportsKind::None)
+  let mut has_esm_import = false;
+  for importer in importers {
+    let Some(importer) = modules[importer].as_normal() else {
+      continue;
+    };
+    for rec in &importer.import_records {
+      if rec.resolved_module != Some(target) {
+        continue;
+      }
+      match rec.kind {
+        ImportKind::Import if !module.meta.has_lazy_export() => {
+          has_esm_import = true;
+        }
+        ImportKind::Require => return ExportsKind::CommonJs,
+        _ => {}
+      }
+    }
+  }
+  if has_esm_import { ExportsKind::Esm } else { ExportsKind::None }
 }
 
 /// The bindings that a preserved module's record exports whatever imports it: its complete

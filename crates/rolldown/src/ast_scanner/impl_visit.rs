@@ -684,7 +684,9 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
           }
           "require" => {
             let is_dummy_record = match self.visit_path.last().copied() {
-              Some(AstKind::CallExpression(call_expr)) => {
+              Some(AstKind::CallExpression(call_expr))
+                if call_expr.callee.node_id() == ident_ref.node_id() =>
+              {
                 let recorded = self.process_global_require_call(call_expr);
                 // A `require()` result is the exports object of the module that it names, whose
                 // constants linking inlines only while the result is read through static members
