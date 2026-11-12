@@ -38,9 +38,8 @@ impl<'ast, 'a> PreProcessor<'ast, 'a> {
       ast_builder: AstBuilder::new(alloc),
       top_level_stmt_temp_storage: vec![],
       keep_names,
-      drop_labels: drop_labels.filter(|set| {
-        set.iter().any(|label| !label.starts_with(super::topology_config::TOPOLOGY_KEY_HEADER))
-      }),
+      drop_labels: drop_labels
+        .filter(|set| set.iter().any(|label| !super::topology_config::is_carrier_label(label))),
       lower_import_defer: false,
       defer_spans: vec![],
     }

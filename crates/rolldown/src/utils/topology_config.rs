@@ -95,6 +95,58 @@ pub struct TopologyConfig {
   pub consumer_shared_chunk_names: bool,
 }
 
+/// The asset that records the internal export names of a build with [`attach_export_names`].
+pub const EXPORT_NAMES_FILE: &str = "__native/release-train-exports.json";
+
+const EXPORT_NAMES_KEY_HEADER: &str = "\0__native_release_train_export_names_json:";
+
+/// Whether a `drop_labels` entry carries configuration for this fork rather than naming a label
+/// to drop.
+pub fn is_carrier_label(label: &str) -> bool {
+  label.starts_with(TOPOLOGY_KEY_HEADER) || label.starts_with(EXPORT_NAMES_KEY_HEADER)
+}
+
+/// Gives a build the internal export names of an earlier one, by [`export_name_key`]. A minified
+/// internal export then keeps the name that the earlier build gave it where its chunk still has
+/// that name free, and the build emits the names it chose as [`EXPORT_NAMES_FILE`], for the next
+/// build to keep in turn. An empty map only records. It travels apart from [`TopologyConfig`],
+/// whose presence alone changes how chunks are formed.
+pub fn attach_export_names(
+  options: &mut rolldown_common::BundlerOptions,
+  names: &std::collections::BTreeMap<String, String>,
+) {
+  let encoded = serde_json::to_string(names).expect("a map of strings is always serializable");
+  let labels = options.drop_labels.get_or_insert_default();
+  labels.retain(|label| !label.starts_with(EXPORT_NAMES_KEY_HEADER));
+  labels.push(format!("{EXPORT_NAMES_KEY_HEADER}{encoded}"));
+}
+
+/// The names that [`attach_export_names`] gave the build, if it gave any.
+pub fn export_names(
+  options: &rolldown_common::NormalizedBundlerOptions,
+) -> Option<std::collections::BTreeMap<String, String>> {
+  options
+    .drop_labels
+    .iter()
+    .find_map(|label| serde_json::from_str(label.strip_prefix(EXPORT_NAMES_KEY_HEADER)?).ok())
+}
+
+/// The key of a cross-chunk export among the recorded names: its module's stable id, which is
+/// relative to the build's root, and its symbol's name.
+pub fn export_name_key(module_stable_id: &str, symbol_name: &str) -> String {
+  format!("{module_stable_id}#{symbol_name}")
+}
+
+/// Whether `name` has the shape of a generated internal export name, which a recorded name must
+/// have: a short ASCII identifier other than `then`, which would make its chunk a thenable.
+pub fn is_internal_export_name(name: &str) -> bool {
+  let mut bytes = name.bytes();
+  bytes.next().is_some_and(|first| first.is_ascii_alphabetic() || first == b'_' || first == b'$')
+    && bytes.all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'$')
+    && name.len() <= 6
+    && name != "then"
+}
+
 pub const TOPOLOGY_KEY_HEADER: &str = "\0__native_topology_config_json:";
 
 fn kebab_case_segment(value: &str) -> String {
@@ -391,5 +443,29 @@ mod route_name_tests {
     ] {
       assert_eq!(route_split_chunk_name(id), None, "{id}");
     }
+  }
+
+  #[test]
+  fn release_train_export_names_round_trip_and_validate_internal_identifiers() {
+    let mut options = rolldown_common::BundlerOptions::default();
+    let mut recorded = std::collections::BTreeMap::new();
+    recorded.insert(super::export_name_key("src/a.js", "foo"), "t".to_owned());
+    super::attach_export_names(&mut options, &recorded);
+    let labels = options.drop_labels.as_ref().expect("carrier label attached");
+    assert_eq!(labels.len(), 1);
+    assert!(super::is_carrier_label(&labels[0]));
+    assert!(!super::is_carrier_label("DEBUG"));
+
+    recorded.insert(super::export_name_key("src/b.js", "bar"), "$1".to_owned());
+    super::attach_export_names(&mut options, &recorded);
+    assert_eq!(options.drop_labels.as_ref().map(Vec::len), Some(1));
+
+    assert!(super::is_internal_export_name("t"));
+    assert!(super::is_internal_export_name("_a$9"));
+    assert!(!super::is_internal_export_name(""));
+    assert!(!super::is_internal_export_name("then"));
+    assert!(!super::is_internal_export_name("1a"));
+    assert!(!super::is_internal_export_name("abcdefg"));
+    assert!(!super::is_internal_export_name("a-b"));
   }
 }

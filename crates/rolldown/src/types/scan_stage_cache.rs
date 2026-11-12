@@ -572,6 +572,7 @@ pub struct ScanStageCache {
   pub current_module_was_hit: FxHashSet<ModuleIdx>,
   pub cached_chunk_sourcemaps: FxHashMap<[u128; 2], CachedChunkSourcemap>,
   pub current_chunk_map_digests: FxHashMap<rolldown_common::ChunkIdx, [u128; 2]>,
+  pub cached_chunk_prototype_mutations: FxHashMap<[u8; 32], bool>,
   pub current_chunk_minify_state:
     FxHashMap<rolldown_common::ChunkIdx, ([u8; 32], Vec<String>, Option<ArcStr>)>,
   pub cached_multi_module_chunks: FxHashMap<[u128; 2], CachedMultiModuleChunk>,
@@ -890,6 +891,7 @@ impl ScanStageCache {
     self.cached_chunk_namings.clear();
     self.naming_order_signature = None;
     self.cached_native_chunks.clear();
+    self.cached_chunk_prototype_mutations.clear();
     self.cached_finalized_modules.clear();
     self.current_rendered_sources.clear();
     self.current_module_finalize_digests.clear();
