@@ -510,7 +510,7 @@ pub type CachedLazyChunk = (
 #[expect(clippy::struct_excessive_bools, clippy::type_complexity)]
 #[derive(Default, Debug)]
 pub struct ScanStageCache {
-  snapshot: Option<NormalizedScanStageOutput>,
+  snapshot: Option<Box<NormalizedScanStageOutput>>,
   pub barrel_state: BarrelState,
   pub module_id_to_idx: FxHashMap<ModuleId, VisitState>,
   pub importers: IndexVec<ModuleIdx, Vec<ImporterRecord>>,
@@ -600,6 +600,9 @@ pub struct ScanStageCache {
   pub keep_unused_capacity: bool,
   pub last_reused_chunk_filenames: FxHashSet<ArcStr>,
   pub last_fast_native_relink: bool,
+  /// Core stage wall times of the last generation, including a rejected fast-path attempt.
+  pub last_core_link_time: std::time::Duration,
+  pub last_core_generate_time: std::time::Duration,
   pub last_link_decisions_unchanged: bool,
   pub link_decisions_generation: u64,
   /// Why the last generation linked the whole graph rather than relinking what the update
@@ -900,6 +903,8 @@ impl ScanStageCache {
     self.runtime_rendered_chunk = None;
     self.last_reused_chunk_filenames.clear();
     self.last_fast_native_relink = false;
+    self.last_core_link_time = std::time::Duration::ZERO;
+    self.last_core_generate_time = std::time::Duration::ZERO;
     self.last_link_decisions_unchanged = false;
     self.link_decisions_generation = 0;
     self.clear_cell_route_cache();
@@ -912,7 +917,7 @@ impl ScanStageCache {
     self.native_importer_changes.clear();
     self.last_native_graph_change = None;
     self.codegen_last_used.clear();
-    self.snapshot = Some(cache);
+    self.snapshot = Some(Box::new(cache));
   }
 
   #[inline]
@@ -934,7 +939,7 @@ impl ScanStageCache {
   /// Useful when workarounding rustc borrow rules
   pub fn take_snapshot(&mut self) -> Option<NormalizedScanStageOutput> {
     self.clear_cell_route_cache();
-    self.snapshot.take()
+    self.snapshot.take().map(|snapshot| *snapshot)
   }
 
   #[cfg(feature = "experimental")]
@@ -1019,7 +1024,7 @@ impl ScanStageCache {
 
   /// Non-panicking variant of [`Self::get_snapshot`].
   pub fn snapshot(&self) -> Option<&NormalizedScanStageOutput> {
-    self.snapshot.as_ref()
+    self.snapshot.as_deref()
   }
 
   /// Between builds the cache is either empty (no snapshot: only a full scan
@@ -1073,6 +1078,8 @@ impl ScanStageCache {
     self.clear_cell_route_cache();
     let Some(ref mut cache) = self.snapshot else {
       self.last_fast_native_relink = false;
+      self.last_core_link_time = std::time::Duration::ZERO;
+      self.last_core_generate_time = std::time::Duration::ZERO;
       self.last_link_decisions_unchanged = false;
       self.link_decisions_generation = 0;
       self.last_native_relink_fallback = None;
@@ -1086,10 +1093,12 @@ impl ScanStageCache {
       let snapshot: NormalizedScanStageOutput =
         scan_stage_output.try_into().map_err(|e: &'static str| vec![anyhow::anyhow!(e).into()])?;
       self.build_module_index_maps(&snapshot);
-      self.snapshot = Some(snapshot);
+      self.snapshot = Some(Box::new(snapshot));
       return Ok(());
     };
     self.last_fast_native_relink = false;
+    self.last_core_link_time = std::time::Duration::ZERO;
+    self.last_core_generate_time = std::time::Duration::ZERO;
     self.last_link_decisions_unchanged = false;
     self.last_native_relink_fallback = None;
     self.last_rebuilt_chunk_filenames.clear();
@@ -1143,6 +1152,9 @@ impl ScanStageCache {
             .related_stmt_infos
             .iter()
             .any(|(importer_idx, _, _, _)| rescanned_module_idxs.contains(importer_idx))
+      })
+      || rescanned_module_idxs.iter().any(|importer_idx| {
+        cache.dynamic_import_exports_usage_by_importer.contains_key(importer_idx)
       });
     self.next_scan_generation = self.next_scan_generation.wrapping_add(1).max(1);
     let merge_generation = self.next_scan_generation;
@@ -1209,6 +1221,8 @@ impl ScanStageCache {
       let idx = self.module_id_to_idx[new_module.id()].idx();
 
       let incoming_tla_span = scan_stage_output.tla_keyword_span_map.get(&new_idx).copied();
+      let incoming_dynamic_import_usage =
+        scan_stage_output.dynamic_import_exports_usage_by_importer.remove(&new_idx);
 
       if new_idx.index() >= cache.module_table.modules.len() {
         let new_module_idx = ModuleIdx::from_usize(cache.module_table.modules.len());
@@ -1259,6 +1273,11 @@ impl ScanStageCache {
         }
         if let Some(span) = incoming_tla_span {
           cache.tla_keyword_span_map.insert(new_module_idx, span);
+        }
+        if let Some(usages) = incoming_dynamic_import_usage {
+          cache.dynamic_import_exports_usage_by_importer.insert(new_module_idx, usages);
+        } else {
+          cache.dynamic_import_exports_usage_by_importer.remove(&new_module_idx);
         }
         cache.symbol_ref_db.store_local_db(
           new_module_idx,
@@ -1351,6 +1370,14 @@ impl ScanStageCache {
           cache.tla_keyword_span_map.remove(&idx);
         }
       }
+      match incoming_dynamic_import_usage {
+        Some(usages) => {
+          cache.dynamic_import_exports_usage_by_importer.insert(idx, usages);
+        }
+        None => {
+          cache.dynamic_import_exports_usage_by_importer.remove(&idx);
+        }
+      }
       cache.module_table[idx] = new_module;
       cache.index_ecma_ast[idx] = scan_stage_output.index_ecma_ast.get_mut(new_idx).take();
       cache.stmt_infos[idx] = std::mem::replace(
@@ -1423,6 +1450,12 @@ impl ScanStageCache {
         cache.entry_points.push(entry_point);
       }
     }
+
+    cache.dynamic_import_exports_usage_map =
+      crate::stages::scan_stage::merge_dynamic_import_exports_usage(
+        &cache.dynamic_import_exports_usage_by_importer,
+        |_| true,
+      );
 
     // Update barrel module resolved import records
     let resolved_barrel_modules = std::mem::take(&mut self.barrel_state.resolved_barrel_modules);
@@ -1567,6 +1600,7 @@ impl ScanStageCache {
       runtime: cache.runtime.clone(),
       warnings: Vec::new(),
       dynamic_import_exports_usage_map: FxHashMap::default(),
+      dynamic_import_exports_usage_by_importer: FxHashMap::default(),
       overrode_preserve_entry_signature_map: FxHashMap::default(),
       entry_point_to_reference_ids: FxHashMap::default(),
       flat_options: cache.flat_options,
@@ -1619,6 +1653,9 @@ impl ScanStageCache {
       // TODO: cache warning
       warnings: vec![],
       dynamic_import_exports_usage_map: cache.dynamic_import_exports_usage_map.clone(),
+      dynamic_import_exports_usage_by_importer: cache
+        .dynamic_import_exports_usage_by_importer
+        .clone(),
       overrode_preserve_entry_signature_map: cache.overrode_preserve_entry_signature_map.clone(),
       entry_point_to_reference_ids: cache.entry_point_to_reference_ids.clone(),
       flat_options: cache.flat_options,

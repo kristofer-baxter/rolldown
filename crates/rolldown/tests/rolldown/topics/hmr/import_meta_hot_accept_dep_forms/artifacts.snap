@@ -96,42 +96,42 @@ __rolldown_runtime__.registerGraph({
 	entries: [13]
 });
 // one_arg/child.js
-var child_exports$3 = /* @__PURE__ */ __exportAll({ count: () => 0 });
+var child_exports$aa3dfe04 = /* @__PURE__ */ __exportAll({ count: () => 0 });
 __rolldown_runtime__.createModuleHotContext("one_arg/child.js");
-__rolldown_runtime__.registerModule("one_arg/child.js", { exports: child_exports$3 });
+__rolldown_runtime__.registerModule("one_arg/child.js", { exports: child_exports$aa3dfe04 });
 globalThis.one_argChildRuns = (globalThis.one_argChildRuns ?? 0) + 1;
 // one_arg/parent.js
-var parent_exports$5 = /* @__PURE__ */ __exportAll({});
-const parent_hot$5 = __rolldown_runtime__.createModuleHotContext("one_arg/parent.js");
-__rolldown_runtime__.registerModule("one_arg/parent.js", { exports: parent_exports$5 });
+var parent_exports$df13cd26 = /* @__PURE__ */ __exportAll({});
+const parent_hot$df13cd26 = __rolldown_runtime__.createModuleHotContext("one_arg/parent.js");
+__rolldown_runtime__.registerModule("one_arg/parent.js", { exports: parent_exports$df13cd26 });
 globalThis.one_argParentRuns = (globalThis.one_argParentRuns ?? 0) + 1;
-parent_hot$5.accept("one_arg/child.js");
+parent_hot$df13cd26.accept("one_arg/child.js");
 // three_args/child.js
-var child_exports$2 = /* @__PURE__ */ __exportAll({ count: () => 0 });
+var child_exports$35d79499 = /* @__PURE__ */ __exportAll({ count: () => 0 });
 __rolldown_runtime__.createModuleHotContext("three_args/child.js");
-__rolldown_runtime__.registerModule("three_args/child.js", { exports: child_exports$2 });
+__rolldown_runtime__.registerModule("three_args/child.js", { exports: child_exports$35d79499 });
 globalThis.three_argsChildRuns = (globalThis.three_argsChildRuns ?? 0) + 1;
 // three_args/parent.js
-var parent_exports$4 = /* @__PURE__ */ __exportAll({});
-const parent_hot$4 = __rolldown_runtime__.createModuleHotContext("three_args/parent.js");
-__rolldown_runtime__.registerModule("three_args/parent.js", { exports: parent_exports$4 });
+var parent_exports$359e14a8 = /* @__PURE__ */ __exportAll({});
+const parent_hot$359e14a8 = __rolldown_runtime__.createModuleHotContext("three_args/parent.js");
+__rolldown_runtime__.registerModule("three_args/parent.js", { exports: parent_exports$359e14a8 });
 globalThis.three_argsParentRuns = (globalThis.three_argsParentRuns ?? 0) + 1;
 globalThis.three_argsSaw = 0;
-parent_hot$4.accept("three_args/child.js", (mod) => {
+parent_hot$359e14a8.accept("three_args/child.js", (mod) => {
 	globalThis.three_argsSaw = mod.count;
 }, "extra");
 // template/child.js
-var child_exports$1 = /* @__PURE__ */ __exportAll({ count: () => 0 });
+var child_exports$3a65af7a = /* @__PURE__ */ __exportAll({ count: () => 0 });
 __rolldown_runtime__.createModuleHotContext("template/child.js");
-__rolldown_runtime__.registerModule("template/child.js", { exports: child_exports$1 });
+__rolldown_runtime__.registerModule("template/child.js", { exports: child_exports$3a65af7a });
 globalThis.templateChildRuns = (globalThis.templateChildRuns ?? 0) + 1;
 // template/parent.js
-var parent_exports$3 = /* @__PURE__ */ __exportAll({});
-const parent_hot$3 = __rolldown_runtime__.createModuleHotContext("template/parent.js");
-__rolldown_runtime__.registerModule("template/parent.js", { exports: parent_exports$3 });
+var parent_exports$d52b4aeb = /* @__PURE__ */ __exportAll({});
+const parent_hot$d52b4aeb = __rolldown_runtime__.createModuleHotContext("template/parent.js");
+__rolldown_runtime__.registerModule("template/parent.js", { exports: parent_exports$d52b4aeb });
 globalThis.templateParentRuns = (globalThis.templateParentRuns ?? 0) + 1;
 globalThis.templateSaw = 0;
-parent_hot$3.accept("template/child.js", (mod) => {
+parent_hot$d52b4aeb.accept("template/child.js", (mod) => {
 	globalThis.templateSaw = mod.count;
 });
 // template_array/a.js
@@ -145,12 +145,12 @@ __rolldown_runtime__.createModuleHotContext("template_array/b.js");
 __rolldown_runtime__.registerModule("template_array/b.js", { exports: b_exports });
 globalThis.template_array_bRuns = (globalThis.template_array_bRuns ?? 0) + 1;
 // template_array/parent.js
-var parent_exports$2 = /* @__PURE__ */ __exportAll({});
-const parent_hot$2 = __rolldown_runtime__.createModuleHotContext("template_array/parent.js");
-__rolldown_runtime__.registerModule("template_array/parent.js", { exports: parent_exports$2 });
+var parent_exports$24bd2541 = /* @__PURE__ */ __exportAll({});
+const parent_hot$24bd2541 = __rolldown_runtime__.createModuleHotContext("template_array/parent.js");
+__rolldown_runtime__.registerModule("template_array/parent.js", { exports: parent_exports$24bd2541 });
 globalThis.template_arrayParentRuns = (globalThis.template_arrayParentRuns ?? 0) + 1;
 globalThis.template_arraySaw = [0, 0];
-parent_hot$2.accept(["template_array/a.js", "template_array/b.js"], ([newA, newB]) => {
+parent_hot$24bd2541.accept(["template_array/a.js", "template_array/b.js"], ([newA, newB]) => {
 	if (newA) globalThis.template_arraySaw[0] = newA.count;
 	if (newB) globalThis.template_arraySaw[1] = newB.count;
 });
@@ -163,9 +163,9 @@ self_hot.accept(void 0, () => {
 	globalThis.falsy_depsCallbackRan = true;
 });
 // falsy_deps/parent.js
-var parent_exports$1 = /* @__PURE__ */ __exportAll({});
+var parent_exports$9acb9f90 = /* @__PURE__ */ __exportAll({});
 __rolldown_runtime__.createModuleHotContext("falsy_deps/parent.js");
-__rolldown_runtime__.registerModule("falsy_deps/parent.js", { exports: parent_exports$1 });
+__rolldown_runtime__.registerModule("falsy_deps/parent.js", { exports: parent_exports$9acb9f90 });
 globalThis.falsy_depsParentRuns = (globalThis.falsy_depsParentRuns ?? 0) + 1;
 // array_one_arg/child.js
 var child_exports = /* @__PURE__ */ __exportAll({ count: () => 0 });

@@ -59,22 +59,22 @@ self_accept_hot.accept((mod) => {
 	assert.strictEqual(mod.foo, "foo2");
 });
 // single_accept/child.js
-var child_exports$1 = /* @__PURE__ */ __exportAll({ count: () => 0 });
+var child_exports$fa00765b = /* @__PURE__ */ __exportAll({ count: () => 0 });
 __rolldown_runtime__.createModuleHotContext("single_accept/child.js");
-__rolldown_runtime__.registerModule("single_accept/child.js", { exports: child_exports$1 });
+__rolldown_runtime__.registerModule("single_accept/child.js", { exports: child_exports$fa00765b });
 // single_accept/parent.js
-var parent_exports$1 = /* @__PURE__ */ __exportAll({});
-const parent_hot$1 = __rolldown_runtime__.createModuleHotContext("single_accept/parent.js");
-__rolldown_runtime__.registerModule("single_accept/parent.js", { exports: parent_exports$1 });
+var parent_exports$4227db33 = /* @__PURE__ */ __exportAll({});
+const parent_hot$4227db33 = __rolldown_runtime__.createModuleHotContext("single_accept/parent.js");
+__rolldown_runtime__.registerModule("single_accept/parent.js", { exports: parent_exports$4227db33 });
 globalThis.singleAcceptAcceptCount ??= 0;
 globalThis.singleAcceptParentExecuteCount ??= 0;
 globalThis.singleAcceptParentExecuteCount++;
 assert.strictEqual(globalThis.singleAcceptParentExecuteCount, 1);
-let count$2 = 0;
-parent_hot$1.accept("single_accept/child.js", (mod) => {
-	count$2 = mod.count;
+let count$4227db33 = 0;
+parent_hot$4227db33.accept("single_accept/child.js", (mod) => {
+	count$4227db33 = mod.count;
 	globalThis.singleAcceptAcceptCount++;
-	assert.strictEqual(globalThis.singleAcceptAcceptCount, count$2);
+	assert.strictEqual(globalThis.singleAcceptAcceptCount, count$4227db33);
 });
 process.on("beforeExit", (code) => {
 	if (code !== 0) return;

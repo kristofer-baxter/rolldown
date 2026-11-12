@@ -75,154 +75,154 @@ __rolldown_runtime__.registerGraph({
 	entries: [17]
 });
 // named/target.js
-var target_exports$7 = /* @__PURE__ */ __exportAll({
+var target_exports$45fd449f = /* @__PURE__ */ __exportAll({
 	a: () => 0,
 	b: () => "b"
 });
-const target_hot$7 = __rolldown_runtime__.createModuleHotContext("named/target.js");
-__rolldown_runtime__.registerModule("named/target.js", { exports: target_exports$7 });
+const target_hot$45fd449f = __rolldown_runtime__.createModuleHotContext("named/target.js");
+__rolldown_runtime__.registerModule("named/target.js", { exports: target_exports$45fd449f });
 globalThis.namedAcceptCount ??= 0;
-target_hot$7.acceptExports(["a"], (mod) => {
+target_hot$45fd449f.acceptExports(["a"], (mod) => {
 	globalThis.namedAcceptCount++;
 	assert.strictEqual(mod.a, 1);
 });
 // named/importer.js
-var importer_exports$8 = /* @__PURE__ */ __exportAll({});
+var importer_exports$cdd99616 = /* @__PURE__ */ __exportAll({});
 __rolldown_runtime__.createModuleHotContext("named/importer.js");
-__rolldown_runtime__.registerModule("named/importer.js", { exports: importer_exports$8 });
+__rolldown_runtime__.registerModule("named/importer.js", { exports: importer_exports$cdd99616 });
 globalThis.namedImporterRuns ??= 0;
 globalThis.namedImporterRuns++;
 globalThis.namedImporterSawA = 0;
 // non_accepted/target.js
-var target_exports$6 = /* @__PURE__ */ __exportAll({
+var target_exports$0ce2a069 = /* @__PURE__ */ __exportAll({
 	a: () => 0,
 	b: () => "b"
 });
-const target_hot$6 = __rolldown_runtime__.createModuleHotContext("non_accepted/target.js");
-__rolldown_runtime__.registerModule("non_accepted/target.js", { exports: target_exports$6 });
+const target_hot$0ce2a069 = __rolldown_runtime__.createModuleHotContext("non_accepted/target.js");
+__rolldown_runtime__.registerModule("non_accepted/target.js", { exports: target_exports$0ce2a069 });
 globalThis.nonAcceptedAcceptCount ??= 0;
-target_hot$6.acceptExports(["a"], (mod) => {
+target_hot$0ce2a069.acceptExports(["a"], (mod) => {
 	globalThis.nonAcceptedAcceptCount++;
 	assert.strictEqual(mod.a, 1);
 });
 // non_accepted/importer.js
-var importer_exports$7 = /* @__PURE__ */ __exportAll({});
-const importer_hot$7 = __rolldown_runtime__.createModuleHotContext("non_accepted/importer.js");
-__rolldown_runtime__.registerModule("non_accepted/importer.js", { exports: importer_exports$7 });
+var importer_exports$ab578b19 = /* @__PURE__ */ __exportAll({});
+const importer_hot$ab578b19 = __rolldown_runtime__.createModuleHotContext("non_accepted/importer.js");
+__rolldown_runtime__.registerModule("non_accepted/importer.js", { exports: importer_exports$ab578b19 });
 globalThis.nonAcceptedImporterRuns ??= 0;
 globalThis.nonAcceptedImporterRuns++;
 globalThis.nonAcceptedImporterSawB = "b";
 globalThis.nonAcceptedImporterAcceptCount ??= 0;
-importer_hot$7.accept(() => {
+importer_hot$ab578b19.accept(() => {
 	globalThis.nonAcceptedImporterAcceptCount++;
 });
 // promoted/target.js
-var target_exports$5 = /* @__PURE__ */ __exportAll({
+var target_exports$a06ebfbf = /* @__PURE__ */ __exportAll({
 	a: () => 0,
 	b: () => "b"
 });
-const target_hot$5 = __rolldown_runtime__.createModuleHotContext("promoted/target.js");
-__rolldown_runtime__.registerModule("promoted/target.js", { exports: target_exports$5 });
+const target_hot$a06ebfbf = __rolldown_runtime__.createModuleHotContext("promoted/target.js");
+__rolldown_runtime__.registerModule("promoted/target.js", { exports: target_exports$a06ebfbf });
 globalThis.promotedAcceptCount ??= 0;
-target_hot$5.acceptExports(["a", "b"], (mod) => {
+target_hot$a06ebfbf.acceptExports(["a", "b"], (mod) => {
 	globalThis.promotedAcceptCount++;
 	assert.strictEqual(mod.a, 1);
 });
 // promoted/importer.js
-var importer_exports$6 = /* @__PURE__ */ __exportAll({});
+var importer_exports$01a40c3b = /* @__PURE__ */ __exportAll({});
 __rolldown_runtime__.createModuleHotContext("promoted/importer.js");
-__rolldown_runtime__.registerModule("promoted/importer.js", { exports: importer_exports$6 });
+__rolldown_runtime__.registerModule("promoted/importer.js", { exports: importer_exports$01a40c3b });
 globalThis.promotedImporterRuns ??= 0;
 globalThis.promotedImporterRuns++;
 // side_effect/target.js
-var target_exports$4 = /* @__PURE__ */ __exportAll({ a: () => 0 });
-const target_hot$4 = __rolldown_runtime__.createModuleHotContext("side_effect/target.js");
-__rolldown_runtime__.registerModule("side_effect/target.js", { exports: target_exports$4 });
+var target_exports$0cfa943d = /* @__PURE__ */ __exportAll({ a: () => 0 });
+const target_hot$0cfa943d = __rolldown_runtime__.createModuleHotContext("side_effect/target.js");
+__rolldown_runtime__.registerModule("side_effect/target.js", { exports: target_exports$0cfa943d });
 globalThis.sideEffectAcceptCount ??= 0;
-target_hot$4.acceptExports([], (mod) => {
+target_hot$0cfa943d.acceptExports([], (mod) => {
 	globalThis.sideEffectAcceptCount++;
 	assert.strictEqual(mod.a, 1);
 });
 // side_effect/importer.js
-var importer_exports$5 = /* @__PURE__ */ __exportAll({});
+var importer_exports$a0fa4eb5 = /* @__PURE__ */ __exportAll({});
 __rolldown_runtime__.createModuleHotContext("side_effect/importer.js");
-__rolldown_runtime__.registerModule("side_effect/importer.js", { exports: importer_exports$5 });
+__rolldown_runtime__.registerModule("side_effect/importer.js", { exports: importer_exports$a0fa4eb5 });
 globalThis.sideEffectImporterRuns ??= 0;
 globalThis.sideEffectImporterRuns++;
 // default_import/target.js
-var target_exports$3 = /* @__PURE__ */ __exportAll({
+var target_exports$471697b7 = /* @__PURE__ */ __exportAll({
 	a: () => "a",
 	default: () => 0
 });
-const target_hot$3 = __rolldown_runtime__.createModuleHotContext("default_import/target.js");
-__rolldown_runtime__.registerModule("default_import/target.js", { exports: target_exports$3 });
+const target_hot$471697b7 = __rolldown_runtime__.createModuleHotContext("default_import/target.js");
+__rolldown_runtime__.registerModule("default_import/target.js", { exports: target_exports$471697b7 });
 globalThis.defaultImportAcceptCount ??= 0;
-target_hot$3.acceptExports(["default"], (mod) => {
+target_hot$471697b7.acceptExports(["default"], (mod) => {
 	globalThis.defaultImportAcceptCount++;
 	assert.strictEqual(mod.default, 1);
 });
 // default_import/importer.js
-var importer_exports$4 = /* @__PURE__ */ __exportAll({});
+var importer_exports$76cc23a0 = /* @__PURE__ */ __exportAll({});
 __rolldown_runtime__.createModuleHotContext("default_import/importer.js");
-__rolldown_runtime__.registerModule("default_import/importer.js", { exports: importer_exports$4 });
+__rolldown_runtime__.registerModule("default_import/importer.js", { exports: importer_exports$76cc23a0 });
 globalThis.defaultImportImporterRuns ??= 0;
 globalThis.defaultImportImporterRuns++;
 globalThis.defaultImportImporterSaw = 0;
 // dynamic_import/importer.js
-var importer_exports$3 = /* @__PURE__ */ __exportAll({});
-const importer_hot$3 = __rolldown_runtime__.createModuleHotContext("dynamic_import/importer.js");
-__rolldown_runtime__.registerModule("dynamic_import/importer.js", { exports: importer_exports$3 });
+var importer_exports$cd2d2649 = /* @__PURE__ */ __exportAll({});
+const importer_hot$cd2d2649 = __rolldown_runtime__.createModuleHotContext("dynamic_import/importer.js");
+__rolldown_runtime__.registerModule("dynamic_import/importer.js", { exports: importer_exports$cd2d2649 });
 globalThis.dynamicImportImporterRuns ??= 0;
 globalThis.dynamicImportImporterRuns++;
 import("./target.js").then((mod) => {
 	globalThis.dynamicImportImporterSawA = mod.a;
 });
-importer_hot$3.accept();
+importer_hot$cd2d2649.accept();
 // reexport_named/target.js
-var target_exports$2 = /* @__PURE__ */ __exportAll({
+var target_exports$45b1bcc3 = /* @__PURE__ */ __exportAll({
 	a: () => 0,
 	b: () => "b"
 });
-const target_hot$2 = __rolldown_runtime__.createModuleHotContext("reexport_named/target.js");
-__rolldown_runtime__.registerModule("reexport_named/target.js", { exports: target_exports$2 });
+const target_hot$45b1bcc3 = __rolldown_runtime__.createModuleHotContext("reexport_named/target.js");
+__rolldown_runtime__.registerModule("reexport_named/target.js", { exports: target_exports$45b1bcc3 });
 globalThis.reexportNamedAcceptCount ??= 0;
-target_hot$2?.acceptExports(["a"], (mod) => {
+target_hot$45b1bcc3?.acceptExports(["a"], (mod) => {
 	globalThis.reexportNamedAcceptCount++;
 	assert.strictEqual(mod.a, 1);
 });
 // reexport_named/importer.js
-var importer_exports$2 = /* @__PURE__ */ __exportAll({ b: () => "b" });
-const importer_hot$2 = __rolldown_runtime__.createModuleHotContext("reexport_named/importer.js");
-__rolldown_runtime__.registerModule("reexport_named/importer.js", { exports: importer_exports$2 });
+var importer_exports$6a3e66cd = /* @__PURE__ */ __exportAll({ b: () => "b" });
+const importer_hot$6a3e66cd = __rolldown_runtime__.createModuleHotContext("reexport_named/importer.js");
+__rolldown_runtime__.registerModule("reexport_named/importer.js", { exports: importer_exports$6a3e66cd });
 globalThis.reexportNamedImporterRuns ??= 0;
 globalThis.reexportNamedImporterRuns++;
 globalThis.reexportNamedImporterAcceptCount ??= 0;
-importer_hot$2.accept(() => {
+importer_hot$6a3e66cd.accept(() => {
 	globalThis.reexportNamedImporterAcceptCount++;
 });
 // reexport_star/target.js
-var target_exports$1 = /* @__PURE__ */ __exportAll({
+var target_exports$403bbb36 = /* @__PURE__ */ __exportAll({
 	a: () => 0,
 	b: () => "b"
 });
-const target_hot$1 = __rolldown_runtime__.createModuleHotContext("reexport_star/target.js");
-__rolldown_runtime__.registerModule("reexport_star/target.js", { exports: target_exports$1 });
+const target_hot$403bbb36 = __rolldown_runtime__.createModuleHotContext("reexport_star/target.js");
+__rolldown_runtime__.registerModule("reexport_star/target.js", { exports: target_exports$403bbb36 });
 globalThis.reexportStarAcceptCount ??= 0;
-target_hot$1.acceptExports(["a"], (mod) => {
+target_hot$403bbb36.acceptExports(["a"], (mod) => {
 	globalThis.reexportStarAcceptCount++;
 	assert.strictEqual(mod.a, 1);
 });
 // reexport_star/importer.js
-var importer_exports$1 = /* @__PURE__ */ __exportAll({
+var importer_exports$a5a97592 = /* @__PURE__ */ __exportAll({
 	a: () => 0,
 	b: () => "b"
 });
-const importer_hot$1 = __rolldown_runtime__.createModuleHotContext("reexport_star/importer.js");
-__rolldown_runtime__.registerModule("reexport_star/importer.js", { exports: importer_exports$1 });
+const importer_hot$a5a97592 = __rolldown_runtime__.createModuleHotContext("reexport_star/importer.js");
+__rolldown_runtime__.registerModule("reexport_star/importer.js", { exports: importer_exports$a5a97592 });
 globalThis.reexportStarImporterRuns ??= 0;
 globalThis.reexportStarImporterRuns++;
 globalThis.reexportStarImporterAcceptCount ??= 0;
-importer_hot$1.accept(() => {
+importer_hot$a5a97592.accept(() => {
 	globalThis.reexportStarImporterAcceptCount++;
 });
 // multi_record/target.js

@@ -57,6 +57,95 @@ enum CjsMemberProperty<'a, 'ast> {
   Computed(&'a ast::Expression<'ast>),
 }
 
+pub fn effective_namespace_export_filter<'a>(
+  module: &NormalModule,
+  meta: &'a crate::types::linking_metadata::LinkingMetadata,
+  dynamic_import_usage: Option<
+    &'a rolldown_common::dynamic_import_usage::DynamicImportExportsUsage,
+  >,
+  order_wrap_state: &'a crate::stages::generate_stage::order_wrap_state::OrderWrapState,
+  chunk_graph: &crate::chunk_graph::ChunkGraph,
+) -> (bool, Option<&'a FxHashSet<CompactStr>>) {
+  let namespace_is_semantically_observed = meta
+    .module_namespace_included_reason
+    .contains(ModuleNamespaceIncludedReason::Unknown)
+    || (meta
+      .module_namespace_included_reason
+      .contains(ModuleNamespaceIncludedReason::ReExportDynamicExports)
+      && meta.has_dynamic_exports)
+    || order_wrap_state.requires_semantic_namespace(module.namespace_object_ref, |importer_idx| {
+      chunk_graph.module_is_in_live_chunk(importer_idx)
+    });
+  let dynamic_export_names = meta
+    .module_namespace_included_reason
+    .contains(ModuleNamespaceIncludedReason::SimulateFacadeChunk)
+    .then(|| meta.dynamically_read_export_names(dynamic_import_usage))
+    .flatten();
+  let simulated_facade_export_names = (!namespace_is_semantically_observed)
+    .then(|| {
+      order_wrap_state
+        .simulated_facade_export_names(module.namespace_object_ref)
+        .or(dynamic_export_names)
+    })
+    .flatten();
+  (namespace_is_semantically_observed, simulated_facade_export_names)
+}
+
+/// Whether star exports add names to the module's namespace object at runtime, through
+/// `__reExport`, rather than its declaration fixing them.
+pub fn star_exports_complete_namespace(
+  options: &rolldown_common::NormalizedBundlerOptions,
+  module_idx: ModuleIdx,
+  meta: &crate::types::linking_metadata::LinkingMetadata,
+  modules: &rolldown_common::IndexModules,
+  unreachable_modules: &crate::stages::link_stage::UnreachableModules,
+) -> bool {
+  if crate::utils::native_records::runtime_module_semantics_enabled(options) {
+    meta.has_dynamic_exports || !meta.star_exports_from_external_modules.is_empty()
+  } else {
+    matches!(options.platform, Platform::Browser)
+      && star_exports_reach_commonjs(module_idx, meta, modules)
+      && (options.is_strict_execution_order_enabled()
+        || modules
+          .iter()
+          .filter_map(Module::as_normal)
+          .filter(|m| unreachable_modules.reaches(m.idx))
+          .any(|m| {
+            m.import_records.iter().any(|rec| {
+              rec.kind == rolldown_common::ImportKind::DynamicImport
+                && rec.resolved_module == Some(module_idx)
+            })
+          }))
+  }
+}
+
+fn star_exports_reach_commonjs(
+  root_idx: ModuleIdx,
+  meta: &crate::types::linking_metadata::LinkingMetadata,
+  modules: &rolldown_common::IndexModules,
+) -> bool {
+  if !meta.has_dynamic_exports {
+    return false;
+  }
+  let mut queue = std::collections::VecDeque::from([root_idx]);
+  let mut visited = FxHashSet::default();
+  while let Some(module_idx) = queue.pop_front() {
+    if !visited.insert(module_idx) {
+      continue;
+    }
+    let Some(module) = modules[module_idx].as_normal() else {
+      continue;
+    };
+    if matches!(module.exports_kind, ExportsKind::CommonJs) {
+      return true;
+    }
+    for importee_idx in module.star_export_module_ids() {
+      queue.push_back(importee_idx);
+    }
+  }
+  false
+}
+
 bitflags! {
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     pub struct TraverseState: u8 {
@@ -1344,39 +1433,14 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     // construct `{ prop_name: () => returned, ... }`
     let mut arg_obj_expr = ast::ObjectExpression::dummy(self.allocator());
 
-    let namespace_is_semantically_observed = self
-      .ctx
-      .linking_info
-      .module_namespace_included_reason
-      .contains(ModuleNamespaceIncludedReason::Unknown)
-      || (self
-        .ctx
-        .linking_info
-        .module_namespace_included_reason
-        .contains(ModuleNamespaceIncludedReason::ReExportDynamicExports)
-        && self.ctx.linking_info.has_dynamic_exports)
-      || self
-        .ctx
-        .order_wrap_state
-        .requires_semantic_namespace(self.ctx.module.namespace_object_ref, |importer_idx| {
-          self.ctx.chunk_graph.module_is_in_live_chunk(importer_idx)
-        });
-    let dynamic_export_names = self
-      .ctx
-      .linking_info
-      .module_namespace_included_reason
-      .contains(ModuleNamespaceIncludedReason::SimulateFacadeChunk)
-      .then(|| self.ctx.linking_info.dynamically_read_export_names(self.ctx.dynamic_import_usage))
-      .flatten();
-    let simulated_facade_export_names = (!namespace_is_semantically_observed)
-      .then(|| {
-        self
-          .ctx
-          .order_wrap_state
-          .simulated_facade_export_names(self.ctx.module.namespace_object_ref)
-          .or(dynamic_export_names)
-      })
-      .flatten();
+    let (_namespace_is_semantically_observed, simulated_facade_export_names) =
+      effective_namespace_export_filter(
+        self.ctx.module,
+        self.ctx.linking_info,
+        self.ctx.dynamic_import_usage,
+        self.ctx.order_wrap_state,
+        self.ctx.chunk_graph,
+      );
 
     // Even if the module namespace is included, some exports may not be used due to `optimize_facade_dynamic_entry_chunks`
     // https://github.com/rolldown/rolldown/blob/d6d65f9080e427cd9feef56eb7a110fbcf6c1414/crates/rolldown/src/stages/generate_stage/chunk_optimizer.rs#L347-L354
@@ -1597,43 +1661,13 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
   /// Whether star exports add names to the module's namespace object at runtime, through
   /// `__reExport`, rather than its declaration fixing them.
   fn star_exports_complete_namespace(&self) -> bool {
-    if crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options) {
-      self.ctx.linking_info.has_dynamic_exports
-        || !self.ctx.linking_info.star_exports_from_external_modules.is_empty()
-    } else {
-      matches!(self.ctx.options.platform, rolldown_common::Platform::Browser)
-        && self.star_exports_reach_commonjs()
-        && (self.ctx.options.is_strict_execution_order_enabled()
-          || self.ctx.modules.iter().filter_map(rolldown_common::Module::as_normal).any(|m| {
-            m.import_records.iter().any(|rec| {
-              rec.kind == rolldown_common::ImportKind::DynamicImport
-                && rec.resolved_module == Some(self.ctx.idx)
-            })
-          }))
-    }
-  }
-
-  fn star_exports_reach_commonjs(&self) -> bool {
-    if !self.ctx.linking_info.has_dynamic_exports {
-      return false;
-    }
-    let mut queue = std::collections::VecDeque::from([self.ctx.idx]);
-    let mut visited = FxHashSet::default();
-    while let Some(module_idx) = queue.pop_front() {
-      if !visited.insert(module_idx) {
-        continue;
-      }
-      let Some(module) = self.ctx.modules[module_idx].as_normal() else {
-        continue;
-      };
-      if matches!(module.exports_kind, rolldown_common::ExportsKind::CommonJs) {
-        return true;
-      }
-      for importee_idx in module.star_export_module_ids() {
-        queue.push_back(importee_idx);
-      }
-    }
-    false
+    star_exports_complete_namespace(
+      self.ctx.options,
+      self.ctx.idx,
+      self.ctx.linking_info,
+      self.ctx.modules,
+      self.ctx.unreachable_modules,
+    )
   }
 
   /// `__exportAll(ns)`, which the module runs once it has run its star exports: the namespace

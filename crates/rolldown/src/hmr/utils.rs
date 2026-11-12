@@ -4,7 +4,7 @@ use oxc::{
   ast::ast,
   span::{GetSpan, SPAN},
 };
-use rolldown_common::{IndexModules, ModuleIdx, NormalModule};
+use rolldown_common::{IndexModules, ModuleIdx, NormalModule, SymbolRefDb};
 use rolldown_ecmascript::CJS_MODULE_REF;
 #[cfg(feature = "experimental")]
 use rolldown_ecmascript::CJS_ROLLDOWN_MODULE_REF;
@@ -14,6 +14,7 @@ use rustc_hash::FxHashSet;
 #[cfg(feature = "experimental")]
 use crate::hmr::hmr_ast_finalizer::HmrAstFinalizer;
 use crate::module_finalizers::ScopeHoistingFinalizer;
+use crate::types::linking_metadata::LinkingMetadataVec;
 use crate::utils::native_record_ast::{self, Cell};
 
 /// Dev mode retains declarations for future updates, but an unused binding import must still
@@ -544,6 +545,41 @@ fn bundled_observed_imports(
   observed
 }
 
+pub fn bundled_exports_observed_by_importers(
+  module: &NormalModule,
+  modules: &IndexModules,
+  linking_infos: &LinkingMetadataVec,
+  symbol_db: &SymbolRefDb,
+) -> bool {
+  for &importer_idx in &module.importers_idx {
+    let Some(importer_info) = linking_infos.get(importer_idx).filter(|info| info.is_included)
+    else {
+      continue;
+    };
+    let Some(importer) = modules.get(importer_idx).and_then(|m| m.as_normal()) else {
+      continue;
+    };
+    if importer.meta.has_eval() {
+      return true;
+    }
+    let Some(scoping) = symbol_db
+      .inner()
+      .get(importer_idx)
+      .and_then(Option::as_ref)
+      .map(|db| db.ast_scopes.scoping())
+    else {
+      return true;
+    };
+    let observed = importer_info
+      .bundled_observed_imports
+      .get_or_init(|| bundled_observed_imports(importer, scoping));
+    if observed.contains(&module.idx) {
+      return true;
+    }
+  }
+  false
+}
+
 impl ScopeHoistingFinalizer<'_, '_> {
   fn bundled_exports_need_initial_bindings(&self) -> bool {
     let scoping = self.scope.scoping();
@@ -576,36 +612,12 @@ impl ScopeHoistingFinalizer<'_, '_> {
     {
       return true;
     }
-    for &importer_idx in &self.ctx.module.importers_idx {
-      let Some(importer_info) =
-        self.ctx.linking_infos.get(importer_idx).filter(|info| info.is_included)
-      else {
-        continue;
-      };
-      let Some(importer) = self.ctx.modules.get(importer_idx).and_then(|m| m.as_normal()) else {
-        continue;
-      };
-      if importer.meta.has_eval() {
-        return true;
-      }
-      let Some(scoping) = self
-        .ctx
-        .symbol_db
-        .inner()
-        .get(importer_idx)
-        .and_then(Option::as_ref)
-        .map(|db| db.ast_scopes.scoping())
-      else {
-        return true;
-      };
-      let observed = importer_info
-        .bundled_observed_imports
-        .get_or_init(|| bundled_observed_imports(importer, scoping));
-      if observed.contains(&self.ctx.idx) {
-        return true;
-      }
-    }
-    false
+    bundled_exports_observed_by_importers(
+      self.ctx.module,
+      self.ctx.modules,
+      self.ctx.linking_infos,
+      self.ctx.symbol_db,
+    )
   }
 }
 

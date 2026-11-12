@@ -21,7 +21,7 @@ use rolldown_plugin::{
   SharedPluginDriver,
 };
 use rolldown_utils::dashmap::FxDashSet;
-use std::{path::Path, sync::Arc};
+use std::{path::Path, sync::Arc, time::Instant};
 use sugar_path::SugarPath;
 
 /// How many modules fast native relinks can append before the cached link tables grow.
@@ -30,6 +30,16 @@ const APPENDED_MODULES_HEADROOM: usize = 64;
 struct UnpublishedBundleOutput {
   output: BundleOutput,
   emitted_output_guard: Option<EmittedOutputGuard>,
+}
+
+struct LinkUnwindGuard<'a>(&'a mut ScanStageCache, bool);
+
+impl Drop for LinkUnwindGuard<'_> {
+  fn drop(&mut self) {
+    if !self.1 {
+      std::mem::take(self.0);
+    }
+  }
 }
 
 #[expect(
@@ -503,15 +513,9 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     mut scan_stage_output: NormalizedScanStageOutput,
     is_write: bool,
   ) -> BuildResult<UnpublishedBundleOutput> {
-    struct LinkUnwindGuard<'a>(&'a mut ScanStageCache, bool);
-    impl Drop for LinkUnwindGuard<'_> {
-      fn drop(&mut self) {
-        if !self.1 {
-          std::mem::take(self.0);
-        }
-      }
-    }
     self.cache.last_fast_native_relink = false;
+    self.cache.last_core_link_time = std::time::Duration::ZERO;
+    self.cache.last_core_generate_time = std::time::Duration::ZERO;
     self.cache.last_link_decisions_unchanged = false;
     self.cache.last_native_relink_fallback = None;
     self.cache.last_native_relink_fallback_detail = None;
@@ -559,13 +563,16 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     // The one stretch of a build with no plugin in it, which is what makes it a usable
     // baseline for "was this build plugin-bound?" — see `BuildTimings`.
     let link_start = self.plugin_driver.build_timings.start();
+    let core_link_start = Instant::now();
     let mut link_guard = LinkUnwindGuard(&mut self.cache, false);
     let (mut link_stage_output, ast_table, used_symbol_refs_builder) =
       LinkStage::new(scan_stage_output, &self.options).link();
     link_guard.1 = true;
     drop(link_guard);
     self.plugin_driver.build_timings.record_link_stage(link_start);
+    self.cache.last_core_link_time += core_link_start.elapsed();
 
+    let core_generate_start = Instant::now();
     let is_incremental =
       self.options.experimental.is_incremental_build_enabled() && self.cache.has_snapshot();
     let has_mangle_override = self.cache.mangle_properties_override.is_some();
@@ -582,6 +589,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     let ast_table = generate_stage.take_restored_ast_table();
     let pending_native_relink = generate_stage.pending_native_relink.take();
     drop(generate_stage);
+    self.cache.last_core_generate_time += core_generate_start.elapsed();
     if mangle_props_enabled {
       self.cache.cached_native_chunks.clear();
       self.cache.cached_multi_module_chunks.clear();
@@ -758,6 +766,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     };
     super::native_relink::take_rejection();
     super::native_relink::take_rejection_detail();
+    let core_link_start = Instant::now();
     let prepared = self.try_prepare_fast_native_relink(&mut cached_relink);
     let Some(super::native_relink::PreparedFastNativeRelink {
       modules: prepared,
@@ -770,6 +779,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
         Some(super::native_relink::take_rejection().unwrap_or("unlabeled"));
       self.cache.last_native_relink_fallback_detail = super::native_relink::take_rejection_detail();
       self.cache.cached_native_relink = Some(cached_relink);
+      self.cache.last_core_link_time += core_link_start.elapsed();
       return None;
     };
 
@@ -981,7 +991,9 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
       meta.import_record_ns_to_cjs_module = record_namespaces;
     }
     self.plugin_driver.build_timings.record_link_stage(link_start);
+    self.cache.last_core_link_time += core_link_start.elapsed();
 
+    let core_generate_start = Instant::now();
     let ast_table = std::mem::take(&mut self.cache.get_snapshot_mut().index_ecma_ast);
     let mut generate_stage = GenerateStage::new_with_cache(
       &mut cached_relink.link_output,
@@ -998,6 +1010,7 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     .await;
     let ast_table = generate_stage.take_restored_ast_table();
     drop(generate_stage);
+    self.cache.last_core_generate_time += core_generate_start.elapsed();
     if !ast_table.is_empty() && self.cache.has_snapshot() {
       self.cache.get_snapshot_mut().index_ecma_ast = ast_table;
     }

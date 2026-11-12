@@ -6,7 +6,7 @@ source: crates/rolldown_testing/src/integration_test.rs
 ## main.js
 
 ```js
-import assert$1 from "node:assert";
+import assert$690a89c4 from "node:assert";
 // HIDDEN [\0rolldown/runtime.js]
 __rolldown_runtime__.registerGraph({
 	ids: [
@@ -47,7 +47,7 @@ __rolldown_runtime__.createModuleHotContext("main.js");
 __rolldown_runtime__.registerModule("main.js", { exports: main_exports });
 process.on("beforeExit", (code) => {
 	if (code !== 0) return;
-	assert$1.strictEqual(globalThis.__delete_file_used_parent_reran, true, "step 1 (recreate child.js with changed content) should have re-run parent.js");
+	assert$690a89c4.strictEqual(globalThis.__delete_file_used_parent_reran, true, "step 1 (recreate child.js with changed content) should have re-run parent.js");
 });
 
 ```

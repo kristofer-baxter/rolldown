@@ -30,8 +30,8 @@ function triple(n) {
 	return n * 3;
 }
 // required.js
-var required_exports = /* @__PURE__ */ __exportAll({ double: () => double$1 });
-function double$1(n) {
+var required_exports = /* @__PURE__ */ __exportAll({ double: () => double$93b813ad });
+function double$93b813ad(n) {
 	return n * 2;
 }
 var init_required = __esmMin((() => {
@@ -83,8 +83,8 @@ function init_imported() {
 	})))();
 }
 // required.js
-var required_exports = /* @__PURE__ */ __exportAll({ double: () => double$1 });
-function double$1(n) {
+var required_exports = /* @__PURE__ */ __exportAll({ double: () => double$93b813ad });
+function double$93b813ad(n) {
 	return n * 2;
 }
 var init_required = __esmMin((() => {

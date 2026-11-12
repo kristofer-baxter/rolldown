@@ -92,15 +92,15 @@ __rolldown_runtime__.registerGraph({
 	entries: [3]
 });
 // new-static.js
-var new_static_exports = /* @__PURE__ */ __exportAll({ value: () => value$1 });
+var new_static_exports = /* @__PURE__ */ __exportAll({ value: () => value$100266e9 });
 __rolldown_runtime__.createModuleHotContext("new-static.js");
 __rolldown_runtime__.registerModule("new-static.js", { exports: new_static_exports });
-const value$1 = "static";
+const value$100266e9 = "static";
 // hmr.js
 var hmr_exports = /* @__PURE__ */ __exportAll({ value: () => "v2" });
 const hmr_hot = __rolldown_runtime__.createModuleHotContext("hmr.js");
 __rolldown_runtime__.registerModule("hmr.js", { exports: hmr_exports });
-globalThis.__reload_after_failed_patch_static = value$1;
+globalThis.__reload_after_failed_patch_static = value$100266e9;
 import("./new-dynamic.js").then((mod) => {
 	globalThis.__reload_after_failed_patch_dynamic = mod.value;
 });

@@ -40,6 +40,30 @@ impl ConflictResolver {
     self.used.contains_key(name)
   }
 
+  /// Prefer a module-scoped collision hint so unrelated graph edits do not renumber bindings.
+  /// The normal resolver still handles hash collisions, reserved names and capture vetoes.
+  pub fn resolve_stable(
+    &mut self,
+    base: CompactStr,
+    module_id: &str,
+    accept: impl Fn(&str, bool) -> bool,
+  ) -> CompactStr {
+    let base = match self.used.entry(base) {
+      Entry::Vacant(slot) => {
+        if accept(slot.key(), true) {
+          let name = slot.key().clone();
+          slot.insert(0);
+          return name;
+        }
+        slot.into_key()
+      }
+      Entry::Occupied(slot) => slot.key().clone(),
+    };
+    let suffix = xxhash_rust::xxh3::xxh3_64(module_id.as_bytes()) & 0xffff_ffff;
+    let hint = format!("{base}${suffix:08x}").into();
+    self.resolve(hint, |candidate, _| accept(candidate, false))
+  }
+
   /// Pick a unique name for `base`, trying `base` then `base$1`, `base$2`, ...
   ///
   /// `accept(candidate, is_original)` vetoes a candidate that is otherwise free
@@ -197,5 +221,54 @@ mod tests {
     v.sort();
     // c has higher exec_order -> Reverse puts it first; within exec_order 5, "a" < "b".
     assert_eq!(v, vec![c, b, a]);
+  }
+
+  #[test]
+  fn resolve_stable_keeps_free_base_and_uses_module_hash_on_collision() {
+    let mut without_extra = ConflictResolver::new(std::iter::empty());
+    assert_eq!(
+      without_extra.resolve_stable(cs("value"), "entry.js", |_, _| true).as_str(),
+      "value"
+    );
+    let target = without_extra.resolve_stable(cs("value"), "leaf.js", |_, _| true);
+    let suffix = target.strip_prefix("value$").expect("module-scoped collision suffix");
+    assert_eq!(suffix.len(), 8);
+    assert!(suffix.bytes().all(|b| b.is_ascii_hexdigit()));
+
+    let mut with_extra = ConflictResolver::new(std::iter::empty());
+    assert_eq!(with_extra.resolve_stable(cs("value"), "entry.js", |_, _| true).as_str(), "value");
+    let extra = with_extra.resolve_stable(cs("value"), "added.js", |_, _| true);
+    assert_ne!(extra, target);
+    assert_eq!(with_extra.resolve_stable(cs("value"), "leaf.js", |_, _| true), target);
+  }
+
+  #[test]
+  fn resolve_stable_handles_hash_collisions_reserved_names_and_capture_vetoes() {
+    let mut r = ConflictResolver::new([cs("Promise")]);
+    let reserved = r.resolve_stable(cs("Promise"), "mod.js", |_, _| true);
+    assert!(reserved.starts_with("Promise$"));
+    assert_eq!(reserved.len(), "Promise$".len() + 8);
+    // Same module id collides on the 8-hex hint and falls back to `$1`.
+    assert_eq!(
+      r.resolve_stable(cs("Promise"), "mod.js", |_, _| true).as_str(),
+      format!("{reserved}$1")
+    );
+
+    // Capture veto on the original name must leave the bare name available for a later owner
+    // and pass `is_original == false` for every fallback candidate.
+    let mut vetoed = ConflictResolver::new(std::iter::empty());
+    let first_hint_suffix =
+      format!("{:08x}", xxhash_rust::xxh3::xxh3_64(b"vetoed.js") & 0xffff_ffff);
+    let first_hint = format!("value${first_hint_suffix}");
+    let chosen = vetoed.resolve_stable(cs("value"), "vetoed.js", |cand, is_original| {
+      if is_original {
+        assert_eq!(cand, "value");
+        false
+      } else {
+        cand != first_hint
+      }
+    });
+    assert_eq!(chosen.as_str(), format!("{first_hint}$1"));
+    assert_eq!(vetoed.resolve_stable(cs("value"), "clean.js", |_, _| true).as_str(), "value");
   }
 }
