@@ -508,6 +508,7 @@ impl<'a> LinkStage<'a> {
     self.reference_async_evaluation_helpers();
     let unreachable_import_expression_node_ids = self.cross_module_optimization();
     self.collect_plain_object_reads();
+    self.exclude_jsx_element_names_from_inline_const();
     self.refine_stmt_side_effects_with_imported_constants();
     // The passes above only relax statement flags. Module verdicts must follow before
     // `reference_needed_symbols` derives import flags from them.

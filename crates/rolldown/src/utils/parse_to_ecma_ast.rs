@@ -1,7 +1,13 @@
 use std::{borrow::Cow, path::Path};
 
 use json_escape_simd::escape;
-use oxc::{semantic::Scoping, span::SourceType as OxcSourceType};
+use oxc::{
+  allocator::Allocator,
+  ast::ast,
+  ast_visit::{VisitJsMut, walk_js_mut},
+  semantic::Scoping,
+  span::{SPAN, SourceType as OxcSourceType, Span},
+};
 use oxc_str::CompactStr;
 use rolldown_common::{
   ConstExportMeta, ModuleDefFormat, ModuleId, ModuleType, NormalizedBundlerOptions,
@@ -82,7 +88,7 @@ pub async fn parse_to_ecma_ast(
 
   let mut ecma_ast = match module_type {
     ModuleType::Json => {
-      let json_value: serde_json::Value = serde_json::from_str(&source).map_err(|e| {
+      parse_json_to_ecma_ast(&source).map_err(|e| {
         let line = e.line() - 1;
         // Convert to 0-indexed column. serde_json returns 1-indexed columns (though possibly 0 in some edge cases).
         // See: https://docs.rs/serde_json/1.0.132/serde_json/struct.Error.html#method.column
@@ -94,8 +100,7 @@ pub async fn parse_to_ecma_ast(
           column,
           e.to_string().into(),
         )
-      })?;
-      json_value_to_ecma_ast(&json_value)
+      })?
     }
     ModuleType::Dataurl | ModuleType::Base64 | ModuleType::Text => {
       EcmaCompiler::parse_expr_as_program(resolved_id.id.as_str(), source, oxc_source_type)?
@@ -213,6 +218,88 @@ fn pre_process_source(
   };
 
   Ok((has_lazy_export, source, module_type.into()))
+}
+
+fn parse_json_to_ecma_ast(source: &str) -> Result<EcmaAst, serde_json::Error> {
+  match serde_json::from_str(source) {
+    Ok(value) => Ok(json_value_to_ecma_ast(&value)),
+    Err(error) => parse_json_with_surrogates(source, error),
+  }
+}
+
+#[cold]
+fn parse_json_with_surrogates(
+  source: &str,
+  error: serde_json::Error,
+) -> Result<EcmaAst, serde_json::Error> {
+  // Validate a copy with surrogate escapes replaced by same-length scalar escapes. This keeps
+  // serde_json's grammar and parser limits without requiring its UTF-8 strings to hold surrogates.
+  // The copy is never emitted: the JavaScript parser below reads the original UTF-16 strings.
+  // See internal-docs/json-modules/implementation.md.
+  let mut validation_source = source.as_bytes().to_vec();
+  let mut index = 0;
+  while index + 1 < validation_source.len() {
+    if validation_source[index] != b'\\' {
+      index += 1;
+      continue;
+    }
+    if validation_source[index + 1] == b'u'
+      && index + 5 < validation_source.len()
+      && matches!(validation_source[index + 2], b'd' | b'D')
+      && matches!(validation_source[index + 3], b'8'..=b'9' | b'a'..=b'f' | b'A'..=b'F')
+      && validation_source[index + 4..index + 6].iter().all(u8::is_ascii_hexdigit)
+    {
+      validation_source[index + 2] = b'e';
+    }
+    // Consume the escaped character as well, so \\ud800 remains a literal backslash and text.
+    index += 2;
+  }
+  if serde_json::from_slice::<serde_json::Value>(&validation_source).is_err() {
+    return Err(error);
+  }
+  let Ok(mut ast) = EcmaCompiler::parse_expr_as_program("", source, OxcSourceType::default())
+  else {
+    return Err(error);
+  };
+  ast.program.with_mut(|fields| {
+    JsonNormalizer { allocator: fields.allocator }.visit_program(fields.program);
+  });
+  Ok(ast)
+}
+
+struct JsonNormalizer<'a> {
+  allocator: &'a Allocator,
+}
+
+impl<'a> VisitJsMut<'a> for JsonNormalizer<'a> {
+  fn visit_span(&mut self, span: &mut Span) {
+    *span = SPAN;
+  }
+
+  fn visit_object_expression(&mut self, object: &mut ast::ObjectExpression<'a>) {
+    walk_js_mut::walk_object_expression(self, object);
+    let properties =
+      std::mem::replace(&mut object.properties, oxc::allocator::Vec::new_in(&self.allocator));
+    let mut indices = FxHashMap::default();
+    for mut property in properties {
+      let ast::ObjectPropertyKind::ObjectProperty(object_property) = &mut property else {
+        unreachable!("JSON objects only contain properties");
+      };
+      let ast::PropertyKey::StringLiteral(key) = &object_property.key else {
+        unreachable!("JSON property names are strings");
+      };
+      let name = key.value;
+      // JSON.parse creates an own data property, including for escaped __proto__ spellings.
+      object_property.computed = name == "__proto__";
+      if let Some(&index) = indices.get(&name) {
+        // Duplicate keys retain their first insertion position and their last value.
+        object.properties[index] = property;
+      } else {
+        indices.insert(name, object.properties.len());
+        object.properties.push(property);
+      }
+    }
+  }
 }
 
 #[cfg(test)]

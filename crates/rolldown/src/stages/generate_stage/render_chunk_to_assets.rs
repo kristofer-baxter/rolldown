@@ -196,7 +196,7 @@ impl GenerateStage<'_> {
           let mut chunk = OutputChunk {
             emitted_reference_id: None,
             name: rendered_chunk.name.clone(),
-            filename: filename.clone(),
+            filename,
             code,
             is_entry: rendered_chunk.is_entry,
             is_dynamic_entry: rendered_chunk.is_dynamic_entry,
@@ -226,7 +226,7 @@ impl GenerateStage<'_> {
         InstantiationKind::Sourcemap(sourcemap_meta) => {
           let asset_arc = Arc::new(OutputAsset {
             emitted_reference_id: None,
-            filename: filename.clone(),
+            filename,
             source: code,
             original_file_names: sourcemap_meta.original_file_names,
             names: sourcemap_meta.names,
@@ -241,7 +241,7 @@ impl GenerateStage<'_> {
         InstantiationKind::None => {
           output.push(Output::Asset(Arc::new(OutputAsset {
             emitted_reference_id: None,
-            filename: filename.clone(),
+            filename,
             source: code,
             original_file_names: vec![],
             names: vec![],

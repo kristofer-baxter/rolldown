@@ -219,7 +219,11 @@ pub fn emit_sourcemap_with_json(
   if let Some(sourcemap) = &options.sourcemap {
     match sourcemap {
       SourceMapType::File | SourceMapType::Hidden => {
-        let source = precomputed_json.unwrap_or_else(|| map.to_json_string());
+        // `to_json_string` reserves six times the map's string bytes up front and returns the
+        // buffer unshrunk. This string lives on as the `.map` asset until the output is written
+        // (or longer, when the caller keeps the `BundleOutput`), so give the slack back now.
+        let mut source = precomputed_json.unwrap_or_else(|| map.to_json_string());
+        source.shrink_to_fit();
         if matches!(sourcemap, SourceMapType::File) {
           process_sourcemap_related_reference(
             code,

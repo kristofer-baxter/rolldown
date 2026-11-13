@@ -25,6 +25,8 @@ The order is defined by a small set of rules, in precedence order:
 
 The link-time constant lookup in `refine_stmt_side_effects.rs` therefore rejects imported constants within the same static-import strongly connected component, even if the exporter has a lower `exec_order`. With multiple entries or preserved modules, loading a different entry can reverse the order within the cycle and expose a `const` TDZ failure. These components are computed lazily once and shared with the analyzer reruns in cross-module optimization. An exporter outside the importer's component can still supply a constant when it precedes the importer.
 
+The entry re-export fallback in `esm_init_obligations::collect_entry_reexported_wrapper_inits` likewise applies only to unwrapped entries. An ESM-wrapped entry initializes its static dependencies through its own wrapper in source order, including across chunks. Calling its re-export owners first in `exec_order` can enter a dependency cycle through a different module and read an uninitialized binding (issue #11231).
+
 ## Lazy-barrel demand and dynamic boundaries
 
 Explicit `experimental.lazy_barrel` routing with code splitting does not require the native-record protocol. A static read retains its selected leaf's initialization, including when a literal value is inlined and the package declares `sideEffects: false`. Cross-chunk links consult the exact retained constant reads rather than treating every included pure module as observable. Ordinary builds without lazy-barrel mode retain their existing pure-elision behavior.
