@@ -113,6 +113,11 @@ pub struct IncludeContext<'a> {
   /// included yet, keyed by that owner; [`handle_include_module`] drains them when it includes
   /// the module.
   pub deferred_forwarding_refs: FxHashMap<ModuleIdx, FxIndexSet<SymbolRef>>,
+  /// CommonJS exports that [`follow_cjs_namespace_alias`] already enqueued. Unlike the statement
+  /// and module edges, that edge leads from one symbol straight to another, with no inclusion
+  /// bit between them, so it has to remember what it followed: a name whose origin leads back
+  /// to itself through `module.exports = require(...)` would otherwise be enqueued forever.
+  pub followed_cjs_exports: FxHashSet<SymbolRef>,
   /// Work queue of the inclusion engine (see [`drain_work_items`]). Edge producers push typed
   /// work items here instead of recursing; the public `include_*` entry points drain it to
   /// empty before returning. Invariant (debug-asserted at every public entry point): empty
@@ -167,6 +172,7 @@ impl<'a> IncludeContext<'a> {
       body_demand_keys,
       body_demand_swept: FxHashSet::default(),
       deferred_forwarding_refs: FxHashMap::default(),
+      followed_cjs_exports: FxHashSet::default(),
       pending: Vec::new(),
     }
   }
@@ -881,7 +887,11 @@ fn follow_cjs_namespace_alias(ctx: &mut IncludeContext, canonical_ref: &mut Symb
         else {
           return;
         };
-        if namespace_alias.property_name.as_str() != "default" {
+        // Including a symbol for `Normal` a second time adds nothing: every effect of
+        // `handle_include_symbol` is a monotone insertion.
+        if namespace_alias.property_name.as_str() != "default"
+          && ctx.followed_cjs_exports.insert(export_symbol.symbol_ref)
+        {
           ctx.pending.push(WorkItem::Symbol(export_symbol.symbol_ref, SymbolIncludeReason::Normal));
         }
       });

@@ -808,3 +808,45 @@ async fn namespace_of_commonjs_reexport_takes_no_star_record_from_required_modul
   }
   Ok(())
 }
+
+#[tokio::test]
+async fn commonjs_reexport_self_referential_cycle_terminates_and_evaluates() -> Result<()> {
+  let cases = [
+    (
+      "import * as ns from './m1.cjs';events.push(typeof ns.a,ns.b);",
+      "import { a } from './m1.cjs'; export { a }; export const b = 'b';",
+      json!(["undefined", "b"]),
+    ),
+    (
+      "import { a, b } from './m1.cjs';events.push(typeof a,b);",
+      "import { a } from './m1.cjs'; export { a }; export * from './m1.cjs'; export const b = 'b';",
+      json!(["undefined", "b"]),
+    ),
+    (
+      "const ns = await import('./m1.cjs');events.push(typeof ns.a,ns.b);",
+      "import { a } from './m1.cjs'; export { a }; export const b = 'b';",
+      json!(["undefined", "b"]),
+    ),
+  ];
+  for (main, m2, expected) in cases {
+    let fixture = Fixture::new(&[
+      ("main.js", main),
+      ("m1.cjs", "module.exports = require('./m2.mjs');"),
+      ("m2.mjs", m2),
+      ("observe.js", "await import('./dist/main.js');"),
+    ])?;
+    let mut opts = fixture.options();
+    opts.strict_execution_order = Some(true);
+    opts.chunk_filenames = Some("[name].js".to_owned().into());
+    opts.experimental =
+      Some(ExperimentalOptions { on_demand_wrapping: Some(true), ..Default::default() });
+    let mut bundler = Bundler::new(opts)?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), bundler.generate())
+      .await
+      .context("CJS re-export cycle link timed out")??;
+    fixture.output(&output)?;
+    assert_eq!(fixture.execute("./observe.js")?, expected);
+    bundler.close().await?;
+  }
+  Ok(())
+}

@@ -130,6 +130,7 @@ impl GenerateStage<'_> {
       body_demand_keys: &body_demand_keys,
       body_demand_swept: FxHashSet::default(),
       deferred_forwarding_refs: FxHashMap::default(),
+      followed_cjs_exports: FxHashSet::default(),
       pending: Vec::new(),
     };
 
