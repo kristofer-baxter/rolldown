@@ -765,3 +765,46 @@ async fn native_commonjs_mode_rejects_unsupported_options_and_survives_full_scan
   bundler.close().await?;
   Ok(())
 }
+
+#[tokio::test]
+async fn namespace_of_commonjs_reexport_takes_no_star_record_from_required_module() -> Result<()> {
+  let main = "import * as ns from './r.cjs';events.push('main');\
+              events.push(Object.keys(ns).sort(),ns.a.from);";
+  let past_the_end = [
+    ("r.cjs", "module.exports = require('./e.js');"),
+    ("e.js", "import './p.js'; import './q.js'; export * from './x.js';"),
+    ("p.js", "events.push('p');"),
+    ("q.js", "events.push('q');"),
+    ("x.js", "events.push('x'); export const a = { from: 'x' };"),
+  ];
+  let another_record = [
+    ("r.cjs", "require('./s.js'); module.exports = require('./e.js');"),
+    ("s.js", "events.push('s'); export * from './y.js';"),
+    ("y.js", "events.push('y'); export const a = { from: 'y' };"),
+    ("e.js", "events.push('e'); export * from './x.js';"),
+    ("x.js", "events.push('x'); export const a = { from: 'x' };"),
+  ];
+  for (files, expected_events) in [
+    (&past_the_end[..], json!(["p", "q", "x", "main", ["a", "default"], "x"])),
+    (&another_record[..], json!(["y", "s", "x", "e", "main", ["a", "default"], "x"])),
+  ] {
+    for strict_only in [false, true] {
+      let mut entries = vec![("main.js", main), ("observe.js", "await import('./dist/main.js');")];
+      entries.extend_from_slice(files);
+      let fixture = Fixture::new(&entries)?;
+      let mut opts = fixture.options();
+      opts.strict_execution_order = Some(true);
+      opts.chunk_filenames = Some("[name].js".to_owned().into());
+      if !strict_only {
+        opts.experimental =
+          Some(ExperimentalOptions { on_demand_wrapping: Some(true), ..Default::default() });
+      }
+      let mut bundler = Bundler::new(opts)?;
+      let output = bundler.generate().await?;
+      fixture.output(&output)?;
+      assert_eq!(fixture.execute("./observe.js")?, expected_events);
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
