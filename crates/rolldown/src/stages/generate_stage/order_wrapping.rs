@@ -801,7 +801,12 @@ impl GenerateStage<'_> {
     // facade's load then fires. Restoring is not itself a candidate for the necessity gate: it
     // exists because a chunk can host only one entry's top-level trigger, so an entry merged into
     // another entry's chunk has no trigger at all without its own file.
-    if self.restore_order_wrap_entry_facades(chunk_graph, plan, order_state) {
+    if self.restore_order_wrap_entry_facades(
+      chunk_graph,
+      plan,
+      used_symbol_refs_builder,
+      order_state,
+    ) {
       // An optimizer-eliminated facade that stays collapsed gains the same exact simulated
       // namespace requirement as a facade collapsed by the creation pass below. Close any late
       // runtime-helper dependencies before runtime placement and final cross-chunk linking.
@@ -832,7 +837,13 @@ impl GenerateStage<'_> {
     if !candidates.is_empty() {
       let import_edges =
         self.entry_facade_import_edges(chunk_graph, used_symbol_refs_builder, order_state);
-      self.create_order_wrap_entry_facades(chunk_graph, candidates, &import_edges, order_state);
+      self.create_order_wrap_entry_facades(
+        chunk_graph,
+        candidates,
+        &import_edges,
+        used_symbol_refs_builder,
+        order_state,
+      );
       // `create_order_wrap_entry_facades` may replace a newly-created dynamic facade with a
       // call-site trigger. Its simulated namespace adds late runtime-helper demand after the
       // initial closure above (`__exportAll`, plus `__reExport` when the finalizer will merge an
@@ -878,7 +889,13 @@ impl GenerateStage<'_> {
     }
     let import_edges =
       self.entry_facade_import_edges(chunk_graph, used_symbol_refs_builder, order_state);
-    if !self.create_order_wrap_entry_facades(chunk_graph, candidates, &import_edges, order_state) {
+    if !self.create_order_wrap_entry_facades(
+      chunk_graph,
+      candidates,
+      &import_edges,
+      used_symbol_refs_builder,
+      order_state,
+    ) {
       return false;
     }
     order_state.compute_runtime_symbol_closure(
@@ -1016,6 +1033,7 @@ impl GenerateStage<'_> {
     chunk_graph: &mut ChunkGraph,
     facade_candidates: Vec<ModuleIdx>,
     import_edges: &IndexVec<ChunkIdx, FxHashSet<ChunkIdx>>,
+    used_symbol_refs: &UsedSymbolRefsBuilder,
     order_state: &mut OrderWrapState,
   ) -> bool {
     if self.options.code_splitting.is_disabled() {
@@ -1167,7 +1185,8 @@ impl GenerateStage<'_> {
         let entry_module = self.link_output.module_table[entry_module_idx]
           .as_normal()
           .expect("dynamic entry should be a normal module");
-        let namespace_exports = self.simulated_facade_namespace_exports(entry_module_idx);
+        let namespace_exports =
+          self.simulated_facade_namespace_exports(entry_module_idx, used_symbol_refs);
         let bits = chunk_graph.chunk_table[entry_chunk_idx].bits.clone();
         let entry_chunk = &mut chunk_graph.chunk_table[entry_chunk_idx];
         entry_chunk.kind = ChunkKind::Common;
@@ -1180,10 +1199,17 @@ impl GenerateStage<'_> {
           .entry(entry_chunk_idx)
           .or_default()
           .insert(entry_module_idx);
+        let uses_only_json_exports = self.link_output.metas[entry_module_idx]
+          .json_object_default_namespace
+          && self.link_output.metas[entry_module_idx]
+            .dynamically_read_export_names(
+              self.link_output.dynamic_import_exports_usage_map.get(&entry_module_idx),
+            )
+            .is_none();
         order_state.insert_simulated_facade_namespace(
           entry_module.namespace_object_ref,
           entry_chunk_idx,
-          RuntimeHelper::ExportAll,
+          if uses_only_json_exports { RuntimeHelper::empty() } else { RuntimeHelper::ExportAll },
           namespace_exports,
           importer_sites.iter().map(|importer| importer.module_idx),
         );
@@ -1201,7 +1227,9 @@ impl GenerateStage<'_> {
   fn simulated_facade_namespace_exports(
     &self,
     entry_module_idx: ModuleIdx,
+    used_symbol_refs: &UsedSymbolRefsBuilder,
   ) -> Vec<SimulatedFacadeNamespaceExport> {
+    let uses_json_exports = self.link_output.metas[entry_module_idx].json_object_default_namespace;
     self.link_output.metas[entry_module_idx]
       .referenced_canonical_exports_symbols(
         entry_module_idx,
@@ -1217,10 +1245,19 @@ impl GenerateStage<'_> {
               && (!self.options.optimization.is_inline_const_smart_mode() || meta.safe_to_inline)
           });
         let mut referenced_symbols = vec![];
+        if uses_json_exports && name.as_str() == "default" {
+          referenced_symbols.push(self.link_output.runtime.resolve_symbol("__jsonExports"));
+        }
         if !is_inlinable_constant {
           referenced_symbols.push(export.symbol_ref);
-          if let Some(flag) =
-            self.link_output.metas[canonical_ref.owner].temporal_symbols.get(&canonical_ref)
+          // A production build initializes only the flags that the link stage found a use for.
+          let production = self.options.experimental.is_resolve_new_url_to_asset_enabled()
+            && !self.options.is_dev_mode_enabled()
+            && !crate::utils::native_records::enabled(self.options);
+          if let Some(flag) = self.link_output.metas[canonical_ref.owner]
+            .temporal_symbols
+            .get(&canonical_ref)
+            .filter(|flag| !production || used_symbol_refs.contains(flag))
           {
             let native_owner =
               self.link_output.module_table[canonical_ref.owner].as_normal().filter(|owner| {
@@ -1286,6 +1323,7 @@ impl GenerateStage<'_> {
     &self,
     chunk_graph: &mut ChunkGraph,
     plan: &OrderWrapPlan,
+    used_symbol_refs: &UsedSymbolRefsBuilder,
     order_state: &mut OrderWrapState,
   ) -> bool {
     if self.options.code_splitting.is_disabled() {
@@ -1383,11 +1421,18 @@ impl GenerateStage<'_> {
         let entry_module = self.link_output.module_table[entry_module_idx]
           .as_normal()
           .expect("dynamic entry should be a normal module");
+        let uses_only_json_exports = self.link_output.metas[entry_module_idx]
+          .json_object_default_namespace
+          && self.link_output.metas[entry_module_idx]
+            .dynamically_read_export_names(
+              self.link_output.dynamic_import_exports_usage_map.get(&entry_module_idx),
+            )
+            .is_none();
         order_state.insert_simulated_facade_namespace(
           entry_module.namespace_object_ref,
           entry_host_chunk,
-          RuntimeHelper::ExportAll,
-          self.simulated_facade_namespace_exports(entry_module_idx),
+          if uses_only_json_exports { RuntimeHelper::empty() } else { RuntimeHelper::ExportAll },
+          self.simulated_facade_namespace_exports(entry_module_idx, used_symbol_refs),
           importer_sites.iter().map(|importer| importer.module_idx),
         );
         recorded_simulated_namespace = true;

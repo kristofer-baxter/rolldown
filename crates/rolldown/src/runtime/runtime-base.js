@@ -239,7 +239,10 @@ export var __rejectModuleResolution = async (message, options) => {
   throw error;
 };
 export var __checkTDZ = (initialized, name, readonly) => {
-  if (!initialized) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+  if (!initialized)
+    throw new ReferenceError(
+      name ? "Cannot access '" + name + "' before initialization" : 'Cannot access a binding before initialization',
+    );
   if (readonly) throw new TypeError("Assignment to constant variable.");
 };
 export var __startAsync = (pending, result) => {
@@ -354,3 +357,54 @@ var __esmRun = root => {
 };
 var __starNamespaces = /* @__PURE__ */ new WeakMap();
 var __dynamicNamespaces = /* @__PURE__ */ new WeakMap();
+var __jsonNamespaces = /* @__PURE__ */ new WeakMap();
+export var __jsonExports = (all, no_symbols) => {
+  let init = __jsonNamespaces.get(all);
+  if (init) return (init(), all);
+  let target = __create(null), getMod = all, ready = 0, names;
+  init = () => {
+    if (!ready) {
+      let mod = getMod();
+      ready = 1;
+      names = ['default'];
+      if (mod && typeof mod === 'object') {
+        for (let key of __getOwnPropNames(mod)) {
+          if (key && key !== 'default') names.push(key);
+        }
+      }
+      names.sort();
+      for (let name of names) {
+        __defProp(target, name, {
+          value: name === 'default' ? mod : mod[name],
+          writable: true,
+          enumerable: true,
+        });
+      }
+      if (!no_symbols) __defProp(target, Symbol.toStringTag, { value: 'Module' });
+      Object.preventExtensions(target);
+    }
+    return target;
+  };
+  let namespace = new Proxy(target, {
+    get: (_, key) => init()[key],
+    has: (_, key) => key in init(),
+    ownKeys: () => (init(), no_symbols ? names : [...names, Symbol.toStringTag]),
+    getOwnPropertyDescriptor: (_, key) => __getOwnPropDesc(init(), key),
+    deleteProperty: (_, key) => Reflect.deleteProperty(init(), key),
+    isExtensible: () => (init(), false),
+    set: () => false,
+    defineProperty(_, key, descriptor) {
+      init();
+      if (typeof key === 'symbol' || !__hasOwnProp.call(target, key)) {
+        return __hasOwnProp.call(target, key) && Reflect.defineProperty(target, key, descriptor);
+      }
+      return !descriptor.configurable && descriptor.enumerable !== false &&
+        descriptor.writable !== false && !('get' in descriptor) && !('set' in descriptor) &&
+        (!('value' in descriptor) || Object.is(descriptor.value, target[key]));
+    },
+    preventExtensions: () => (init(), true),
+    setPrototypeOf: (_, prototype) => prototype === null,
+  });
+  __jsonNamespaces.set(namespace, init);
+  return namespace;
+};

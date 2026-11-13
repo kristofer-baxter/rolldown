@@ -218,7 +218,21 @@ fn collect_root_symbol_refs(
   collector.refs
 }
 
-fn top_level_function_declaration<'a, 'ast>(
+fn module_declares_root_class(scopes: &oxc::semantic::Scoping, program: &ast::Program<'_>) -> bool {
+  // An anonymous `export default class {}` has no symbol; the finalizer names it.
+  scopes.symbol_ids().any(|symbol| {
+    scopes.symbol_scope_id(symbol) == scopes.root_scope_id()
+      && scopes.symbol_flags(symbol).is_class()
+  }) || program.body.iter().any(|statement| {
+    matches!(
+      statement,
+      Statement::ExportDefaultDeclaration(export)
+        if matches!(export.declaration, ExportDefaultDeclarationKind::ClassDeclaration(_))
+    )
+  })
+}
+
+pub(super) fn top_level_function_declaration<'a, 'ast>(
   mut statement: &'a Statement<'ast>,
 ) -> Option<&'a ast::Function<'ast>> {
   while let Statement::LabeledStatement(labeled) = statement {
@@ -401,27 +415,24 @@ impl LinkStage<'_> {
     let runtime_semantics =
       crate::utils::native_records::runtime_module_semantics_enabled(self.options);
     let full_minify = matches!(self.options.minify, rolldown_common::MinifyOptions::Enabled(_));
-    if !native_records
-      && !runtime_semantics
-      && !self.options.is_strict_execution_order_enabled()
-      && !full_minify
+    let compatibility_temporal = native_records
+      || runtime_semantics
+      || (self.options.experimental.is_resolve_new_url_to_asset_enabled()
+        && !self.options.is_dev_mode_enabled());
+    if !compatibility_temporal && !self.options.is_strict_execution_order_enabled() && !full_minify
     {
       return;
     }
-    // An acyclic leaf alone is insufficient: a cyclic barrel can read its reexport before
-    // traversal reaches the leaf. Every static edge must respect the completed DFS order.
-    let acyclic_full_graph = !self.options.is_dev_mode_enabled()
-      && self.module_table.iter().all(|module| {
-        module.exec_order() == u32::MAX
-          || (module.as_normal().is_none_or(|module| !module.meta.has_eval())
-            && module.import_records().iter().filter(|record| record.kind.is_static()).all(
-              |record| {
-                record.resolved_module.is_none_or(|dependency| {
-                  self.module_table[dependency].exec_order() < module.exec_order()
-                })
-              },
-            ))
-      });
+    // A production build gives a binding a flag only when a read of it needs a guard.
+    let production =
+      compatibility_temporal && !native_records && !self.options.is_dev_mode_enabled();
+    let mut authored = FxHashSet::default();
+    let cyclic = if production && !self.options.is_strict_execution_order_enabled() {
+      super::temporal_proofs::cyclic_modules(&self.module_table.modules)
+    } else {
+      FxHashSet::default()
+    };
+    let acyclic_full_graph = self.is_acyclic_full_graph();
     for module in self.module_table.modules.iter().filter_map(Module::as_normal) {
       if module.idx == self.runtime.id() {
         continue;
@@ -434,8 +445,7 @@ impl LinkStage<'_> {
         {
           continue;
         }
-      } else if !(native_records
-        || runtime_semantics
+      } else if !(compatibility_temporal
         || (self.options.is_strict_execution_order_enabled()
           && self.metas[module.idx].wrap_kind() == rolldown_common::WrapKind::Esm))
       {
@@ -459,6 +469,7 @@ impl LinkStage<'_> {
       }
       let scope_bindings = bindings.len();
       let ast = self.ast_table[module.idx].as_ref().expect("normal module AST");
+      let declares_class = module_declares_root_class(scopes, ast.program());
       let allow_minified_compounds = self.options.minify.is_enabled()
         && scopes.get_binding(scopes.root_scope_id(), "Object".into()).is_none();
       let object_unshadowed = scopes.get_binding(scopes.root_scope_id(), "Object".into()).is_none();
@@ -559,6 +570,14 @@ impl LinkStage<'_> {
       };
       bindings.sort_unstable_by_key(|(symbol, _)| *symbol);
       bindings.dedup_by_key(|(symbol, _)| *symbol);
+      // A binding that a transform lowered is no longer a declaration the engine guards. Only a
+      // build that gave up strict execution order leaves its guards to the engine: the minifier
+      // assumes that no read is in a temporal dead zone, and drops one whose value is unused.
+      let mut engine_temporal = production
+        && !module.exports_kind.is_commonjs()
+        && !self.options.is_strict_execution_order_enabled()
+        && !self.options.top_level_var
+        && matches!(self.options.format, rolldown_common::OutputFormat::Esm);
       for (symbol, constant) in bindings {
         if native_records
           && !module.exports_kind.is_commonjs()
@@ -575,6 +594,11 @@ impl LinkStage<'_> {
           continue;
         }
         let reference: SymbolRef = (module.idx, symbol).into();
+        if authored_lexical.contains(&symbol) {
+          authored.insert(reference);
+        } else {
+          engine_temporal = false;
+        }
         let flag = self.symbols.create_facade_root_symbol_ref(module.idx, "__initialized");
         self.metas[module.idx].temporal_symbols.insert(reference, flag);
         if constant {
@@ -586,54 +610,123 @@ impl LinkStage<'_> {
         for statement in declarations {
           self.stmt_infos[module.idx]
             .declare_symbol_for_stmt(statement, TaggedSymbolRef::normal(flag));
-          self.stmt_infos[module.idx][statement].referenced_symbols.push(flag.into());
+          if !production || module.exports_kind.is_commonjs() {
+            self.stmt_infos[module.idx][statement].referenced_symbols.push(flag.into());
+          }
         }
       }
+      // A module of an import cycle can import its own class, directly or through a barrel.
+      // Read inside that class, the import would be renamed to the class's name and find the
+      // declaration's inner binding, which is initialized before the module's binding is.
+      self.metas[module.idx].engine_temporal = engine_temporal
+        && !(declares_class && cyclic.contains(&module.idx))
+        && !self.metas[module.idx].temporal_symbols.is_empty();
     }
 
-    self.reference_temporal_binding_flags();
+    self.reference_temporal_binding_flags(production, &authored);
   }
 
-  fn reference_temporal_binding_flags(&mut self) {
+  fn is_acyclic_full_graph(&self) -> bool {
+    // An acyclic leaf alone is insufficient: a cyclic barrel can read its reexport before
+    // traversal reaches the leaf. Every static edge must respect the completed DFS order.
+    !self.options.is_dev_mode_enabled()
+      && self.module_table.iter().all(|module| {
+        module.exec_order() == u32::MAX
+          || (module.as_normal().is_none_or(|module| !module.meta.has_eval())
+            && module.import_records().iter().filter(|record| record.kind.is_static()).all(
+              |record| {
+                record.resolved_module.is_none_or(|dependency| {
+                  self.module_table[dependency].exec_order() < module.exec_order()
+                })
+              },
+            ))
+      })
+  }
+
+  fn reference_temporal_binding_flags(
+    &mut self,
+    production: bool,
+    authored: &FxHashSet<SymbolRef>,
+  ) {
     let any_temporal_symbols = self.metas.iter().any(|meta| !meta.temporal_symbols.is_empty());
     if !any_temporal_symbols {
       return;
     }
     let check = self.runtime.resolve_symbol("__checkTDZ");
+    // A strict build evaluates modules in source order, which the proofs rely on.
+    let proven = if production && self.options.is_strict_execution_order_enabled() {
+      let components = super::temporal_proofs::cycle_components(&self.module_table.modules);
+      let mut proven: oxc_index::IndexVec<rolldown_common::ModuleIdx, _> =
+        self.module_table.modules.iter().map(|_| None).collect();
+      for module in self.module_table.modules.iter().filter_map(Module::as_normal) {
+        if module.idx == self.runtime.id() || module.exports_kind.is_commonjs() {
+          continue;
+        }
+        let (Some(symbols), Some(ast)) =
+          (self.symbols[module.idx].as_ref(), self.ast_table[module.idx].as_ref())
+        else {
+          continue;
+        };
+        let input = super::temporal_proofs::ProofInput {
+          module,
+          scoping: symbols.ast_scopes.scoping(),
+          symbols: &self.symbols,
+          metas: &self.metas,
+          statements: &self.stmt_infos[module.idx],
+          components: &components,
+          authored,
+        };
+        proven[module.idx] = Some(super::temporal_proofs::prove_reads(&input, ast.program()));
+      }
+      for (idx, proven) in proven.iter_mut_enumerated() {
+        if let Some(proven) = proven {
+          self.metas[idx].proven_temporal_reads = std::mem::take(&mut proven.references);
+        }
+      }
+      proven
+    } else {
+      oxc_index::IndexVec::new()
+    };
     for (idx, infos) in self.stmt_infos.iter_mut_enumerated() {
       if idx == self.runtime.id() {
         continue;
       }
-      for info in &mut infos.infos {
+      let proven = proven.get(idx).and_then(Option::as_ref);
+      for (statement, info) in infos.infos.iter_mut_enumerated() {
         let mut flags = Vec::new();
         for reference in &info.referenced_symbols {
-          let resolved = match reference {
-            SymbolOrMemberExprRef::MemberExpr(member) => Some(
-              member
+          // A resolved member read has no identifier of its own for a proof to name.
+          let (resolved, by_identifier) = match reference {
+            SymbolOrMemberExprRef::MemberExpr(member) => {
+              let resolved = member
                 .resolution(&self.metas[idx].resolved_member_expr_refs)
-                .and_then(|resolution| resolution.resolved)
-                .unwrap_or(member.object_ref),
-            ),
-            SymbolOrMemberExprRef::Symbol(symbol) => Some(*symbol),
-          };
-          if let Some(resolved) = resolved {
-            let canonical = self.symbols.canonical_ref_for(resolved);
-            if let Some(flag) = self.metas[canonical.owner].temporal_symbols.get(&canonical) {
-              // Another record's flag would have to become one of its exports, an extra key
-              // in its native namespace. Its namespace reaches the flag through the runtime.
-              let native_owner = (canonical.owner != idx)
-                .then(|| self.module_table[canonical.owner].as_normal())
-                .flatten()
-                .filter(|owner| {
-                  crate::utils::native_records::has_native_namespace(
-                    self.options,
-                    owner,
-                    &self.metas[owner.idx],
-                    &self.symbols,
-                  )
-                });
-              flags.push(native_owner.map_or(*flag, |owner| owner.namespace_object_ref));
+                .and_then(|resolution| resolution.resolved);
+              (resolved.unwrap_or(member.object_ref), resolved.is_none())
             }
+            SymbolOrMemberExprRef::Symbol(symbol) => (*symbol, true),
+          };
+          let canonical = self.symbols.canonical_ref_for(resolved);
+          if by_identifier
+            && proven
+              .is_some_and(|proven| proven.statements.get(&(statement, canonical)) == Some(&true))
+          {
+            continue;
+          }
+          if let Some(flag) = self.metas[canonical.owner].temporal_symbols.get(&canonical) {
+            // Another record's flag would have to become one of its exports, an extra key
+            // in its native namespace. Its namespace reaches the flag through the runtime.
+            let native_owner = (canonical.owner != idx)
+              .then(|| self.module_table[canonical.owner].as_normal())
+              .flatten()
+              .filter(|owner| {
+                crate::utils::native_records::has_native_namespace(
+                  self.options,
+                  owner,
+                  &self.metas[owner.idx],
+                  &self.symbols,
+                )
+              });
+            flags.push(native_owner.map_or(*flag, |owner| owner.namespace_object_ref));
           }
         }
         if !flags.is_empty() {

@@ -151,6 +151,54 @@ impl<Fs: FileSystem + Clone + 'static> Bundle<Fs> {
     }
   }
 
+  /// Scans and links the graph without generating output, and fails with the errors of either
+  /// stage: those that a build of the same graph fails with before it renders a module.
+  ///
+  /// With `part`, the graph is part of a larger one, whose other modules import its modules
+  /// too, and only what no other importer can change is an answer. Linking gives a module
+  /// without a format of its own, neither ES module syntax nor CommonJS, the format that its
+  /// importers ask of it, and a CommonJS module binds any name; and analyses of the link
+  /// other than the binding of imports to exports, as that of top-level await through
+  /// cycles, depend on where the graph is entered. So where a part does not link, the answer
+  /// is the errors only if each is an import that no export binds and every module has a
+  /// format of its own, and `Ok(false)` otherwise: undetermined. `Ok(true)` says that the
+  /// graph links.
+  pub async fn check(mut self, part: bool) -> BuildResult<bool> {
+    let result = async {
+      let mut scan_stage_output = self.scan_modules(ScanMode::Full).await?;
+      if scan_stage_output.index_ecma_ast.is_empty() && self.cache.has_snapshot() {
+        scan_stage_output.index_ecma_ast =
+          std::mem::take(&mut self.cache.get_snapshot_mut().index_ecma_ast);
+      }
+      let undeclared = part
+        && scan_stage_output.module_table.modules.iter().any(|module| {
+          module
+            .as_normal()
+            .is_some_and(|module| matches!(module.exports_kind, rolldown_common::ExportsKind::None))
+        });
+      let (mut link_stage_output, _, _) = LinkStage::new(scan_stage_output, &self.options).link();
+      let errors = link_stage_output.diagnostics.extract_errors();
+      if errors.is_empty() {
+        Ok(true)
+      } else if part
+        && (undeclared
+          || errors
+            .iter()
+            .any(|error| !matches!(error.kind(), rolldown_error::EventKind::MissingExportError)))
+      {
+        Ok(false)
+      } else {
+        Err(errors.into())
+      }
+    }
+    .await;
+    match (result, self.invalidate_js_side_cache_after_scan_only().await) {
+      (Ok(ok), Ok(())) => Ok(ok),
+      (Err(errs), _) => Err(errs),
+      (Ok(_), Err(err)) => Err(err),
+    }
+  }
+
   pub fn cache_snapshot(&self) -> Option<&NormalizedScanStageOutput> {
     self.cache.snapshot()
   }

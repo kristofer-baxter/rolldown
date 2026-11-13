@@ -164,7 +164,17 @@ impl LinkStage<'_> {
           || (crate::utils::native_records::runtime_module_semantics_enabled(self.options)
             && (meta.has_dynamic_exports || !meta.star_exports_from_external_modules.is_empty()))
         {
-          referenced_symbols.push(self.runtime.resolve_symbol("__exportAll").into());
+          if meta.json_object_default_namespace {
+            referenced_symbols.push(self.runtime.resolve_symbol("__jsonExports").into());
+            if matches!(
+              self.dynamic_import_exports_usage_map.get(&ecma_module.idx),
+              Some(DynamicImportExportsUsage::Partial(_))
+            ) {
+              referenced_symbols.push(self.runtime.resolve_symbol("__exportAll").into());
+            }
+          } else {
+            referenced_symbols.push(self.runtime.resolve_symbol("__exportAll").into());
+          }
           referenced_symbols
             .extend(meta.canonical_exports(false).map(|(_, export)| export.symbol_ref.into()));
         }

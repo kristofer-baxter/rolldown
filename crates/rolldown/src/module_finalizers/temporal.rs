@@ -95,19 +95,26 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
       }
       None => self.finalized_expr_without_temporal_guard(flag, false, false).0,
     };
+    // Output with mangled names drops the binding's name: the error says only that a binding was
+    // read before its initialization, as the engine's own would name a mangled identifier.
+    let named = !(self.ctx.options.experimental.is_resolve_new_url_to_asset_enabled()
+      && matches!(self.ctx.options.minify, rolldown_common::MinifyOptions::Enabled(_)));
+    let name = named.then(|| {
+      ast::Argument::new_string_literal(
+        SPAN,
+        ast::Str::from_str_in(binding.name(self.ctx.symbol_db), self),
+        None,
+        self,
+      )
+    });
     let guard = Expression::new_call_expression(
       SPAN,
       self.finalized_expr_for_runtime_symbol("__checkTDZ"),
       None,
-      [
-        ast::Argument::from(initialized),
-        ast::Argument::new_string_literal(
-          SPAN,
-          ast::Str::from_str_in(binding.name(self.ctx.symbol_db), self),
-          None,
-          self,
-        ),
-      ],
+      oxc::allocator::Vec::from_iter_in(
+        std::iter::once(ast::Argument::from(initialized)).chain(name),
+        self,
+      ),
       false,
       self,
     );

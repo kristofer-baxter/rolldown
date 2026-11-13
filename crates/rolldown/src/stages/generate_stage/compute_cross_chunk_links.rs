@@ -2383,6 +2383,7 @@ impl GenerateStage<'_> {
       });
   }
 
+  #[expect(clippy::too_many_lines)]
   fn deconflict_exported_names(
     &self,
     chunk_graph: &mut ChunkGraph,
@@ -2399,6 +2400,15 @@ impl GenerateStage<'_> {
     let preserve_export_names_modules =
       std::mem::take(&mut chunk_graph.common_chunk_preserve_export_names_modules);
     let namespace_entries = &chunk_graph.common_chunk_exported_facade_chunk_namespace;
+    // The internal export names of an earlier build of this application, which this build keeps
+    // so that the importers of a chunk whose exports changed keep their code.
+    let recorded_names = crate::utils::topology_config::export_names(self.options);
+    let export_name_key = |export_ref: SymbolRef| {
+      crate::utils::topology_config::export_name_key(
+        self.link_output.module_table[export_ref.owner].stable_id().as_str(),
+        export_ref.name(&self.link_output.symbol_db),
+      )
+    };
     chunk_graph.chunk_table.par_iter_mut_enumerated().for_each(|(chunk_id, chunk)| {
       if allow_to_minify_internal_exports {
         // Reference: https://github.com/rollup/rollup/blob/f76339428586620ff3e4c32fce48f923e7be7b05/src/utils/exportNames.ts#L5
@@ -2450,7 +2460,7 @@ impl GenerateStage<'_> {
             });
           }
         }
-        for (chunk_export, _predefined_names) in index_chunk_exported_symbols[chunk_id]
+        let ordered_exports = index_chunk_exported_symbols[chunk_id]
           .iter()
           .sorted_unstable_by_key(|(symbol_ref, _predefined_names)| {
             // Canonical naming order — see `deconflict_order_key`.
@@ -2460,9 +2470,28 @@ impl GenerateStage<'_> {
               &self.link_output.symbol_db,
             )
           })
-        {
-          let export_ref = self.link_output.symbol_db.canonical_ref_for(*chunk_export);
-          if processed_entry_exports.contains(&export_ref) {
+          .map(|(chunk_export, _predefined_names)| {
+            self.link_output.symbol_db.canonical_ref_for(*chunk_export)
+          })
+          .filter(|export_ref| !processed_entry_exports.contains(export_ref))
+          .collect::<Vec<_>>();
+        // Recorded names come first, so that no generated name takes one of them. Two exports
+        // that were recorded with one name, in different chunks then, keep it in naming order.
+        let mut kept_names = FxHashMap::default();
+        if let Some(recorded_names) = &recorded_names {
+          for export_ref in &ordered_exports {
+            if !kept_names.contains_key(export_ref)
+              && let Some(name) = recorded_names.get(&export_name_key(*export_ref))
+              && crate::utils::topology_config::is_internal_export_name(name)
+              && used_names.insert(CompactStr::new(name))
+            {
+              kept_names.insert(*export_ref, CompactStr::new(name));
+            }
+          }
+        }
+        for export_ref in ordered_exports {
+          if let Some(kept) = kept_names.remove(&export_ref) {
+            chunk.exports_to_other_chunks.entry(export_ref).or_default().push(kept);
             continue;
           }
 
@@ -2599,6 +2628,45 @@ impl GenerateStage<'_> {
         chunk.exports_to_other_chunks.entry(*chunk_export).or_default().push(chosen);
       }
     });
+
+    if recorded_names.is_some() {
+      // The names this build chose, for the next build to keep. Two exports with one key, which
+      // only generated symbols of one module can share, are left out: neither is then kept.
+      let mut names = std::collections::BTreeMap::new();
+      let mut ambiguous = FxHashSet::default();
+      if allow_to_minify_internal_exports {
+        for chunk in chunk_graph.chunk_table.iter() {
+          for (export_ref, export_names) in &chunk.exports_to_other_chunks {
+            let Some(name) = export_names
+              .first()
+              .filter(|name| crate::utils::topology_config::is_internal_export_name(name))
+            else {
+              continue;
+            };
+            let key = export_name_key(*export_ref);
+            if names.insert(key.clone(), name.to_string()).is_some() {
+              ambiguous.insert(key);
+            }
+          }
+        }
+      }
+      names.retain(|key, _| !ambiguous.contains(key));
+      let source = serde_json::to_string(&names).expect("a map of strings is always serializable");
+      self
+        .plugin_driver
+        .file_emitter
+        .emit_file(
+          rolldown_common::EmittedAsset {
+            name: None,
+            original_file_name: None,
+            file_name: Some(crate::utils::topology_config::EXPORT_NAMES_FILE.into()),
+            source: source.into(),
+          },
+          None,
+          None,
+        )
+        .expect("the export name record has a valid file name");
+    }
   }
 
   pub(super) fn cross_chunk_symbol_is_live(

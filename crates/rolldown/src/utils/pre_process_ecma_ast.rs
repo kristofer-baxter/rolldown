@@ -275,7 +275,11 @@ impl PreProcessEcmaAst {
         // finalization restores native lexical reads or inserts wrapper/minifier guards.
         let may_be_commonjs =
           !program.body.iter().any(oxc::ast::ast::Statement::is_module_declaration);
+        let compatibility_temporal =
+          bundle_options.experimental.is_resolve_new_url_to_asset_enabled()
+            && !bundle_options.is_dev_mode_enabled();
         if (runtime_semantics
+          || compatibility_temporal
           || crate::utils::native_records::enabled(bundle_options)
           || bundle_options.is_strict_execution_order_enabled()
           || (may_be_commonjs

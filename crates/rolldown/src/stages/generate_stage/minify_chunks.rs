@@ -21,7 +21,10 @@ use super::GenerateStage;
 type ChunkMinifyResult =
   Option<(rolldown_common::ChunkIdx, [u8; 32], Vec<String>, arcstr::ArcStr, bool)>;
 
+type ChunkMinifyVerdict = BuildResult<Option<([u8; 32], bool)>>;
+
 impl GenerateStage<'_> {
+  #[expect(clippy::too_many_lines)]
   #[tracing::instrument(level = "debug", skip_all)]
   pub fn minify_chunks(
     &mut self,
@@ -55,14 +58,79 @@ impl GenerateStage<'_> {
       .collect::<FxHashSet<_>>();
 
     let property_mangle_cache = OnceLock::new();
+    let is_multi_chunk =
+      chunks.iter().filter(|chunk| is_minifiable_ecma_chunk(chunk)).take(2).count() > 1;
     let cache_ref = self.cache.as_deref();
-    let shared_mangle_properties = collect_shared_mangle_properties(
-      chunks,
-      minify_options.mangle_properties.as_ref(),
-      source_type,
-    )?;
+    let (shared_mangle_properties, mut any_chunk_mutates_object_prototype) =
+      collect_shared_mangle_properties(
+        chunks,
+        minify_options.mangle_properties.as_ref(),
+        is_multi_chunk && minify_options.compress.is_some(),
+        source_type,
+      )?;
     if let Some(shared_opts) = &shared_mangle_properties {
       let _ = property_mangle_cache.set(shared_opts.cache.clone());
+    }
+    let mut proto_verdicts: Option<rustc_hash::FxHashMap<[u8; 32], bool>> = None;
+    if is_multi_chunk && shared_mangle_properties.is_none() && minify_options.compress.is_some() {
+      use rolldown_utils::{
+        hash_placeholder::{HASH_PLACEHOLDER_LEFT_FINDER, visit_with_placeholders_defaulted},
+        rayon::IntoParallelRefIterator,
+      };
+      use xxhash_rust::xxh3::Xxh3;
+      let verdicts: Vec<ChunkMinifyVerdict> = chunks
+        .par_iter()
+        .map(|chunk| -> ChunkMinifyVerdict {
+          if !is_minifiable_ecma_chunk(chunk) {
+            return Ok(None);
+          }
+          let pre_str = chunk.content.try_as_inner_str()?;
+          let mut h0 = Xxh3::with_seed(0x9e37_79b9_7f4a_7c15);
+          let mut h1 = Xxh3::with_seed(0x6a09_e667_f3bc_c908);
+          visit_with_placeholders_defaulted(
+            pre_str,
+            &HASH_PLACEHOLDER_LEFT_FINDER,
+            |_| true,
+            |bytes| {
+              h0.update(bytes);
+              h1.update(bytes);
+            },
+          );
+          let mut raw_hash = [0u8; 32];
+          raw_hash[..16].copy_from_slice(&h0.digest128().to_le_bytes());
+          raw_hash[16..].copy_from_slice(&h1.digest128().to_le_bytes());
+          if let Some(c) = cache_ref
+            && let Some(&cached_mutates) = c.cached_chunk_prototype_mutations.get(&raw_hash)
+          {
+            return Ok(Some((raw_hash, cached_mutates)));
+          }
+          let allocator_guard = allocator_pool.get();
+          let parsed = oxc::parser::Parser::new(&allocator_guard, pre_str, source_type)
+            .with_options(oxc::parser::ParseOptions {
+              preserve_parens: false,
+              ..oxc::parser::ParseOptions::default()
+            })
+            .parse();
+          let mutates = parsed.fatal_error
+            || !parsed.diagnostics.is_empty()
+            || oxc::minifier::program_may_mutate_object_prototype(&parsed.program);
+          Ok(Some((raw_hash, mutates)))
+        })
+        .collect();
+      let mut map = rustc_hash::FxHashMap::default();
+      for res in verdicts {
+        if let Some((raw_hash, mutates)) = res? {
+          if mutates {
+            any_chunk_mutates_object_prototype = true;
+          }
+          map.insert(raw_hash, mutates);
+        }
+      }
+      proto_verdicts = Some(map);
+    }
+    let mut minify_options = minify_options;
+    if any_chunk_mutates_object_prototype && let Some(compress) = &mut minify_options.compress {
+      compress.set_inline_enum_members(false);
     }
     let deferred_modules = self
       .link_output
@@ -88,6 +156,8 @@ impl GenerateStage<'_> {
           let pre_str = chunk.content.try_as_inner_str()?;
           let mut h0 = Xxh3::with_seed(0x9e37_79b9_7f4a_7c15);
           let mut h1 = Xxh3::with_seed(0x6a09_e667_f3bc_c908);
+          h0.update(&[u8::from(any_chunk_mutates_object_prototype)]);
+          h1.update(&[u8::from(any_chunk_mutates_object_prototype)]);
           visit_with_placeholders_defaulted(
             pre_str,
             &HASH_PLACEHOLDER_LEFT_FINDER,
@@ -212,6 +282,9 @@ impl GenerateStage<'_> {
       })
       .collect::<BuildResult<Vec<_>>>()?;
     if let Some(c) = self.cache.as_deref_mut() {
+      if let Some(verdicts) = proto_verdicts {
+        c.cached_chunk_prototype_mutations = verdicts;
+      }
       for (chunk_idx, pre_hash, pls, post_code, _was_hit) in minify_results.into_iter().flatten() {
         c.current_chunk_minify_state.insert(chunk_idx, (pre_hash, pls, Some(post_code)));
       }
@@ -275,14 +348,16 @@ impl GenerateStage<'_> {
 fn collect_shared_mangle_properties(
   chunks: &IndexInstantiatedChunks,
   mangle_properties: Option<&oxc::minifier::ManglePropertiesOptions>,
+  check_proto_mutations: bool,
   source_type: oxc::span::SourceType,
-) -> BuildResult<Option<oxc::minifier::ManglePropertiesOptions>> {
+) -> BuildResult<(Option<oxc::minifier::ManglePropertiesOptions>, bool)> {
   let Some(mangle_properties) = mangle_properties else {
-    return Ok(None);
+    return Ok((None, false));
   };
   let prop_allocator = oxc::allocator::Allocator::default();
   let mut mangle_props = mangle_properties.clone();
   let mut programs = Vec::new();
+  let mut any_chunk_mutates_object_prototype = false;
   for chunk in chunks.iter().filter(|chunk| is_minifiable_ecma_chunk(chunk)) {
     let pre_str = chunk.content.try_as_inner_str()?;
     let parsed = oxc::parser::Parser::new(&prop_allocator, pre_str, source_type)
@@ -299,6 +374,12 @@ fn collect_shared_mangle_properties(
         )
         .into(),
       );
+    }
+    if check_proto_mutations
+      && !any_chunk_mutates_object_prototype
+      && oxc::minifier::program_may_mutate_object_prototype(&parsed.program)
+    {
+      any_chunk_mutates_object_prototype = true;
     }
     if !mangle_props.mangle_quoted {
       use oxc::ast_visit::Visit;
@@ -325,7 +406,7 @@ fn collect_shared_mangle_properties(
     .map_err(anyhow::Error::msg)?
     .include;
   mangle_props.cache = shared_cache;
-  Ok(Some(mangle_props))
+  Ok((Some(mangle_props), any_chunk_mutates_object_prototype))
 }
 
 /// Oxc's occupied-name set protects generated targets, not source names. A string that is

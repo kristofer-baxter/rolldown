@@ -987,12 +987,21 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       optimize_namespace_alias_transform,
     );
     let canonical = self.ctx.symbol_db.canonical_ref_for(symbol_ref);
-    let expression = match self.ctx.linking_infos[canonical.owner].temporal_symbols.get(&canonical)
-    {
-      Some(flag) => self.guard_temporal_expression(*flag, canonical, expression),
+    let expression = match self.temporal_flag(canonical) {
+      Some(flag) => self.guard_temporal_expression(flag, canonical, expression),
       None => expression,
     };
     (expression, hint)
+  }
+
+  /// The flag that guards reads of `binding`. A production build gives a binding a flag only
+  /// when the link stage found a read that needs one, and its module initializes no other.
+  fn temporal_flag(&self, binding: SymbolRef) -> Option<SymbolRef> {
+    let flag = *self.ctx.linking_infos[binding.owner].temporal_symbols.get(&binding)?;
+    let production = self.ctx.options.experimental.is_resolve_new_url_to_asset_enabled()
+      && !self.ctx.options.is_dev_mode_enabled()
+      && !crate::utils::native_records::enabled(self.ctx.options);
+    (!production || self.ctx.used_symbol_refs.contains(&flag)).then_some(flag)
   }
 
   fn finalized_expr_without_temporal_guard(
@@ -1425,6 +1434,44 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     ))
   }
 
+  pub(super) fn uses_json_default_namespace(&self) -> bool {
+    if !self.ctx.linking_info.json_object_default_namespace {
+      return false;
+    }
+    let namespace_is_semantically_observed = self
+      .ctx
+      .linking_info
+      .module_namespace_included_reason
+      .contains(ModuleNamespaceIncludedReason::Unknown)
+      || (self
+        .ctx
+        .linking_info
+        .module_namespace_included_reason
+        .contains(ModuleNamespaceIncludedReason::ReExportDynamicExports)
+        && self.ctx.linking_info.has_dynamic_exports)
+      || self
+        .ctx
+        .order_wrap_state
+        .requires_semantic_namespace(self.ctx.module.namespace_object_ref, |importer_idx| {
+          self.ctx.chunk_graph.module_is_in_live_chunk(importer_idx)
+        });
+    let partial_dynamic_exports = (!namespace_is_semantically_observed)
+      .then(|| {
+        self
+          .ctx
+          .linking_info
+          .module_namespace_included_reason
+          .contains(ModuleNamespaceIncludedReason::SimulateFacadeChunk)
+          .then(|| {
+            self.ctx.linking_info.dynamically_read_export_names(self.ctx.dynamic_import_usage)
+          })
+          .flatten()
+      })
+      .flatten();
+    partial_dynamic_exports.is_none()
+      && self.ctx.retained_export_symbols.contains(&self.ctx.module.default_export_ref)
+  }
+
   fn generate_declaration_of_module_namespace_object(&self) -> Vec<ast::Statement<'ast>> {
     if !self.module_namespace_included {
       return vec![];
@@ -1448,6 +1495,12 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
         binding_name_for_namespace_object_ref,
         self,
       )];
+    }
+
+    if self.uses_json_default_namespace() {
+      return vec![
+        self.generate_json_default_namespace_decl(binding_name_for_namespace_object_ref),
+      ];
     }
 
     // construct `{ prop_name: () => returned, ... }`
@@ -1653,6 +1706,52 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     let call_expr = ast::Expression::new_call_expression(
       SPAN,
       self.finalized_expr_for_runtime_symbol("__exportAll"),
+      None,
+      [ast::Argument::from(namespace)],
+      false,
+      self,
+    );
+    ast::Statement::new_expression_statement(SPAN, call_expr, self)
+  }
+
+  fn generate_json_default_namespace_decl(&self, binding_name: &str) -> Statement<'ast> {
+    let (default_expr, _) =
+      self.finalized_expr_for_symbol_ref(self.ctx.module.default_export_ref, false, false);
+    let symbols = self.ctx.options.generated_code.symbols;
+    let args = oxc::allocator::Vec::from_iter_in(
+      [
+        ast::Argument::from(Expression::new_arrow_returning(default_expr, self)),
+        ast::Argument::new_numeric_literal(
+          SPAN,
+          if symbols { 0.0 } else { 1.0 },
+          None,
+          NumberBase::Decimal,
+          self,
+        ),
+      ],
+      self,
+    );
+    let ns_expr = ast::Expression::new_call_expression_with_pure(
+      SPAN,
+      self.finalized_expr_for_runtime_symbol("__jsonExports"),
+      None,
+      args,
+      false,
+      true,
+      self,
+    );
+    Statement::new_var_decl(binding_name, ns_expr, self)
+  }
+
+  /// `__jsonExports(ns)`, which snapshots the JSON module's `default` object right after it
+  /// initializes so later mutations through static or `require()` imports cannot alter namespace
+  /// property values or keys.
+  pub(super) fn complete_json_namespace_stmt(&self) -> Statement<'ast> {
+    let (namespace, _) =
+      self.finalized_expr_for_symbol_ref(self.ctx.module.namespace_object_ref, false, false);
+    let call_expr = ast::Expression::new_call_expression(
+      SPAN,
+      self.finalized_expr_for_runtime_symbol("__jsonExports"),
       None,
       [ast::Argument::from(namespace)],
       false,
@@ -2207,6 +2306,11 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     if crate::utils::native_records::enabled(self.ctx.options)
       && self.ctx.linking_info.wrap_kind() == rolldown_common::WrapKind::None
     {
+      return Err(class);
+    }
+
+    // The engine guards an unwrapped production module's bindings, which a `var` would undo.
+    if self.ctx.linking_info.engine_temporal {
       return Err(class);
     }
 
@@ -3157,7 +3261,9 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                   }
                 }
 
-                if self.ctx.linking_info.native_default_expression && owns_initial_bindings {
+                if (self.ctx.linking_info.native_default_expression && owns_initial_bindings)
+                  || self.ctx.linking_info.engine_temporal
+                {
                   // `let local = ({ default: <expr> }).default;` keeps the engine's TDZ, names
                   // an anonymous function or class "default", and is a writable binding cell.
                   if init_expr.without_parentheses().is_anonymous_function_definition() {
@@ -3753,24 +3859,25 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                     self,
                   )
                 };
-                let mut body_expr = if crate::utils::native_records::runtime_module_semantics_enabled(
-                  self.ctx.options,
-                ) {
-                  Expression::new_call_expression(
-                    SPAN,
-                    self.finalized_expr_for_runtime_symbol("__importNamespace"),
-                    None,
-                    [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
-                    false,
-                    self,
-                  )
-                } else {
-                  arrow.r#async = true;
-                  let init_call =
-                    Expression::new_call_expression(SPAN, member(name), None, [], false, self);
-                  let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
-                  Expression::new_seq_in_parens(await_init, member(ns_name), self)
-                };
+                let mut body_expr =
+                  if crate::utils::native_records::runtime_module_semantics_enabled(
+                    self.ctx.options,
+                  ) {
+                    Expression::new_call_expression(
+                      SPAN,
+                      self.finalized_expr_for_runtime_symbol("__importNamespace"),
+                      None,
+                      [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
+                      false,
+                      self,
+                    )
+                  } else {
+                    arrow.r#async = true;
+                    let init_call =
+                      Expression::new_call_expression(SPAN, member(name), None, [], false, self);
+                    let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
+                    Expression::new_seq_in_parens(await_init, member(ns_name), self)
+                  };
                 if let Some(module) = record_read {
                   let assignment = Expression::new_assignment_expression(
                     SPAN,

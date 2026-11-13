@@ -74,6 +74,7 @@ pub struct HmrStage<'a, Fs: FileSystem + Clone + 'static> {
 }
 
 struct HmrPatchRenderInputs<'a> {
+  reshaped: &'a FxIndexSet<ModuleIdx>,
   cell_routes: &'a [crate::hmr::native_cell_routes::Route],
   post_rebuild_renders: &'a FxHashMap<ModuleIdx, String>,
 }
@@ -700,10 +701,78 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       };
     let binding_cells = native_records
       || crate::utils::native_records::runtime_module_semantics_enabled(&self.options);
-    let pre_rebuild_export_shapes = if binding_cells && !rescan_only {
-      changed_modules
+    // The names that a module's `export *` declarations may give it, as the own names of each
+    // module that they lead to: a superset of what decides them, so that it changes whenever
+    // they do (#1318).
+    let star_names = |stage: &Self, module_idx: ModuleIdx| {
+      let modules = &stage.module_table().modules;
+      let mut sources = FxIndexSet::default();
+      let mut stack = modules[module_idx]
+        .as_normal()
+        .map(|module| module.star_export_module_ids().collect::<Vec<_>>())
+        .unwrap_or_default();
+      while let Some(idx) = stack.pop() {
+        if idx == module_idx || !sources.insert(idx) {
+          continue;
+        }
+        if let Some(module) = modules[idx].as_normal() {
+          stack.extend(module.star_export_module_ids());
+        }
+      }
+      let mut names = sources
+        .into_iter()
+        .map(|idx| {
+          let mut names = modules[idx].as_normal().map_or_else(Vec::new, |module| {
+            module.named_exports.keys().map(ToString::to_string).collect()
+          });
+          names.sort_unstable();
+          (modules[idx].stable_id().to_string(), names)
+        })
+        .collect::<Vec<_>>();
+      names.sort_unstable();
+      names
+    };
+    // Whether a module imports a native cell, as a donor does its own.
+    let donates = |stage: &Self, module_idx: ModuleIdx| {
+      let modules = &stage.module_table().modules;
+      modules[module_idx].as_normal().is_some_and(|module| {
+        module
+          .import_records
+          .iter()
+          .filter_map(|record| record.resolved_module)
+          .any(|idx| crate::utils::native_records::is_native_cell(modules[idx].id().as_str()))
+      })
+    };
+    // The modules that a scan found not to link, each of which it replaced with one that throws
+    // (`deferred_resolution_error::is_link_failure`), which imports the runtime alone.
+    let link_failures = |stage: &Self| {
+      let modules = &stage.module_table().modules;
+      modules
         .iter()
-        .filter_map(|module_idx| Some((*module_idx, native_export_shape(self, *module_idx)?)))
+        .filter_map(Module::as_normal)
+        .filter(|module| {
+          module.import_records.len() == 1
+            && crate::deferred_resolution_error::is_link_failure(modules, module.idx)
+        })
+        .map(|module| module.idx)
+        .collect::<FxHashSet<_>>()
+    };
+    let pre_rebuild_link_failures =
+      if binding_cells && !rescan_only { link_failures(self) } else { FxHashSet::default() };
+    // The shape of each module whose exports the edit may change: the changed modules, and the
+    // modules that export what one of them does, through an `export *` or a name that they
+    // forward, and so on, whose own sources the edit leaves alone (#1318).
+    let pre_rebuild_export_shapes = if binding_cells && !rescan_only {
+      reexporters(&self.module_table().modules, &self.cache.importers, &changed_modules)
+        .into_iter()
+        .filter_map(|module_idx| {
+          Some((
+            module_idx,
+            native_export_shape(self, module_idx)?,
+            star_names(self, module_idx),
+            donates(self, module_idx),
+          ))
+        })
         .collect::<Vec<_>>()
     } else {
       Vec::new()
@@ -731,7 +800,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     };
     let pre_rebuild_assigned_exports = pre_rebuild_export_shapes
       .iter()
-      .filter_map(|(module_idx, _)| Some((*module_idx, assigned_exports(self, *module_idx)?)))
+      .filter(|(module_idx, ..)| changed_modules.contains(module_idx))
+      .filter_map(|(module_idx, ..)| Some((*module_idx, assigned_exports(self, *module_idx)?)))
       .collect::<Vec<_>>();
     // A JSON module's importers that the graph reaches decide whether its namespace holds its
     // properties (`import_options::json_namespace_has_properties`). A page's resident namespace
@@ -1126,26 +1196,87 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       None => FxIndexSet::default(),
     };
 
-    if let Some((stable_id, ..)) = pre_rebuild_export_shapes
+    // The modules whose export shape the edit changes. A page that holds one as a native record
+    // can't give its namespace other names, nor lead a name that it forwards elsewhere, so the
+    // page stops answering for the module with that namespace and runs every module that imports
+    // it again, as for a module that invalidates its update (#846, #1318).
+    let mut reshaped = pre_rebuild_export_shapes
       .iter()
-      .map(|(module_idx, shape)| (shape, native_export_shape(self, *module_idx)))
-      .find_map(|(before, after)| (Some(before) != after.as_ref()).then_some(before))
-    {
-      // A native cell's exports follow its donor's eligibility: report the donor's own cause.
-      let reason = if changed_modules.iter().any(|idx| {
-        self.module_table().modules[*idx].as_normal().is_some_and(|module| {
-          module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+      .filter(|(module_idx, shape, names, _)| {
+        native_export_shape(self, *module_idx).as_ref() != Some(shape)
+          || star_names(self, *module_idx) != *names
+      })
+      .map(|(module_idx, ..)| *module_idx)
+      .collect::<FxIndexSet<_>>();
+    // A record that exports what a reshaped module does binds the reshaped module's own record,
+    // which its page gives up, so the modules that export a name or the namespace of one, or its
+    // names with an `export *`, are reshaped with it, and so on, whether or not their own shape
+    // differs: a later update of the reshaped module writes no binding of its record.
+    if !reshaped.is_empty() {
+      reshaped = reexporters(&self.module_table().modules, &self.cache.importers, &reshaped);
+    }
+    // A page can't follow a reshaped module where a patch can't run it or its importers again, as
+    // with top-level await, or where the module begins or ceases to give its exports to a native
+    // cell, which the page's records bound past the module, and which a page that pruned it
+    // lacks. Nor where the edit changes whether a module links: the record of one that failed to
+    // link can't be replaced, and a fresh page's of one that fails now throws.
+    // Nor where a name that a reshaped module exports before the edit and after it moves to
+    // another binding: the record's namespace, which a module may have kept, as in its hot data
+    // or a callback, binds what the name led to, and no patch moves it.
+    let moved = || {
+      pre_rebuild_export_shapes.iter().filter(|(idx, ..)| reshaped.contains(idx)).find_map(
+        |(module_idx, shape, stars, _)| {
+          let after = native_export_shape(self, *module_idx)?;
+          let after_stars = star_names(self, *module_idx);
+          let name = moved_binding(
+            (&shape.1, &shape.3, &shape.4, stars),
+            (&after.1, &after.3, &after.4, &after_stars),
+          )?;
+          Some(format!(
+            "native module export shape changed in {}: the binding of its export {name} moved; its namespace cannot be patched",
+            self.module_table().modules[*module_idx].stable_id()
+          ))
+        },
+      )
+    };
+    let relinked = || {
+      link_failures(self)
+        .symmetric_difference(&pre_rebuild_link_failures)
+        .map(|idx| self.module_table().modules[*idx].stable_id().to_string())
+        .min()
+        .map(|id| {
+          format!(
+            "{id} links on one side of the edit alone; a record that fails to link cannot be patched"
+          )
         })
-      }) {
+    };
+    let unpatchable = if reshaped.is_empty() {
+      None
+    } else if changed_modules.iter().any(|idx| {
+      self.module_table().modules[*idx].as_normal().is_some_and(|module| {
+        module.ast_usage.contains(rolldown_common::EcmaModuleAstUsage::TopLevelAwait)
+      })
+    }) {
+      Some(
         "top-level await requires a full reload; asynchronous patch factories are unsupported"
-          .to_owned()
-      } else if crate::utils::native_records::is_native_cell(stable_id) {
-        format!("native cell membership changed ({stable_id}); its namespace cannot be patched")
-      } else {
-        format!(
-          "native module export shape changed in {stable_id}; its namespace cannot be patched"
-        )
-      };
+          .to_owned(),
+      )
+    } else {
+      pre_rebuild_export_shapes
+        .iter()
+        .find(|(module_idx, .., donated)| {
+          reshaped.contains(module_idx) && donates(self, *module_idx) != *donated
+        })
+        .map(|(module_idx, ..)| {
+          format!(
+            "native cell membership changed ({}); its namespace cannot be patched",
+            self.module_table().modules[*module_idx].stable_id()
+          )
+        })
+        .or_else(moved)
+        .or_else(relinked)
+    };
+    if let Some(reason) = unpatchable {
       return Ok(
         clients
           .iter()
@@ -1307,7 +1438,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     };
 
     let (mut affected, mut standby) =
-      self.collect_client_update_superset(&changed_modules, &pre_rebuild_invalidating);
+      self.collect_client_update_superset(&changed_modules, &pre_rebuild_invalidating, &reshaped);
     affected.extend(new_added_modules.iter().copied());
     affected.extend(rerendered_importers.iter().copied());
     // A new `import()` adds a new lazy proxy, which never runs in the client.
@@ -1407,6 +1538,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           stamp_table,
           &side_effects,
           &HmrPatchRenderInputs {
+            reshaped: &reshaped,
             cell_routes: &cell_routes,
             post_rebuild_renders: &post_rebuild_renders,
           },
@@ -1422,6 +1554,32 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
     *self.lost_hmr_update = lost_before;
     Ok(client_updates)
+  }
+
+  /// Whether a module other than `module_idx` holds its exports: one that imports a name or the
+  /// namespace of it, exports its names with an `export *`, or imports it other than with an
+  /// `import` declaration, as with an `import()` or a `require`, or through a lazy proxy, or
+  /// accepts its updates, whose callback an update gives its exports. A module that imports it
+  /// for its side effects alone holds none (#1318).
+  fn exports_held(&self, module_idx: ModuleIdx) -> bool {
+    let modules = &self.module_table().modules;
+    let importers = self.cache.importers.get(module_idx).into_iter().flatten();
+    importers.map(|rec| rec.importer_idx).filter(|idx| *idx != module_idx).any(|importer_idx| {
+      let Some(importer) = modules.get(importer_idx).and_then(Module::as_normal) else {
+        return false;
+      };
+      lazy_proxy_target(importer.stable_id.as_str()).is_some()
+        || importer.import_records.iter_enumerated().any(|(record_idx, record)| {
+          record.resolved_module == Some(module_idx)
+            && match record.kind {
+              ImportKind::Import => {
+                record.meta.contains(ImportRecordMeta::IsExportStar)
+                  || importer.named_imports.values().any(|import| import.record_idx == record_idx)
+              }
+              _ => true,
+            }
+        })
+    })
   }
 
   /// Collect the superset of modules any client's walk may re-run for these changes:
@@ -1445,6 +1603,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     &self,
     changed_modules: &FxIndexSet<ModuleIdx>,
     invalidating: &FxHashSet<ModuleIdx>,
+    reshaped: &FxIndexSet<ModuleIdx>,
   ) -> (FxIndexSet<ModuleIdx>, FxHashSet<ModuleIdx>) {
     let reach = self.reach();
     // The modules that the walk reaches, and whether it went on past a module that may invalidate.
@@ -1464,7 +1623,12 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
           continue;
         };
 
-        if module.is_hmr_self_accepting_module() {
+        // A client runs the importers of a module whose export shape the update changes again,
+        // whether or not the module accepts its own updates, where one holds its exports: they
+        // are no factories to hold aside.
+        if module.is_hmr_self_accepting_module()
+          && !(reshaped.contains(&module_idx) && self.exports_held(module_idx))
+        {
           if !(passing
             && (invalidating.contains(&module_idx)
               || self.index_ecma_ast()[module_idx]
@@ -1740,11 +1904,22 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // The factories read CommonJS modules as the link of the current scan converts them, which
     // other importers decide, so a cached chunk serves only where it still reads them so (#748).
     let commonjs_reads = self.commonjs_reads(modules_to_be_updated.iter().copied(), &side_effects);
-    let cached = if self.cache.native_cell_modules.is_empty()
-      && let Some((cached_gens, cached_reads, code, filename, sourcemap_filename, sourcemap)) =
-        self.cache.cached_lazy_chunks.get(module_id)
+    let (cell_bindings, linked_shapes) =
+      self.lazy_chunk_cache_keys(&modules_to_be_updated, &cell_routes);
+    let cached = if let Some((
+      cached_gens,
+      cached_reads,
+      cached_bindings,
+      cached_shapes,
+      code,
+      filename,
+      sourcemap_filename,
+      sourcemap,
+    )) = self.cache.cached_lazy_chunks.get(module_id)
       && *cached_gens == key_gens
       && *cached_reads == commonjs_reads
+      && *cached_bindings == cell_bindings
+      && *cached_shapes == linked_shapes
     {
       let carried = modules_to_be_updated
         .iter()
@@ -1870,21 +2045,94 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
     let sourcemap_filename = sourcemap_asset.as_ref().map(|asset| asset.filename.to_string());
     let sourcemap = sourcemap_asset.map(|asset| asset.source.try_into_string()).transpose()?;
-    if self.cache.native_cell_modules.is_empty() {
-      self.cache.cached_lazy_chunks.insert(
-        module_id.to_owned(),
-        (
-          key_gens,
-          commonjs_reads.clone(),
-          code.clone(),
-          filename.clone(),
-          sourcemap_filename.clone(),
-          sourcemap.clone(),
-        ),
-      );
-    }
+    self.cache.cached_lazy_chunks.insert(
+      module_id.to_owned(),
+      (
+        key_gens,
+        commonjs_reads.clone(),
+        cell_bindings,
+        linked_shapes,
+        code.clone(),
+        filename.clone(),
+        sourcemap_filename.clone(),
+        sourcemap.clone(),
+      ),
+    );
     self.cache.commonjs_reads.extend(commonjs_reads);
     Ok(HmrLazyChunkOutput { code, filename, sourcemap_filename, sourcemap, carried })
+  }
+
+  fn lazy_chunk_cache_keys(
+    &self,
+    modules_to_be_updated: &FxIndexSet<ModuleIdx>,
+    cell_routes: &[crate::hmr::native_cell_routes::Route],
+  ) -> (
+    crate::types::scan_stage_cache::LazyChunkCellBindings,
+    crate::types::scan_stage_cache::LazyChunkLinkedShapes,
+  ) {
+    // A factory binds the names that its module's record read straight from native cells to those
+    // cells, which the routes of the current scan name, and which an edit of a donor or of what
+    // it imports can move without a rescan of the importer (#1291).
+    let cell_bindings = {
+      let shipped = modules_to_be_updated.iter().copied().collect::<FxHashSet<_>>();
+      let mut bindings = cell_routes
+        .iter()
+        .filter(|route| {
+          route.verdict == crate::hmr::native_cell_routes::Verdict::Bypass
+            && shipped.contains(&route.importer)
+        })
+        .flat_map(|route| {
+          route.bindings.iter().filter(|(_, (owner, _))| route.live_owners.contains(owner)).map(
+            |(name, (owner, export))| {
+              (route.importer, route.record.index(), name.clone(), *owner, export.clone())
+            },
+          )
+        })
+        .collect::<Vec<_>>();
+      bindings.sort_unstable();
+      bindings
+    };
+    // A factory registers a module without ES or CommonJS syntax as the link makes it, converts
+    // such a module that it imports by that kind, and gives a JSON module's namespace its
+    // properties or not, by the module's importers that the graph reaches, which another
+    // session's graph, or an edit of an importer, decides otherwise without a rescan of the
+    // module.
+    let linked_shapes = {
+      let modules = &self.module_table().modules;
+      let reach = self.reach();
+      // The chunk's modules, and what their factories import, which a factory converts by the
+      // kind that the link gives it, also an `import()` of a module that the chunk leaves out.
+      let mut shaped = modules_to_be_updated.clone();
+      for idx in modules_to_be_updated {
+        if let Some(module) = modules[*idx].as_normal() {
+          shaped.extend(module.import_records.iter().filter_map(|record| record.resolved_module));
+        }
+      }
+      shaped.sort_unstable();
+      shaped
+        .iter()
+        .filter_map(|idx| modules[*idx].as_normal())
+        .filter_map(|module| {
+          let json = crate::utils::import_options::is_json_module(module);
+          let unlinked = module.exports_kind == ExportsKind::None && !module.meta.has_lazy_export();
+          (json || unlinked).then(|| {
+            let kind = match self.rendered_exports_kind(module) {
+              ExportsKind::None => 0,
+              ExportsKind::Esm => 1,
+              ExportsKind::CommonJs => 2,
+            };
+            let properties = json
+              && crate::utils::import_options::json_namespace_has_properties(
+                module,
+                modules,
+                |idx| reach.reaches(idx),
+              );
+            (module.idx, kind, properties)
+          })
+        })
+        .collect::<Vec<_>>()
+    };
+    (cell_bindings, linked_shapes)
   }
 
   async fn render_hmr_patch(
@@ -2014,6 +2262,30 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
       source_joiner.append_source(concat_string!(
         "__rolldown_runtime__.standby?.(",
         serde_json::to_string(&standby_ids).expect("stable ids serialize"),
+        ");"
+      ));
+    }
+    // The modules whose export shape the update changes, which a client that ran one stops
+    // answering for with the namespace of its record, and whose importers it runs again (#1318),
+    // and those of them whose exports no other module holds, which a client that ran one keeps
+    // as a module that accepts its own updates. A runtime without the hook reloads once it finds
+    // other names than the record had.
+    if !render_inputs.reshaped.is_empty() {
+      let ids = |held: bool| {
+        let mut ids = render_inputs
+          .reshaped
+          .iter()
+          .filter(|idx| held || !self.exports_held(**idx))
+          .map(|idx| self.module_table().modules[*idx].stable_id().as_str())
+          .collect::<Vec<_>>();
+        ids.sort_unstable();
+        serde_json::to_string(&ids).expect("stable ids serialize")
+      };
+      source_joiner.append_source(concat_string!(
+        "__rolldown_runtime__.reshaped?.(",
+        ids(true),
+        ",",
+        ids(false),
         ");"
       ));
     }
@@ -2908,6 +3180,103 @@ fn reachable_modules(
 
 fn importers(module: &NormalModule) -> impl Iterator<Item = ModuleIdx> + '_ {
   module.importers_idx.iter().chain(module.dynamic_importers_idx.iter()).copied()
+}
+
+/// The parts of a module's export shape that say what each name binds: its own names, where the
+/// names that it forwards lead, the groups of names that share a binding, and the own names of
+/// the modules that its `export *` declarations lead to.
+type Bindings<'a, D> =
+  (&'a [String], &'a [(String, D)], &'a [Vec<String>], &'a [(String, Vec<String>)]);
+
+/// A name that a module exports `before` an edit and `after` it, and that binds something else
+/// after it: one that it forwards elsewhere, one that begins or ceases to share its binding with
+/// another such name, or one that another of its `export *` declarations gives it, or that the
+/// module declares where a declaration gave it (#1318).
+fn moved_binding<D: PartialEq>(before: Bindings<'_, D>, after: Bindings<'_, D>) -> Option<String> {
+  let names = |(own, _, _, stars): Bindings<'_, D>| {
+    own
+      .iter()
+      .chain(stars.iter().flat_map(|(_, names)| names).filter(|name| name.as_str() != "default"))
+      .cloned()
+      .collect::<std::collections::BTreeSet<_>>()
+  };
+  let (before_names, after_names) = (names(before), names(after));
+  let kept = before_names.intersection(&after_names).collect::<FxHashSet<_>>();
+  // What `name` binds: where it leads, the kept names that share its binding, or the modules
+  // whose `export *` gives it.
+  let binding = |(own, forwards, aliases, stars): Bindings<'_, D>, name: &String| {
+    let forward = forwards.iter().position(|(forwarded, _)| forwarded == name);
+    let declared = own.contains(name);
+    let mut group = aliases
+      .iter()
+      .find(|group| group.contains(name))
+      .map(|group| group.iter().filter(|alias| kept.contains(alias)).cloned().collect::<Vec<_>>())
+      .unwrap_or_default();
+    group.sort_unstable();
+    let givers = if declared {
+      Vec::new()
+    } else {
+      stars
+        .iter()
+        .filter(|(_, names)| names.contains(name))
+        .map(|(source, _)| source.clone())
+        .collect()
+    };
+    (forward, declared, group, givers)
+  };
+  kept
+    .iter()
+    .copied()
+    .filter(|name| {
+      let (was, is) = (binding(before, name), binding(after, name));
+      was.1 != is.1
+        || was.2 != is.2
+        || was.3 != is.3
+        || match (was.0, is.0) {
+          (Some(was), Some(is)) => before.1[was].1 != after.1[is].1,
+          (None, None) => false,
+          _ => true,
+        }
+    })
+    .min()
+    .cloned()
+}
+
+/// `changed`, with the modules that export what one of them does, through an `export *` of it or
+/// a name that they import from it and export, and so on: the modules whose export shape an edit
+/// of `changed` may change (#1318). `importers` names each module's importers: the sets that a
+/// module holds of them are a scan's own, which an update's merge derives anew only for the
+/// modules whose edges it changed.
+fn reexporters(
+  modules: &IndexModules,
+  importers: &IndexVec<ModuleIdx, Vec<ImporterRecord>>,
+  changed: &FxIndexSet<ModuleIdx>,
+) -> FxIndexSet<ModuleIdx> {
+  let mut closure = changed.clone();
+  let mut next = 0;
+  while let Some(&module_idx) = closure.get_index(next) {
+    next += 1;
+    for importer_idx in importers.get(module_idx).into_iter().flatten().map(|rec| rec.importer_idx)
+    {
+      let Some(importer) = modules.get(importer_idx).and_then(Module::as_normal) else {
+        continue;
+      };
+      let forwards = |record_idx: ImportRecordIdx| {
+        importer.import_records[record_idx].resolved_module == Some(module_idx)
+      };
+      if importer.star_export_module_ids().any(|idx| idx == module_idx)
+        || importer.named_exports.values().any(|export| {
+          importer
+            .named_imports
+            .get(&export.referenced)
+            .is_some_and(|import| forwards(import.record_idx))
+        })
+      {
+        closure.insert(importer_idx);
+      }
+    }
+  }
+  closure
 }
 
 impl<Fs: FileSystem + Clone + 'static> HmrStage<'_, Fs> {

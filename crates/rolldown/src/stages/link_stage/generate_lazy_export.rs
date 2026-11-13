@@ -9,9 +9,10 @@ use oxc::{
 };
 use oxc_str::CompactStr;
 use rolldown_common::{
-  EcmaModuleAstUsage, ExportsKind, GetLocalDbMut, LocalExport, Module, ModuleIdx, ModuleType,
-  NormalModule, StmtInfo, StmtInfoIdx, StmtInfos, SymbolOrMemberExprRef, SymbolRef,
-  SymbolRefDbForModule, TaggedSymbolRef, WrapKind,
+  EcmaModuleAstUsage, EntryPointKind, ExportsKind, GetLocalDbMut, ImportKind, ImportRecordMeta,
+  LocalExport, Module, ModuleIdx, ModuleType, NormalModule, Specifier, StmtInfo, StmtInfoIdx,
+  StmtInfos, SymbolOrMemberExprRef, SymbolRef, SymbolRefDbForModule, TaggedSymbolRef, WrapKind,
+  dynamic_import_usage::DynamicImportExportsUsage,
 };
 use rolldown_ecmascript::EcmaAst;
 use rolldown_ecmascript_utils::{ExpressionFactoryExt as _, StatementFactoryExt as _};
@@ -22,6 +23,7 @@ use rolldown_utils::{
   indexmap::FxIndexMap,
   rayon::{IntoParallelRefMutIterator, ParallelIterator},
 };
+use rustc_hash::FxHashSet;
 use smallvec::smallvec;
 
 use super::LinkStage;
@@ -151,8 +153,193 @@ fn update_module_default_export_info(
     .declare_symbol_for_stmt(FIRST_TOP_LEVEL_STMT_IDX, TaggedSymbolRef::normal(default_symbol_ref));
 }
 
-/// return true if the json is a ObjectExpression
+enum SplitJsonKeys {
+  All,
+  Only(FxHashSet<CompactStr>),
+}
+
+impl SplitJsonKeys {
+  fn contains(&self, key: &str) -> bool {
+    match self {
+      Self::All => !key.is_empty(),
+      Self::Only(set) => !key.is_empty() && key != "default" && set.contains(key),
+    }
+  }
+}
+
+/// Determines which top-level JSON object keys can be bound as individual `SymbolRef`s in the
+/// graph, whether any reachable module statically imports or requires `module_idx`, and whether
+/// the JSON module's namespace exposes top-level properties.
+///
+/// Standalone dynamic-only JSON entry chunks (`ChunkMeta::DynamicImported` without a public/emitted
+/// entry) do not rely on chunk-level named exports for `Object.keys(await import('./d.json'))`:
+/// `GenerateStage::preserve_dynamic_entry_namespaces` (`dynamic_already_loaded.rs`) always publishes
+/// `module.namespace_object_ref` (`__jsonExports(() => default, no_symbols)`) and rewrites dynamic
+/// `import()` callers to extract that namespace object whenever `runtime_module_semantics_enabled`
+/// is active. Any JSON module that also has a non-`DynamicImport` entry (`UserDefined`,
+/// `EmittedUserDefined`, or `EmittedPredefinedChunk`, regardless of `preserveEntrySignatures`) falls
+/// back to `SplitJsonKeys::All` because `preserve_dynamic_entry_namespaces` skips multi-role entry
+/// chunks (`meta != ChunkMeta::DynamicImported`).
+fn needed_json_keys(link_staged: &LinkStage, module_idx: ModuleIdx) -> (SplitJsonKeys, bool, bool) {
+  if !crate::utils::native_records::runtime_module_semantics_enabled(link_staged.options) {
+    return (SplitJsonKeys::All, true, false);
+  }
+  let Some(module) = link_staged.module_table[module_idx].as_normal() else {
+    return (SplitJsonKeys::All, true, false);
+  };
+  let json_ns_has_props = crate::utils::import_options::json_namespace_has_properties(
+    module,
+    &link_staged.module_table.modules,
+    |idx| link_staged.unreachable_modules.reaches(idx),
+  );
+  if link_staged.options.is_dev_mode_enabled() || link_staged.options.preserve_modules {
+    return (SplitJsonKeys::All, true, json_ns_has_props);
+  }
+  let has_non_dynamic_entry = link_staged.entries.get(&module_idx).is_some_and(|entries| {
+    entries.iter().any(|entry| !matches!(entry.kind, EntryPointKind::DynamicImport))
+  });
+  if has_non_dynamic_entry {
+    return (SplitJsonKeys::All, true, json_ns_has_props);
+  }
+
+  let mut has_static_importer = false;
+  let mut needed = FxHashSet::default();
+
+  for &importer_idx in &module.ecma_view.importers_idx {
+    if !link_staged.unreachable_modules.reaches(importer_idx) {
+      continue;
+    }
+    let Some(importer) = link_staged.module_table[importer_idx].as_normal() else {
+      continue;
+    };
+    for (rec_idx, rec) in importer.import_records.iter_enumerated() {
+      if rec.resolved_module != Some(module_idx) {
+        continue;
+      }
+      if rec.kind == ImportKind::Require && !rec.meta.contains(ImportRecordMeta::IsRequireUnused) {
+        has_static_importer = true;
+        continue;
+      }
+      if rec.kind != ImportKind::Import {
+        continue;
+      }
+      has_static_importer = true;
+      if rec.meta.contains(ImportRecordMeta::IsExportStar) {
+        return (SplitJsonKeys::All, true, json_ns_has_props);
+      }
+      for named_import in importer.named_imports.values() {
+        if named_import.record_idx != rec_idx {
+          continue;
+        }
+        match &named_import.imported {
+          Specifier::Literal(name) if name.as_str() != "default" => {
+            needed.insert(name.clone());
+          }
+          Specifier::Literal(_) => {
+            if importer
+              .named_exports
+              .values()
+              .any(|export| export.referenced == named_import.imported_as)
+            {
+              return (SplitJsonKeys::All, true, json_ns_has_props);
+            }
+            let escapes_locally = link_staged.stmt_infos[importer.idx].iter().any(|stmt_info| {
+              stmt_info.referenced_symbols.iter().any(|reference| match reference {
+                SymbolOrMemberExprRef::Symbol(sym) => *sym == named_import.imported_as,
+                SymbolOrMemberExprRef::MemberExpr(member) => {
+                  member.is_write && member.object_ref == named_import.imported_as
+                }
+              })
+            });
+            if escapes_locally {
+              continue;
+            }
+            for stmt_info in link_staged.stmt_infos[importer.idx].iter() {
+              for reference in &stmt_info.referenced_symbols {
+                if let SymbolOrMemberExprRef::MemberExpr(member) = reference
+                  && !member.is_write
+                  && member.object_ref == named_import.imported_as
+                  && let Some(first) = member.prop_and_span_list.first()
+                  && first.name.as_str() != "default"
+                {
+                  needed.insert(first.name.clone());
+                }
+              }
+            }
+          }
+          Specifier::Star => {
+            if !json_ns_has_props {
+              continue;
+            }
+            if importer
+              .named_exports
+              .values()
+              .any(|export| export.referenced == named_import.imported_as)
+            {
+              return (SplitJsonKeys::All, true, json_ns_has_props);
+            }
+            for stmt_info in link_staged.stmt_infos[importer.idx].iter() {
+              for reference in &stmt_info.referenced_symbols {
+                if let SymbolOrMemberExprRef::MemberExpr(member) = reference
+                  && member.object_ref == named_import.imported_as
+                {
+                  if member.prop_and_span_list.is_empty() {
+                    if let Some(key) = importer.ecma_view.namespace_in_checks.get(&member.node_id)
+                      && key.as_str() != "default"
+                    {
+                      needed.insert(key.clone());
+                    }
+                  } else if let Some(first) = member.prop_and_span_list.first()
+                    && first.name.as_str() != "default"
+                  {
+                    needed.insert(first.name.clone());
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
+  }
+
+  needed.insert(CompactStr::new_const("then"));
+  // `create_exports_for_ecma_modules` upgrades `Partial` to `Complete` when any reachable dynamic
+  // importer invokes a method on the namespace (`ns.method()`, where `this` is the namespace). In
+  // that case the full namespace will be constructed via `__jsonExports(() => default, ...)` rather
+  // than partial `__exportAll` getters, so only genuine non-receiver `Partial` imports need per-key
+  // bindings.
+  let dynamic_call_widens_to_complete =
+    module.ecma_view.dynamic_importers_idx.iter().any(|&importer_idx| {
+      link_staged.unreachable_modules.reaches(importer_idx)
+        && link_staged.module_table[importer_idx].as_normal().is_some_and(|importer| {
+          importer
+            .ecma_view
+            .dynamic_import_called_names
+            .keys()
+            .any(|rec_idx| importer.import_records[*rec_idx].resolved_module == Some(module_idx))
+        })
+    });
+  if json_ns_has_props
+    && !dynamic_call_widens_to_complete
+    && let Some(DynamicImportExportsUsage::Partial(names)) =
+      link_staged.dynamic_import_exports_usage_map.get(&module_idx)
+  {
+    for name in names {
+      if name.as_str() != "default" {
+        needed.insert(name.clone());
+      }
+    }
+  }
+
+  (SplitJsonKeys::Only(needed), has_static_importer, json_ns_has_props)
+}
+
+/// return true if the json is a ObjectExpression whose top-level keys were split into bindings
 fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -> bool {
+  let is_dev_mode = link_staged.options.is_dev_mode_enabled();
+  let (mut split_keys, has_static_importer, json_ns_has_props) =
+    needed_json_keys(link_staged, module_idx);
   let module = &mut link_staged.module_table[module_idx];
   let Module::Normal(module) = module else {
     return false;
@@ -162,16 +349,60 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
   // (local, (exported, legal_ident))
   let mut declaration_binding_names: FxIndexMap<CompactStr, (CompactStr, bool)> =
     FxIndexMap::default();
-  let transformed = ecma_ast.program.with_mut(|fields| {
+  let (transformed, is_plain_json_object) = ecma_ast.program.with_mut(|fields| {
     let mut index_map = FxIndexMap::default();
     let ast_builder = AstBuilder::new(fields.allocator);
     let program = fields.program;
-    let Some(ast::Statement::ExpressionStatement(stmt)) = program.body.first() else {
+    let Some(ast::Statement::ExpressionStatement(stmt)) = program.body.first_mut() else {
       unreachable!()
     };
     if !matches!(stmt.expression.without_parentheses(), Expression::ObjectExpression(_)) {
-      return false;
+      return (false, false);
     }
+    let is_plain_json_object = !is_dev_mode
+      && match stmt.expression.without_parentheses() {
+        Expression::ObjectExpression(obj_expr) => obj_expr.properties.iter().all(|prop| {
+          matches!(
+            prop,
+            ast::ObjectPropertyKind::ObjectProperty(p)
+              if p.kind == ast::PropertyKind::Init
+                && !p.method
+                && (!p.computed || matches!(&p.key, ast::PropertyKey::StringLiteral(_)))
+                && p.key
+                  .static_name()
+                .and_then(oxc::ast::StaticPropertyName::into_cow_str)
+                  .is_some()
+          )
+        }),
+        _ => false,
+      };
+    if !is_plain_json_object {
+      split_keys = SplitJsonKeys::All;
+    }
+    let any_split = match stmt.expression.without_parentheses() {
+      Expression::ObjectExpression(obj_expr) => obj_expr.properties.iter().any(|prop| {
+        let ast::ObjectPropertyKind::ObjectProperty(p) = prop else { return true };
+        let Some(key) = p.key.static_name().and_then(oxc::ast::StaticPropertyName::into_cow_str)
+        else {
+          return false;
+        };
+        split_keys.contains(key.as_ref())
+      }),
+      _ => false,
+    };
+    if !any_split {
+      if let Expression::ObjectExpression(obj_expr) = stmt.expression.without_parentheses_mut() {
+        for prop in &mut obj_expr.properties {
+          if let ast::ObjectPropertyKind::ObjectProperty(p) = prop
+            && p.key.static_name().is_some_and(|k| k == "__proto__")
+          {
+            p.computed = true;
+          }
+        }
+      }
+      return (false, is_plain_json_object);
+    }
+
     // Take the single-statement body by value; this leaves `program.body` empty.
     let Some(ast::Statement::ExpressionStatement(stmt)) =
       program.body.take_in(&ast_builder.allocator()).into_iter().next()
@@ -196,7 +427,10 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
           let Some(key) = key.into_cow_str() else {
             continue;
           };
-          if key.is_empty() {
+          if !split_keys.contains(key.as_ref()) {
+            if key == "__proto__" {
+              property.computed = true;
+            }
             continue;
           }
           let legitimized_ident =
@@ -250,8 +484,13 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
         &ast_builder,
       )));
     program.body.extend(stmts);
-    true
+    (true, is_plain_json_object)
   });
+
+  let use_json_default_ns = is_plain_json_object && json_ns_has_props;
+  link_staged.metas[module_idx].json_object_default_namespace = use_json_default_ns;
+  link_staged.metas[module_idx].eager_json_namespace_snapshot =
+    use_json_default_ns && has_static_importer;
 
   if !transformed {
     return false;

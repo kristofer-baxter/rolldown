@@ -55,6 +55,7 @@ mod reference_needed_symbols;
 mod refine_stmt_side_effects;
 mod sort_modules;
 mod temporal_bindings;
+mod temporal_proofs;
 mod tree_shaking;
 
 pub use tree_shaking::determine_side_effects::{linked_side_effects, propagate_side_effects};

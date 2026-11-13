@@ -1429,3 +1429,219 @@ async fn development_mode_cache_tracks_absorbed_facade_and_star_namespace_comple
   star_cached.close().await?;
   Ok(())
 }
+
+#[tokio::test]
+async fn hmr_reshaped_exports_emit_reshaped_hook_and_reload_on_moved_binding() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import { a } from './barrel.js';import './solo.js';\
+       events.push(a);import.meta.hot.accept();",
+    ),
+    ("barrel.js", "export * from './leaf.js';export { x as kept } from './one.js';"),
+    ("leaf.js", "export const a = 1;"),
+    ("solo.js", "export const unheld = 10;import.meta.hot.accept();"),
+    ("one.js", "export const x = 'one';"),
+    ("two.js", "export const x = 'two';"),
+  ])?;
+  let mut bundler = Bundler::new(options(&fixture, true, false))?;
+  fixture.output(&bundler.incremental_generate(ScanMode::Full).await?)?;
+  let mut stamps = HmrStampTable::default();
+  let (evaluated, ..) = bundler.compute_top_level_evaluated_modules(&stamps);
+  let mut shipped = evaluated.clone();
+  let next = Arc::new(AtomicU32::new(0));
+
+  // Reshaping `leaf.js` (held through `barrel.js`) and `solo.js` (imported for side effects only)
+  // patches the page and lists both in `reshaped(all, unheld)`, with only `solo.js` in `unheld`.
+  fixture.write("leaf.js", "export const a = 1;export const added = 2;")?;
+  fixture.write(
+    "solo.js",
+    "export const unheld = 10;export const extra = 20;import.meta.hot.accept();",
+  )?;
+  let changes = FxIndexMap::from_iter([
+    (fixture.0.join("leaf.js").to_string_lossy().into_owned(), WatcherChangeKind::Update),
+    (fixture.0.join("solo.js").to_string_lossy().into_owned(), WatcherChangeKind::Update),
+  ]);
+  let updates = bundler
+    .compute_hmr_update_for_file_changes(
+      &changes,
+      &[ClientHmrInput {
+        client_id: "fixture",
+        shipped: &shipped,
+        top_level_evaluated: &evaluated,
+      }],
+      &mut stamps,
+      Arc::clone(&next),
+      false,
+      false,
+    )
+    .await?;
+  ensure!(updates.len() == 1);
+  let HmrUpdate::Patch(patch) = &updates[0].update else {
+    anyhow::bail!("expected reshaped export edit to patch, got {:?}", updates[0].update);
+  };
+  ensure!(
+    patch.code.contains(
+      "__rolldown_runtime__.reshaped?.([\"barrel.js\",\"leaf.js\",\"solo.js\"],[\"solo.js\"]);"
+    ),
+    "unexpected reshaped hook payload:\n{}",
+    patch.code
+  );
+  shipped.extend(patch.carried.iter().cloned());
+
+  // Moving a kept export (`kept`) to a different binding reloads cleanly.
+  fixture.write("barrel.js", "export * from './leaf.js';export { x as kept } from './two.js';")?;
+  let moved_changes = FxIndexMap::from_iter([(
+    fixture.0.join("barrel.js").to_string_lossy().into_owned(),
+    WatcherChangeKind::Update,
+  )]);
+  let moved_updates = bundler
+    .compute_hmr_update_for_file_changes(
+      &moved_changes,
+      &[ClientHmrInput {
+        client_id: "fixture",
+        shipped: &shipped,
+        top_level_evaluated: &evaluated,
+      }],
+      &mut stamps,
+      Arc::clone(&next),
+      false,
+      false,
+    )
+    .await?;
+  ensure!(moved_updates.len() == 1);
+  let HmrUpdate::FullReload { reason } = &moved_updates[0].update else {
+    anyhow::bail!("expected moved export binding to reload, got {:?}", moved_updates[0].update);
+  };
+  ensure!(
+    reason.contains("the binding of its export kept moved"),
+    "unexpected reload reason: {reason}"
+  );
+  bundler.close().await?;
+  Ok(())
+}
+
+#[tokio::test]
+async fn lazy_chunk_cache_reuses_unchanged_closures_in_native_cell_graphs() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import { active } from './active.js';import { shared } from './cycle-a.js';\
+       events.push(active, shared());globalThis.loadRoute = () => import('./route.js');\
+       import.meta.hot.accept();",
+    ),
+    ("active.js", "export const active = 'a0';import.meta.hot.accept();"),
+    ("cycle-a.js", "import { b } from './cycle-b.js';export function shared() { return b(); }"),
+    (
+      "cycle-b.js",
+      "import { shared } from './cycle-a.js';export const tag = 'cell';\
+       export function b() { return typeof shared + ':' + tag; }",
+    ),
+    (
+      "route.js",
+      "import { leaf } from './leaf.js';import { tag } from './cycle-b.js';\
+       export const read = () => `${leaf}:${tag}`;",
+    ),
+    ("leaf.js", "export const leaf = 'l0';"),
+  ])?;
+  let mut bundler = Bundler::new(options(&fixture, true, false))?;
+  fixture.output(&bundler.incremental_generate(ScanMode::Full).await?)?;
+  let mut stamps = HmrStampTable::default();
+  let (evaluated, ..) = bundler.compute_top_level_evaluated_modules(&stamps);
+  let next = Arc::new(AtomicU32::new(0));
+  let route_id = fixture.0.join("route.js").to_string_lossy().into_owned();
+
+  let rerun = FxHashSet::default();
+  let first = bundler
+    .compile_lazy_entry(
+      &route_id,
+      "native",
+      &evaluated,
+      &rerun,
+      &evaluated,
+      None,
+      None,
+      None,
+      None,
+      &stamps,
+      Arc::clone(&next),
+    )
+    .await?;
+
+  // Editing an unrelated module outside `route.js`'s closure reuses the cached lazy chunk even
+  // though the graph contains native cell modules (`cycle-a.js` <-> `cycle-b.js`).
+  fixture.write("active.js", "export const active = 'a1';import.meta.hot.accept();")?;
+  let changes = FxIndexMap::from_iter([(
+    fixture.0.join("active.js").to_string_lossy().into_owned(),
+    WatcherChangeKind::Update,
+  )]);
+  bundler
+    .compute_hmr_update_for_file_changes(
+      &changes,
+      &[ClientHmrInput {
+        client_id: "fixture",
+        shipped: &evaluated,
+        top_level_evaluated: &evaluated,
+      }],
+      &mut stamps,
+      Arc::clone(&next),
+      false,
+      false,
+    )
+    .await?;
+  let reused = bundler
+    .compile_lazy_entry(
+      &route_id,
+      "native",
+      &evaluated,
+      &rerun,
+      &evaluated,
+      None,
+      None,
+      None,
+      None,
+      &stamps,
+      Arc::clone(&next),
+    )
+    .await?;
+  assert_eq!(reused.filename, first.filename, "unchanged closure must reuse cached lazy chunk");
+
+  // Editing `leaf.js` inside `route.js`'s closure invalidates the cached lazy chunk.
+  fixture.write("leaf.js", "export const leaf = 'l1';")?;
+  let leaf_changes = FxIndexMap::from_iter([(
+    fixture.0.join("leaf.js").to_string_lossy().into_owned(),
+    WatcherChangeKind::Update,
+  )]);
+  bundler
+    .compute_hmr_update_for_file_changes(
+      &leaf_changes,
+      &[ClientHmrInput {
+        client_id: "fixture",
+        shipped: &evaluated,
+        top_level_evaluated: &evaluated,
+      }],
+      &mut stamps,
+      Arc::clone(&next),
+      false,
+      false,
+    )
+    .await?;
+  let rerendered = bundler
+    .compile_lazy_entry(
+      &route_id,
+      "native",
+      &evaluated,
+      &rerun,
+      &evaluated,
+      None,
+      None,
+      None,
+      None,
+      &stamps,
+      Arc::clone(&next),
+    )
+    .await?;
+  assert_ne!(rerendered.filename, reused.filename, "closure edit must render a fresh lazy chunk");
+  bundler.close().await?;
+  Ok(())
+}

@@ -765,3 +765,127 @@ async fn native_commonjs_mode_rejects_unsupported_options_and_survives_full_scan
   bundler.close().await?;
   Ok(())
 }
+
+#[tokio::test]
+async fn namespace_of_commonjs_reexport_takes_no_star_record_from_required_module() -> Result<()> {
+  let main = "import * as ns from './r.cjs';events.push('main');\
+              events.push(Object.keys(ns).sort(),ns.a.from);";
+  let past_the_end = [
+    ("r.cjs", "module.exports = require('./e.js');"),
+    ("e.js", "import './p.js'; import './q.js'; export * from './x.js';"),
+    ("p.js", "events.push('p');"),
+    ("q.js", "events.push('q');"),
+    ("x.js", "events.push('x'); export const a = { from: 'x' };"),
+  ];
+  let another_record = [
+    ("r.cjs", "require('./s.js'); module.exports = require('./e.js');"),
+    ("s.js", "events.push('s'); export * from './y.js';"),
+    ("y.js", "events.push('y'); export const a = { from: 'y' };"),
+    ("e.js", "events.push('e'); export * from './x.js';"),
+    ("x.js", "events.push('x'); export const a = { from: 'x' };"),
+  ];
+  for (files, expected_events) in [
+    (&past_the_end[..], json!(["p", "q", "x", "main", ["a", "default"], "x"])),
+    (&another_record[..], json!(["y", "s", "x", "e", "main", ["a", "default"], "x"])),
+  ] {
+    for strict_only in [false, true] {
+      let mut entries = vec![("main.js", main), ("observe.js", "await import('./dist/main.js');")];
+      entries.extend_from_slice(files);
+      let fixture = Fixture::new(&entries)?;
+      let mut opts = fixture.options();
+      opts.strict_execution_order = Some(true);
+      opts.chunk_filenames = Some("[name].js".to_owned().into());
+      if !strict_only {
+        opts.experimental =
+          Some(ExperimentalOptions { on_demand_wrapping: Some(true), ..Default::default() });
+      }
+      let mut bundler = Bundler::new(opts)?;
+      let output = bundler.generate().await?;
+      fixture.output(&output)?;
+      assert_eq!(fixture.execute("./observe.js")?, expected_events);
+      bundler.close().await?;
+    }
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn commonjs_reexport_self_referential_cycle_terminates_and_evaluates() -> Result<()> {
+  let cases = [
+    (
+      "import * as ns from './m1.cjs';events.push(typeof ns.a,ns.b);",
+      "import { a } from './m1.cjs'; export { a }; export const b = 'b';",
+      json!(["undefined", "b"]),
+    ),
+    (
+      "import { a, b } from './m1.cjs';events.push(typeof a,b);",
+      "import { a } from './m1.cjs'; export { a }; export * from './m1.cjs'; export const b = 'b';",
+      json!(["undefined", "b"]),
+    ),
+    (
+      "const ns = await import('./m1.cjs');events.push(typeof ns.a,ns.b);",
+      "import { a } from './m1.cjs'; export { a }; export const b = 'b';",
+      json!(["undefined", "b"]),
+    ),
+  ];
+  for (main, m2, expected) in cases {
+    let fixture = Fixture::new(&[
+      ("main.js", main),
+      ("m1.cjs", "module.exports = require('./m2.mjs');"),
+      ("m2.mjs", m2),
+      ("observe.js", "await import('./dist/main.js');"),
+    ])?;
+    let mut opts = fixture.options();
+    opts.strict_execution_order = Some(true);
+    opts.chunk_filenames = Some("[name].js".to_owned().into());
+    opts.experimental =
+      Some(ExperimentalOptions { on_demand_wrapping: Some(true), ..Default::default() });
+    let mut bundler = Bundler::new(opts)?;
+    let output = tokio::time::timeout(std::time::Duration::from_secs(30), bundler.generate())
+      .await
+      .context("CJS re-export cycle link timed out")??;
+    fixture.output(&output)?;
+    assert_eq!(fixture.execute("./observe.js")?, expected);
+    bundler.close().await?;
+  }
+  Ok(())
+}
+
+#[tokio::test]
+async fn bundler_check_distinguishes_definite_failures_from_partial_link_ambiguities() -> Result<()>
+{
+  let valid = Fixture::new(&[
+    ("main.js", "import { x } from './dep.mjs'; console.log(x);"),
+    ("dep.mjs", "export const x = 1;"),
+  ])?;
+  let mut bundler = Bundler::new(valid.options())?;
+  assert!(bundler.check(false).await?);
+  assert!(bundler.check(true).await?);
+  bundler.close().await?;
+
+  let missing_declared = Fixture::new(&[
+    ("main.js", "import { missing } from './dep.mjs'; console.log(missing);"),
+    ("dep.mjs", "export const x = 1;"),
+  ])?;
+  let mut bundler = Bundler::new(missing_declared.options())?;
+  assert!(bundler.check(false).await.is_err());
+  assert!(bundler.check(true).await.is_err());
+  bundler.close().await?;
+
+  let missing_with_undeclared = Fixture::new(&[
+    ("package.json", "{}"),
+    ("main.js", "import { missing } from './plain.js'; console.log(missing);"),
+    ("plain.js", "globalThis.sideEffect = 1;"),
+  ])?;
+  let mut bundler = Bundler::new(missing_with_undeclared.options())?;
+  assert!(bundler.check(false).await.is_err());
+  assert!(!bundler.check(true).await?);
+  bundler.close().await?;
+
+  let parse_err = Fixture::new(&[("main.js", "export const = ;")])?;
+  let mut bundler = Bundler::new(parse_err.options())?;
+  assert!(bundler.check(false).await.is_err());
+  assert!(bundler.check(true).await.is_err());
+  bundler.close().await?;
+  Ok(())
+}

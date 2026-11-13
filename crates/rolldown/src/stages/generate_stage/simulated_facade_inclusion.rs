@@ -46,6 +46,25 @@ impl GenerateStage<'_> {
           .map(|export| self.link_output.symbol_db.canonical_ref_for(export.symbol_ref))
           .collect::<FxHashSet<SymbolRef>>()
       });
+      let keeps = |symbol_ref: &SymbolRef| {
+        used_symbol_refs_builder.contains(symbol_ref)
+          && dynamically_read.as_ref().is_none_or(|read| {
+            read.contains(&self.link_output.symbol_db.canonical_ref_for(*symbol_ref))
+          })
+      };
+      // A kept export's getter still needs the flag that guards its binding, which nothing else
+      // may have used.
+      let flags = self.link_output.stmt_infos[entry_module_idx][StmtInfos::NAMESPACE_STMT_IDX]
+        .referenced_symbols
+        .iter()
+        .filter_map(|item| match item {
+          rolldown_common::SymbolOrMemberExprRef::Symbol(symbol_ref) if keeps(symbol_ref) => {
+            let binding = self.link_output.symbol_db.canonical_ref_for(*symbol_ref);
+            self.link_output.metas[binding.owner].temporal_symbols.get(&binding).copied()
+          }
+          _ => None,
+        })
+        .collect::<FxHashSet<SymbolRef>>();
       // Filter in place to avoid cloning
       self.link_output.stmt_infos[entry_module_idx][StmtInfos::NAMESPACE_STMT_IDX]
         .referenced_symbols
@@ -53,6 +72,7 @@ impl GenerateStage<'_> {
           rolldown_common::SymbolOrMemberExprRef::Symbol(symbol_ref) => {
             // module namespace symbol requires `__exportAll` runtime helper
             symbol_ref.owner == runtime_module_idx
+              || flags.contains(symbol_ref)
               || (used_symbol_refs_builder.contains(symbol_ref)
                 && dynamically_read.as_ref().is_none_or(|read| {
                   read.contains(&self.link_output.symbol_db.canonical_ref_for(*symbol_ref))
@@ -110,6 +130,7 @@ impl GenerateStage<'_> {
       body_demand_keys: &body_demand_keys,
       body_demand_swept: FxHashSet::default(),
       deferred_forwarding_refs: FxHashMap::default(),
+      followed_cjs_exports: FxHashSet::default(),
       pending: Vec::new(),
     };
 
@@ -128,16 +149,22 @@ impl GenerateStage<'_> {
   }
 }
 
+#[derive(Clone, Copy)]
+pub(super) struct SimulatedFacadeRuntime {
+  pub depends_on_runtime: bool,
+  pub needs_export_all: bool,
+}
+
 /// Include the symbols an absorbed dynamic entry needs so its chunk can simulate the removed
-/// facade. Returns whether the namespace object was included — the caller then owes the
-/// chunk-level `__exportAll` bookkeeping (`depended_runtime_helper`) and must make
-/// [`GenerateStage::replay_link_stage_inclusion`]'s closure return `true`.
+/// facade. Returns whether the namespace object was included (`depends_on_runtime`) and whether
+/// `RuntimeHelper::ExportAll` is needed (`needs_export_all`; false when `__jsonExports` is used
+/// exclusively).
 pub(super) fn include_simulated_facade_namespace(
   context: &mut IncludeContext<'_>,
   entry_module_idx: ModuleIdx,
-) -> bool {
+) -> SimulatedFacadeRuntime {
   let Some(module) = context.modules[entry_module_idx].as_normal() else {
-    return false;
+    return SimulatedFacadeRuntime { depends_on_runtime: false, needs_export_all: false };
   };
   let namespace_object_ref = module.namespace_object_ref;
   let wrap_kind = context.metas[entry_module_idx].wrap_kind();
@@ -150,11 +177,25 @@ pub(super) fn include_simulated_facade_namespace(
     }
   }
   if matches!(wrap_kind, WrapKind::Esm | WrapKind::None) {
+    let export_all_sym = context.symbols.canonical_ref_for(
+      context.stmt_infos[entry_module_idx][StmtInfos::NAMESPACE_STMT_IDX]
+        .referenced_symbols
+        .iter()
+        .find_map(|item| match item {
+          rolldown_common::SymbolOrMemberExprRef::Symbol(s) if s.owner == context.runtime_idx => {
+            (s.name(context.symbols) == "__exportAll").then_some(*s)
+          }
+          _ => None,
+        })
+        .unwrap_or(namespace_object_ref),
+    );
+    let uses_only_json_exports = context.metas[entry_module_idx].json_object_default_namespace
+      && export_all_sym == namespace_object_ref;
     include_symbol(context, namespace_object_ref, SymbolIncludeReason::SimulatedFacadeChunk);
     context.module_namespace_included_reason[entry_module_idx]
       .insert(ModuleNamespaceIncludedReason::SimulateFacadeChunk);
-    true
+    SimulatedFacadeRuntime { depends_on_runtime: true, needs_export_all: !uses_only_json_exports }
   } else {
-    false
+    SimulatedFacadeRuntime { depends_on_runtime: false, needs_export_all: false }
   }
 }

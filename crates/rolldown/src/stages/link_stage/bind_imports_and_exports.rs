@@ -692,7 +692,10 @@ impl LinkStage<'_> {
       .map(|(rec_idx, module_idx)| (Some(rec_idx), module_idx))
       .chain(cjs_reexport_modules.into_iter().map(|module_idx| (None, module_idx)));
     for (rec_idx, dep_id) in star_exports {
-      let root_record = root_record.or(rec_idx);
+      // Only the root's own `export *` record is a root record. A `module.exports = require(...)`
+      // re-export has none, so the names below it have none either: a record index of a module
+      // further down does not index the root's records.
+      let root_record = if module_stack.len() == 1 { rec_idx } else { root_record };
       let Module::Normal(dep_module) = &normal_modules[dep_id] else {
         continue;
       };
