@@ -1180,10 +1180,17 @@ impl GenerateStage<'_> {
           .entry(entry_chunk_idx)
           .or_default()
           .insert(entry_module_idx);
+        let uses_only_json_exports = self.link_output.metas[entry_module_idx]
+          .json_object_default_namespace
+          && self.link_output.metas[entry_module_idx]
+            .dynamically_read_export_names(
+              self.link_output.dynamic_import_exports_usage_map.get(&entry_module_idx),
+            )
+            .is_none();
         order_state.insert_simulated_facade_namespace(
           entry_module.namespace_object_ref,
           entry_chunk_idx,
-          RuntimeHelper::ExportAll,
+          if uses_only_json_exports { RuntimeHelper::empty() } else { RuntimeHelper::ExportAll },
           namespace_exports,
           importer_sites.iter().map(|importer| importer.module_idx),
         );
@@ -1202,6 +1209,7 @@ impl GenerateStage<'_> {
     &self,
     entry_module_idx: ModuleIdx,
   ) -> Vec<SimulatedFacadeNamespaceExport> {
+    let uses_json_exports = self.link_output.metas[entry_module_idx].json_object_default_namespace;
     self.link_output.metas[entry_module_idx]
       .referenced_canonical_exports_symbols(
         entry_module_idx,
@@ -1217,6 +1225,9 @@ impl GenerateStage<'_> {
               && (!self.options.optimization.is_inline_const_smart_mode() || meta.safe_to_inline)
           });
         let mut referenced_symbols = vec![];
+        if uses_json_exports && name.as_str() == "default" {
+          referenced_symbols.push(self.link_output.runtime.resolve_symbol("__jsonExports"));
+        }
         if !is_inlinable_constant {
           referenced_symbols.push(export.symbol_ref);
           if let Some(flag) =
@@ -1383,10 +1394,17 @@ impl GenerateStage<'_> {
         let entry_module = self.link_output.module_table[entry_module_idx]
           .as_normal()
           .expect("dynamic entry should be a normal module");
+        let uses_only_json_exports = self.link_output.metas[entry_module_idx]
+          .json_object_default_namespace
+          && self.link_output.metas[entry_module_idx]
+            .dynamically_read_export_names(
+              self.link_output.dynamic_import_exports_usage_map.get(&entry_module_idx),
+            )
+            .is_none();
         order_state.insert_simulated_facade_namespace(
           entry_module.namespace_object_ref,
           entry_host_chunk,
-          RuntimeHelper::ExportAll,
+          if uses_only_json_exports { RuntimeHelper::empty() } else { RuntimeHelper::ExportAll },
           self.simulated_facade_namespace_exports(entry_module_idx),
           importer_sites.iter().map(|importer| importer.module_idx),
         );

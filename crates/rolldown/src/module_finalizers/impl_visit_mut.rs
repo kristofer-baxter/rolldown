@@ -599,11 +599,16 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
 
     // The module's own body runs its star exports, also inside a wrapper's closure.
     if self.module_namespace_included
-      && self.star_exports_complete_namespace()
       && !declaration_of_module_namespace_object.is_empty()
       && !matches!(wrapper_mode, ModuleWrapperMode::InteropCjs(_))
     {
-      program.body.push(self.complete_star_namespace_stmt());
+      if self.star_exports_complete_namespace() {
+        program.body.push(self.complete_star_namespace_stmt());
+      } else if self.ctx.linking_info.eager_json_namespace_snapshot
+        && self.uses_json_default_namespace()
+      {
+        program.body.push(self.complete_json_namespace_stmt());
+      }
     }
 
     // Insert keep_name statements for top-level declarations

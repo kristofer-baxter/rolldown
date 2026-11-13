@@ -2383,6 +2383,7 @@ impl GenerateStage<'_> {
       });
   }
 
+  #[expect(clippy::too_many_lines)]
   fn deconflict_exported_names(
     &self,
     chunk_graph: &mut ChunkGraph,

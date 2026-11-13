@@ -119,6 +119,14 @@ pub struct LinkingMetadata {
   /// from `module_namespace_included_reason` together with the module's `exports_kind` and
   /// `has_dynamic_exports`; only meaningful for passes that run after it.
   pub namespace_included: bool,
+  /// Whether this ESM JSON object module can derive a full property-bearing namespace directly
+  /// from its `default` object (`__exportAll(() => default, ...)`), avoiding per-key `var`
+  /// bindings and getter closures.
+  pub json_object_default_namespace: bool,
+  /// Whether a JSON object module using `json_object_default_namespace` also has static importers
+  /// and therefore snapshots its namespace properties immediately when evaluating its body, before
+  /// any static importer can mutate the shared `default` object.
+  pub eager_json_namespace_snapshot: bool,
   /// Tracks which statements in this module are included after tree-shaking.
   /// Each entry corresponds to a statement in the module's `stmt_infos`.
   pub stmt_info_included: IndexBitSet<StmtInfoIdx>,

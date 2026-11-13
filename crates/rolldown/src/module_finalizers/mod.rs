@@ -1425,6 +1425,44 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     ))
   }
 
+  pub(super) fn uses_json_default_namespace(&self) -> bool {
+    if !self.ctx.linking_info.json_object_default_namespace {
+      return false;
+    }
+    let namespace_is_semantically_observed = self
+      .ctx
+      .linking_info
+      .module_namespace_included_reason
+      .contains(ModuleNamespaceIncludedReason::Unknown)
+      || (self
+        .ctx
+        .linking_info
+        .module_namespace_included_reason
+        .contains(ModuleNamespaceIncludedReason::ReExportDynamicExports)
+        && self.ctx.linking_info.has_dynamic_exports)
+      || self
+        .ctx
+        .order_wrap_state
+        .requires_semantic_namespace(self.ctx.module.namespace_object_ref, |importer_idx| {
+          self.ctx.chunk_graph.module_is_in_live_chunk(importer_idx)
+        });
+    let partial_dynamic_exports = (!namespace_is_semantically_observed)
+      .then(|| {
+        self
+          .ctx
+          .linking_info
+          .module_namespace_included_reason
+          .contains(ModuleNamespaceIncludedReason::SimulateFacadeChunk)
+          .then(|| {
+            self.ctx.linking_info.dynamically_read_export_names(self.ctx.dynamic_import_usage)
+          })
+          .flatten()
+      })
+      .flatten();
+    partial_dynamic_exports.is_none()
+      && self.ctx.retained_export_symbols.contains(&self.ctx.module.default_export_ref)
+  }
+
   fn generate_declaration_of_module_namespace_object(&self) -> Vec<ast::Statement<'ast>> {
     if !self.module_namespace_included {
       return vec![];
@@ -1450,6 +1488,12 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       )];
     }
 
+    if self.uses_json_default_namespace() {
+      return vec![
+        self.generate_json_default_namespace_decl(binding_name_for_namespace_object_ref),
+      ];
+    }
+
     // construct `{ prop_name: () => returned, ... }`
     let mut arg_obj_expr = ast::ObjectExpression::dummy(self.allocator());
 
@@ -1464,15 +1508,14 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
 
     // Even if the module namespace is included, some exports may not be used due to `optimize_facade_dynamic_entry_chunks`
     // https://github.com/rolldown/rolldown/blob/d6d65f9080e427cd9feef56eb7a110fbcf6c1414/crates/rolldown/src/stages/generate_stage/chunk_optimizer.rs#L347-L354
-    let runtime_semantics =
-      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options);
-    let json_namespace_is_default_only = runtime_semantics
-      && crate::utils::import_options::is_json_module(self.ctx.module)
-      && !crate::utils::import_options::json_namespace_has_properties(
-        self.ctx.module,
-        self.ctx.modules,
-        |idx| self.ctx.unreachable_modules.reaches(idx),
-      );
+    let json_namespace_is_default_only =
+      self.ctx.options.experimental.is_resolve_new_url_to_asset_enabled()
+        && crate::utils::import_options::is_json_module(self.ctx.module)
+        && !crate::utils::import_options::json_namespace_has_properties(
+          self.ctx.module,
+          self.ctx.modules,
+          |idx| self.ctx.unreachable_modules.reaches(idx),
+        );
     arg_obj_expr.properties.extend(self.ctx.linking_info.canonical_exports(false).filter_map(
       |(export, resolved_export)| {
         // Bundler-only named JSON bindings are not JSON namespace properties, unless an importer
@@ -1653,6 +1696,52 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
     let call_expr = ast::Expression::new_call_expression(
       SPAN,
       self.finalized_expr_for_runtime_symbol("__exportAll"),
+      None,
+      [ast::Argument::from(namespace)],
+      false,
+      self,
+    );
+    ast::Statement::new_expression_statement(SPAN, call_expr, self)
+  }
+
+  fn generate_json_default_namespace_decl(&self, binding_name: &str) -> Statement<'ast> {
+    let (default_expr, _) =
+      self.finalized_expr_for_symbol_ref(self.ctx.module.default_export_ref, false, false);
+    let symbols = self.ctx.options.generated_code.symbols;
+    let args = oxc::allocator::Vec::from_iter_in(
+      [
+        ast::Argument::from(Expression::new_arrow_returning(default_expr, self)),
+        ast::Argument::new_numeric_literal(
+          SPAN,
+          if symbols { 0.0 } else { 1.0 },
+          None,
+          NumberBase::Decimal,
+          self,
+        ),
+      ],
+      self,
+    );
+    let ns_expr = ast::Expression::new_call_expression_with_pure(
+      SPAN,
+      self.finalized_expr_for_runtime_symbol("__jsonExports"),
+      None,
+      args,
+      false,
+      true,
+      self,
+    );
+    Statement::new_var_decl(binding_name, ns_expr, self)
+  }
+
+  /// `__jsonExports(ns)`, which snapshots the JSON module's `default` object right after it
+  /// initializes so later mutations through static or `require()` imports cannot alter namespace
+  /// property values or keys.
+  pub(super) fn complete_json_namespace_stmt(&self) -> Statement<'ast> {
+    let (namespace, _) =
+      self.finalized_expr_for_symbol_ref(self.ctx.module.namespace_object_ref, false, false);
+    let call_expr = ast::Expression::new_call_expression(
+      SPAN,
+      self.finalized_expr_for_runtime_symbol("__jsonExports"),
       None,
       [ast::Argument::from(namespace)],
       false,
@@ -3751,24 +3840,25 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                     self,
                   )
                 };
-                let mut body_expr = if crate::utils::native_records::runtime_module_semantics_enabled(
-                  self.ctx.options,
-                ) {
-                  Expression::new_call_expression(
-                    SPAN,
-                    self.finalized_expr_for_runtime_symbol("__importNamespace"),
-                    None,
-                    [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
-                    false,
-                    self,
-                  )
-                } else {
-                  arrow.r#async = true;
-                  let init_call =
-                    Expression::new_call_expression(SPAN, member(name), None, [], false, self);
-                  let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
-                  Expression::new_seq_in_parens(await_init, member(ns_name), self)
-                };
+                let mut body_expr =
+                  if crate::utils::native_records::runtime_module_semantics_enabled(
+                    self.ctx.options,
+                  ) {
+                    Expression::new_call_expression(
+                      SPAN,
+                      self.finalized_expr_for_runtime_symbol("__importNamespace"),
+                      None,
+                      [ast::Argument::from(member(name)), ast::Argument::from(member(ns_name))],
+                      false,
+                      self,
+                    )
+                  } else {
+                    arrow.r#async = true;
+                    let init_call =
+                      Expression::new_call_expression(SPAN, member(name), None, [], false, self);
+                    let await_init = ast::Expression::new_await_expression(SPAN, init_call, self);
+                    Expression::new_seq_in_parens(await_init, member(ns_name), self)
+                  };
                 if let Some(module) = record_read {
                   let assignment = Expression::new_assignment_expression(
                     SPAN,

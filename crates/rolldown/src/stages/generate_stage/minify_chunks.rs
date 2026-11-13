@@ -21,7 +21,10 @@ use super::GenerateStage;
 type ChunkMinifyResult =
   Option<(rolldown_common::ChunkIdx, [u8; 32], Vec<String>, arcstr::ArcStr, bool)>;
 
+type ChunkMinifyVerdict = BuildResult<Option<([u8; 32], bool)>>;
+
 impl GenerateStage<'_> {
+  #[expect(clippy::too_many_lines)]
   #[tracing::instrument(level = "debug", skip_all)]
   pub fn minify_chunks(
     &mut self,
@@ -75,9 +78,9 @@ impl GenerateStage<'_> {
         rayon::IntoParallelRefIterator,
       };
       use xxhash_rust::xxh3::Xxh3;
-      let verdicts: Vec<BuildResult<Option<([u8; 32], bool)>>> = chunks
+      let verdicts: Vec<ChunkMinifyVerdict> = chunks
         .par_iter()
-        .map(|chunk| -> BuildResult<Option<([u8; 32], bool)>> {
+        .map(|chunk| -> ChunkMinifyVerdict {
           if !is_minifiable_ecma_chunk(chunk) {
             return Ok(None);
           }

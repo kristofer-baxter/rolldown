@@ -773,10 +773,14 @@ impl GenerateStage<'_> {
       module.stable_id.as_str(),
       module.exports_kind as u8,
     ));
-    h.write_val(&crate::utils::import_options::json_namespace_has_properties(
-      module,
-      &self.link_output.module_table.modules,
-      |idx| self.link_output.unreachable_modules.reaches(idx),
+    h.write_val(&(
+      crate::utils::import_options::json_namespace_has_properties(
+        module,
+        &self.link_output.module_table.modules,
+        |idx| self.link_output.unreachable_modules.reaches(idx),
+      ),
+      meta.json_object_default_namespace,
+      meta.eager_json_namespace_snapshot,
     ));
     if crate::utils::native_records::runtime_module_semantics_enabled(self.options)
       && self.options.is_dev_mode_enabled()

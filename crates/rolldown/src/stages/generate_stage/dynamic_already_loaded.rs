@@ -452,7 +452,8 @@ impl GenerateStage<'_> {
           .or_default()
           .insert(entry_module_idx);
 
-        if include_simulated_facade_namespace(context, entry_module_idx) {
+        let facade_rt = include_simulated_facade_namespace(context, entry_module_idx);
+        if facade_rt.needs_export_all {
           chunk_graph.chunk_table[entry_chunk_idx]
             .depended_runtime_helper
             .insert(RuntimeHelper::ExportAll);

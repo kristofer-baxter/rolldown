@@ -1809,10 +1809,14 @@ impl<'a> GenerateStage<'a> {
     ));
     // A JSON module's importers that the graph reaches decide whether its namespace holds its
     // properties.
-    h.write_val(&crate::utils::import_options::json_namespace_has_properties(
-      module,
-      &self.link_output.module_table.modules,
-      |idx| self.link_output.unreachable_modules.reaches(idx),
+    h.write_val(&(
+      crate::utils::import_options::json_namespace_has_properties(
+        module,
+        &self.link_output.module_table.modules,
+        |idx| self.link_output.unreachable_modules.reaches(idx),
+      ),
+      meta.json_object_default_namespace,
+      meta.eager_json_namespace_snapshot,
     ));
     // A CommonJS record calls its wrapper as it evaluates only while a static import or dynamic
     // `import()` of a module that the graph reaches imports it (`render_wrapped_entry_chunk`,

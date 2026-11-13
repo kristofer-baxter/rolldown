@@ -1272,11 +1272,14 @@ impl GenerateStage<'_> {
         if matches!(wrap_kind, WrapKind::Cjs | WrapKind::Esm) {
           runtime_dependent_chunks.insert(*to_chunk_idx);
         }
-        if include_simulated_facade_namespace(context, *entry_module_idx) {
+        let facade_rt = include_simulated_facade_namespace(context, *entry_module_idx);
+        if facade_rt.depends_on_runtime {
           let target_chunk = &mut chunk_graph.chunk_table[*to_chunk_idx];
-          target_chunk.depended_runtime_helper.insert(RuntimeHelper::ExportAll);
+          if facade_rt.needs_export_all {
+            target_chunk.depended_runtime_helper.insert(RuntimeHelper::ExportAll);
+            needs_export_all_helper = true;
+          }
           runtime_dependent_chunks.insert(*to_chunk_idx);
-          needs_export_all_helper = true;
         }
       }
       needs_export_all_helper
