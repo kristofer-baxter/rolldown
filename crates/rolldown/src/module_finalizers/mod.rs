@@ -1508,14 +1508,15 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
 
     // Even if the module namespace is included, some exports may not be used due to `optimize_facade_dynamic_entry_chunks`
     // https://github.com/rolldown/rolldown/blob/d6d65f9080e427cd9feef56eb7a110fbcf6c1414/crates/rolldown/src/stages/generate_stage/chunk_optimizer.rs#L347-L354
-    let json_namespace_is_default_only =
-      self.ctx.options.experimental.is_resolve_new_url_to_asset_enabled()
-        && crate::utils::import_options::is_json_module(self.ctx.module)
-        && !crate::utils::import_options::json_namespace_has_properties(
-          self.ctx.module,
-          self.ctx.modules,
-          |idx| self.ctx.unreachable_modules.reaches(idx),
-        );
+    let runtime_semantics =
+      crate::utils::native_records::runtime_module_semantics_enabled(self.ctx.options);
+    let json_namespace_is_default_only = runtime_semantics
+      && crate::utils::import_options::is_json_module(self.ctx.module)
+      && !crate::utils::import_options::json_namespace_has_properties(
+        self.ctx.module,
+        self.ctx.modules,
+        |idx| self.ctx.unreachable_modules.reaches(idx),
+      );
     arg_obj_expr.properties.extend(self.ctx.linking_info.canonical_exports(false).filter_map(
       |(export, resolved_export)| {
         // Bundler-only named JSON bindings are not JSON namespace properties, unless an importer

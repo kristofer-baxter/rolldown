@@ -173,7 +173,7 @@ impl SplitJsonKeys {
 /// graph, whether any reachable module statically imports or requires `module_idx`, and whether
 /// the JSON module's namespace exposes top-level properties.
 fn needed_json_keys(link_staged: &LinkStage, module_idx: ModuleIdx) -> (SplitJsonKeys, bool, bool) {
-  if !link_staged.options.experimental.is_resolve_new_url_to_asset_enabled() {
+  if !crate::utils::native_records::runtime_module_semantics_enabled(link_staged.options) {
     return (SplitJsonKeys::All, true, false);
   }
   let Some(module) = link_staged.module_table[module_idx].as_normal() else {
