@@ -496,16 +496,32 @@ fn trim_least_recently_used<K: Copy + Eq + std::hash::Hash + Ord, V>(
 
 /// A lazy entry's cached chunk: the scan generations of the modules that it ships and of their
 /// imports, how its factories read the CommonJS modules that they import
-/// ([`ScanStageCache::commonjs_reads`]), which it was rendered for, and its code, filename,
+/// ([`ScanStageCache::commonjs_reads`]), and the native cells that their imports bind past the
+/// donors ([`LazyChunkCellBindings`]), and what the link decides of its modules from their
+/// importers ([`LazyChunkLinkedShapes`]), which it was rendered for, and its code, filename,
 /// sourcemap filename and sourcemap.
 pub type CachedLazyChunk = (
   Vec<(ModuleIdx, u64)>,
   Vec<(ModuleIdx, ModuleIdx, bool)>,
+  LazyChunkCellBindings,
+  LazyChunkLinkedShapes,
   String,
   String,
   Option<String>,
   Option<String>,
 );
+
+/// The bindings that the factories of a lazy chunk read straight from native cells
+/// (`native_cell_routes::bypass_bindings`), sorted: the importer, its import record, the imported
+/// name, and the cell and the cell's export that the name binds. A factory's code names them, and
+/// an edit of another module can move them (#1291).
+pub type LazyChunkCellBindings = Vec<(ModuleIdx, usize, String, ModuleIdx, String)>;
+
+/// What the link decides of a lazy chunk's modules, and of the modules that they import, from
+/// their importers, which a factory's code follows and a scan of the module doesn't change: for a
+/// module without ES or CommonJS syntax, whether its factory registers it as CommonJS, as an ES
+/// module or as neither, and for a JSON module, whether its namespace holds its properties (#1291).
+pub type LazyChunkLinkedShapes = Vec<(ModuleIdx, u8, bool)>;
 
 #[expect(clippy::struct_excessive_bools, clippy::type_complexity)]
 #[derive(Default, Debug)]

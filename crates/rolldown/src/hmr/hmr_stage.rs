@@ -1904,11 +1904,22 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
     // The factories read CommonJS modules as the link of the current scan converts them, which
     // other importers decide, so a cached chunk serves only where it still reads them so (#748).
     let commonjs_reads = self.commonjs_reads(modules_to_be_updated.iter().copied(), &side_effects);
-    let cached = if self.cache.native_cell_modules.is_empty()
-      && let Some((cached_gens, cached_reads, code, filename, sourcemap_filename, sourcemap)) =
-        self.cache.cached_lazy_chunks.get(module_id)
+    let (cell_bindings, linked_shapes) =
+      self.lazy_chunk_cache_keys(&modules_to_be_updated, &cell_routes);
+    let cached = if let Some((
+      cached_gens,
+      cached_reads,
+      cached_bindings,
+      cached_shapes,
+      code,
+      filename,
+      sourcemap_filename,
+      sourcemap,
+    )) = self.cache.cached_lazy_chunks.get(module_id)
       && *cached_gens == key_gens
       && *cached_reads == commonjs_reads
+      && *cached_bindings == cell_bindings
+      && *cached_shapes == linked_shapes
     {
       let carried = modules_to_be_updated
         .iter()
@@ -2034,21 +2045,94 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
     let sourcemap_filename = sourcemap_asset.as_ref().map(|asset| asset.filename.to_string());
     let sourcemap = sourcemap_asset.map(|asset| asset.source.try_into_string()).transpose()?;
-    if self.cache.native_cell_modules.is_empty() {
-      self.cache.cached_lazy_chunks.insert(
-        module_id.to_owned(),
-        (
-          key_gens,
-          commonjs_reads.clone(),
-          code.clone(),
-          filename.clone(),
-          sourcemap_filename.clone(),
-          sourcemap.clone(),
-        ),
-      );
-    }
+    self.cache.cached_lazy_chunks.insert(
+      module_id.to_owned(),
+      (
+        key_gens,
+        commonjs_reads.clone(),
+        cell_bindings,
+        linked_shapes,
+        code.clone(),
+        filename.clone(),
+        sourcemap_filename.clone(),
+        sourcemap.clone(),
+      ),
+    );
     self.cache.commonjs_reads.extend(commonjs_reads);
     Ok(HmrLazyChunkOutput { code, filename, sourcemap_filename, sourcemap, carried })
+  }
+
+  fn lazy_chunk_cache_keys(
+    &self,
+    modules_to_be_updated: &FxIndexSet<ModuleIdx>,
+    cell_routes: &[crate::hmr::native_cell_routes::Route],
+  ) -> (
+    crate::types::scan_stage_cache::LazyChunkCellBindings,
+    crate::types::scan_stage_cache::LazyChunkLinkedShapes,
+  ) {
+    // A factory binds the names that its module's record read straight from native cells to those
+    // cells, which the routes of the current scan name, and which an edit of a donor or of what
+    // it imports can move without a rescan of the importer (#1291).
+    let cell_bindings = {
+      let shipped = modules_to_be_updated.iter().copied().collect::<FxHashSet<_>>();
+      let mut bindings = cell_routes
+        .iter()
+        .filter(|route| {
+          route.verdict == crate::hmr::native_cell_routes::Verdict::Bypass
+            && shipped.contains(&route.importer)
+        })
+        .flat_map(|route| {
+          route.bindings.iter().filter(|(_, (owner, _))| route.live_owners.contains(owner)).map(
+            |(name, (owner, export))| {
+              (route.importer, route.record.index(), name.clone(), *owner, export.clone())
+            },
+          )
+        })
+        .collect::<Vec<_>>();
+      bindings.sort_unstable();
+      bindings
+    };
+    // A factory registers a module without ES or CommonJS syntax as the link makes it, converts
+    // such a module that it imports by that kind, and gives a JSON module's namespace its
+    // properties or not, by the module's importers that the graph reaches, which another
+    // session's graph, or an edit of an importer, decides otherwise without a rescan of the
+    // module.
+    let linked_shapes = {
+      let modules = &self.module_table().modules;
+      let reach = self.reach();
+      // The chunk's modules, and what their factories import, which a factory converts by the
+      // kind that the link gives it, also an `import()` of a module that the chunk leaves out.
+      let mut shaped = modules_to_be_updated.clone();
+      for idx in modules_to_be_updated {
+        if let Some(module) = modules[*idx].as_normal() {
+          shaped.extend(module.import_records.iter().filter_map(|record| record.resolved_module));
+        }
+      }
+      shaped.sort_unstable();
+      shaped
+        .iter()
+        .filter_map(|idx| modules[*idx].as_normal())
+        .filter_map(|module| {
+          let json = crate::utils::import_options::is_json_module(module);
+          let unlinked = module.exports_kind == ExportsKind::None && !module.meta.has_lazy_export();
+          (json || unlinked).then(|| {
+            let kind = match self.rendered_exports_kind(module) {
+              ExportsKind::None => 0,
+              ExportsKind::Esm => 1,
+              ExportsKind::CommonJs => 2,
+            };
+            let properties = json
+              && crate::utils::import_options::json_namespace_has_properties(
+                module,
+                modules,
+                |idx| reach.reaches(idx),
+              );
+            (module.idx, kind, properties)
+          })
+        })
+        .collect::<Vec<_>>()
+    };
+    (cell_bindings, linked_shapes)
   }
 
   async fn render_hmr_patch(
