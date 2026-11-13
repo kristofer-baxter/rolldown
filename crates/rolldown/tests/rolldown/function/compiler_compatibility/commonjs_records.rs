@@ -850,3 +850,42 @@ async fn commonjs_reexport_self_referential_cycle_terminates_and_evaluates() -> 
   }
   Ok(())
 }
+
+#[tokio::test]
+async fn bundler_check_distinguishes_definite_failures_from_partial_link_ambiguities() -> Result<()>
+{
+  let valid = Fixture::new(&[
+    ("main.js", "import { x } from './dep.mjs'; console.log(x);"),
+    ("dep.mjs", "export const x = 1;"),
+  ])?;
+  let mut bundler = Bundler::new(valid.options())?;
+  assert!(bundler.check(false).await?);
+  assert!(bundler.check(true).await?);
+  bundler.close().await?;
+
+  let missing_declared = Fixture::new(&[
+    ("main.js", "import { missing } from './dep.mjs'; console.log(missing);"),
+    ("dep.mjs", "export const x = 1;"),
+  ])?;
+  let mut bundler = Bundler::new(missing_declared.options())?;
+  assert!(bundler.check(false).await.is_err());
+  assert!(bundler.check(true).await.is_err());
+  bundler.close().await?;
+
+  let missing_with_undeclared = Fixture::new(&[
+    ("package.json", "{}"),
+    ("main.js", "import { missing } from './plain.js'; console.log(missing);"),
+    ("plain.js", "globalThis.sideEffect = 1;"),
+  ])?;
+  let mut bundler = Bundler::new(missing_with_undeclared.options())?;
+  assert!(bundler.check(false).await.is_err());
+  assert!(!bundler.check(true).await?);
+  bundler.close().await?;
+
+  let parse_err = Fixture::new(&[("main.js", "export const = ;")])?;
+  let mut bundler = Bundler::new(parse_err.options())?;
+  assert!(bundler.check(false).await.is_err());
+  assert!(bundler.check(true).await.is_err());
+  bundler.close().await?;
+  Ok(())
+}

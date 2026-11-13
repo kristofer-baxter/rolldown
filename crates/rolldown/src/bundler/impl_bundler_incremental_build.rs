@@ -214,6 +214,18 @@ impl Bundler {
     self.cache.late_records = true;
   }
 
+  /// Scans and links the graph of a compiler that has built nothing, without generating
+  /// output, and fails with what a build of the graph fails with before it renders a module:
+  /// the errors of loading, transforming and resolving its modules, and of binding their
+  /// imports and exports. It keeps nothing of the graph. With `part`, the graph is part of a
+  /// larger one, and `Ok(false)` says that it does not link where the larger one may; see
+  /// [`Bundle::check`].
+  pub async fn check(&mut self, part: bool) -> BuildResult<bool> {
+    self.create_error_if_closed()?;
+    let bundle = self.bundle_factory.create_bundle(BundleMode::FullBuild, None)?;
+    bundle.check(part).await
+  }
+
   pub async fn with_cached_bundle_experimental<T>(
     &mut self,
     bundle_mode: BundleMode,
