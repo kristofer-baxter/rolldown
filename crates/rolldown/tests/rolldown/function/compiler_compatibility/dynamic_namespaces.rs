@@ -618,3 +618,117 @@ async fn deferred_barrel_diagnostics_still_fail_closed_for_static_and_ordinary_b
   );
   bundler.close().await.unwrap();
 }
+
+#[tokio::test]
+async fn dynamic_entry_json_chunks_avoid_per_key_expansion_and_keep_namespace_keys() {
+  use std::fmt::Write as _;
+
+  let mut locale_json = String::from(
+    "{\"__proto__\":\"proto-val\",\"default\":\"inner-default\",\"\":\"empty-val\",\"validIdent\":\"ident-val\"",
+  );
+  for idx in 0..200 {
+    write!(
+      locale_json,
+      ",\"Section.Action.Key_{idx:03}\":\"Localized string value number {idx:03}\""
+    )
+    .unwrap();
+  }
+  locale_json.push('}');
+  let raw_json_len = locale_json.len();
+
+  for strict in [true, false] {
+    let fixture = Fixture::new(&[
+      ("package.json", "{}"),
+      ("locale.json", &locale_json),
+      ("receiver.json", r#"{"a":1,"b":2}"#),
+      ("entry-false.json", r#"{"entryKey":"ok","extraKey":7}"#),
+      ("strict/package.json", r#"{"type":"module"}"#),
+      ("strict/strict-locale.json", &locale_json),
+      ("strict/reader.mjs", "export const loadStrict = () => import('./strict-locale.json');"),
+      (
+        "main.js",
+        "import { loadStrict } from './strict/reader.mjs';
+         globalThis.run = async function run() {
+           const dynLocale = await import('./locale.json');
+           const k = 'Section.Action.Key_199';
+           const rec = await import('./receiver.json');
+           try { rec.toString(); } catch {}
+           const tag = Object.prototype.toString.call(rec);
+           const dual = await import('./entry-false.json');
+           const strictNs = await loadStrict();
+           return {
+             keyCount: Object.keys(dynLocale).length,
+             dynamicLookup: dynLocale[k],
+             protoProp: dynLocale.__proto__,
+             protoNull: Object.getPrototypeOf(dynLocale) === null,
+             sealed: !Object.isExtensible(dynLocale) && Object.isSealed(dynLocale),
+             receiverTag: tag,
+             receiverKeys: Object.keys(rec),
+             dualKeys: Object.keys(dual),
+             dualVal: dual.entryKey,
+             strictKeys: Object.keys(strictNs),
+           };
+         }",
+      ),
+    ])
+    .unwrap();
+
+    let mut opts = fixture.options();
+    opts.input = Some(vec![
+      InputItem { name: Some("main".into()), import: "./main.js".into() },
+      InputItem { name: Some("entry-false".into()), import: "./entry-false.json".into() },
+    ]);
+    opts.preserve_entry_signatures = Some(PreserveEntrySignatures::False);
+    opts.strict_execution_order = Some(strict);
+    opts.experimental = Some(ExperimentalOptions {
+      resolve_new_url_to_asset: Some(true),
+      incremental_build: (!strict).then_some(true),
+      ..Default::default()
+    });
+
+    let mut bundler = Bundler::new(opts).unwrap();
+    let generated = bundler.generate().await.unwrap();
+    bundler.close().await.unwrap();
+
+    let locale_chunk = generated
+      .assets
+      .iter()
+      .find_map(|asset| match asset {
+        rolldown_common::Output::Chunk(c)
+          if c.module_ids.iter().any(|id| id.as_str().ends_with("/locale.json")) =>
+        {
+          Some(&c.code)
+        }
+        _ => None,
+      })
+      .expect("dynamic locale chunk");
+    assert!(
+      locale_chunk.len() < raw_json_len * 3 / 2,
+      "strict={strict}: expected compact JSON chunk ({} bytes vs {raw_json_len}):\n{locale_chunk}",
+      locale_chunk.len()
+    );
+    assert!(
+      !locale_chunk.contains("Section_Action_Key_"),
+      "strict={strict}: unexpected per-key var expansion:\n{locale_chunk}"
+    );
+
+    let script = "await import('./main.js'); console.log(JSON.stringify(await globalThis.run()))";
+    let actual = output(&fixture, &generated, script);
+    assert_eq!(
+      actual,
+      json!({
+        "keyCount": 203,
+        "dynamicLookup": "Localized string value number 199",
+        "protoProp": "proto-val",
+        "protoNull": true,
+        "sealed": true,
+        "receiverTag": "[object Module]",
+        "receiverKeys": ["a", "b", "default"],
+        "dualKeys": ["default", "entryKey", "extraKey"],
+        "dualVal": "ok",
+        "strictKeys": ["default"],
+      }),
+      "strict={strict}"
+    );
+  }
+}

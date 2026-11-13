@@ -319,9 +319,7 @@ pub async fn finalize_assets(
             .into()
           }
         });
-        if early_prepared_sourcemaps
-          && let Some(map) = &mut instantiated_chunk.map
-        {
+        if early_prepared_sourcemaps && let Some(map) = &mut instantiated_chunk.map {
           let file_path = options.cwd.join(&options.out_dir).join(filename.as_str());
           ecma_meta.file_dir =
             file_path.parent().expect("chunk file name should have a parent").to_path_buf();

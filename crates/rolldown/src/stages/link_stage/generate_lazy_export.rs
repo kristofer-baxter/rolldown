@@ -10,9 +10,9 @@ use oxc::{
 use oxc_str::CompactStr;
 use rolldown_common::{
   EcmaModuleAstUsage, EntryPointKind, ExportsKind, GetLocalDbMut, ImportKind, ImportRecordMeta,
-  LocalExport, Module, ModuleIdx, ModuleType, NormalModule, PreserveEntrySignatures, Specifier,
-  StmtInfo, StmtInfoIdx, StmtInfos, SymbolOrMemberExprRef, SymbolRef, SymbolRefDbForModule,
-  TaggedSymbolRef, WrapKind, dynamic_import_usage::DynamicImportExportsUsage,
+  LocalExport, Module, ModuleIdx, ModuleType, NormalModule, Specifier, StmtInfo, StmtInfoIdx,
+  StmtInfos, SymbolOrMemberExprRef, SymbolRef, SymbolRefDbForModule, TaggedSymbolRef, WrapKind,
+  dynamic_import_usage::DynamicImportExportsUsage,
 };
 use rolldown_ecmascript::EcmaAst;
 use rolldown_ecmascript_utils::{ExpressionFactoryExt as _, StatementFactoryExt as _};
@@ -25,8 +25,6 @@ use rolldown_utils::{
 };
 use rustc_hash::FxHashSet;
 use smallvec::smallvec;
-
-use crate::utils::chunk::normalize_preserve_entry_signature;
 
 use super::LinkStage;
 
@@ -172,6 +170,16 @@ impl SplitJsonKeys {
 /// Determines which top-level JSON object keys can be bound as individual `SymbolRef`s in the
 /// graph, whether any reachable module statically imports or requires `module_idx`, and whether
 /// the JSON module's namespace exposes top-level properties.
+///
+/// Standalone dynamic-only JSON entry chunks (`ChunkMeta::DynamicImported` without a public/emitted
+/// entry) do not rely on chunk-level named exports for `Object.keys(await import('./d.json'))`:
+/// `GenerateStage::preserve_dynamic_entry_namespaces` (`dynamic_already_loaded.rs`) always publishes
+/// `module.namespace_object_ref` (`__jsonExports(() => default, no_symbols)`) and rewrites dynamic
+/// `import()` callers to extract that namespace object whenever `runtime_module_semantics_enabled`
+/// is active. Any JSON module that also has a non-`DynamicImport` entry (`UserDefined`,
+/// `EmittedUserDefined`, or `EmittedPredefinedChunk`, regardless of `preserveEntrySignatures`) falls
+/// back to `SplitJsonKeys::All` because `preserve_dynamic_entry_namespaces` skips multi-role entry
+/// chunks (`meta != ChunkMeta::DynamicImported`).
 fn needed_json_keys(link_staged: &LinkStage, module_idx: ModuleIdx) -> (SplitJsonKeys, bool, bool) {
   if !crate::utils::native_records::runtime_module_semantics_enabled(link_staged.options) {
     return (SplitJsonKeys::All, true, false);
@@ -187,19 +195,10 @@ fn needed_json_keys(link_staged: &LinkStage, module_idx: ModuleIdx) -> (SplitJso
   if link_staged.options.is_dev_mode_enabled() || link_staged.options.preserve_modules {
     return (SplitJsonKeys::All, true, json_ns_has_props);
   }
-  let is_public_entry = link_staged.entries.get(&module_idx).is_some_and(|entries| {
-    entries.iter().any(|entry| {
-      matches!(entry.kind, EntryPointKind::UserDefined | EntryPointKind::EmittedUserDefined)
-    })
-  }) && !matches!(
-    normalize_preserve_entry_signature(
-      &link_staged.overrode_preserve_entry_signature_map,
-      link_staged.options,
-      module_idx,
-    ),
-    PreserveEntrySignatures::False
-  );
-  if is_public_entry {
+  let has_non_dynamic_entry = link_staged.entries.get(&module_idx).is_some_and(|entries| {
+    entries.iter().any(|entry| !matches!(entry.kind, EntryPointKind::DynamicImport))
+  });
+  if has_non_dynamic_entry {
     return (SplitJsonKeys::All, true, json_ns_has_props);
   }
 
@@ -305,7 +304,24 @@ fn needed_json_keys(link_staged: &LinkStage, module_idx: ModuleIdx) -> (SplitJso
   }
 
   needed.insert(CompactStr::new_const("then"));
+  // `create_exports_for_ecma_modules` upgrades `Partial` to `Complete` when any reachable dynamic
+  // importer invokes a method on the namespace (`ns.method()`, where `this` is the namespace). In
+  // that case the full namespace will be constructed via `__jsonExports(() => default, ...)` rather
+  // than partial `__exportAll` getters, so only genuine non-receiver `Partial` imports need per-key
+  // bindings.
+  let dynamic_call_widens_to_complete =
+    module.ecma_view.dynamic_importers_idx.iter().any(|&importer_idx| {
+      link_staged.unreachable_modules.reaches(importer_idx)
+        && link_staged.module_table[importer_idx].as_normal().is_some_and(|importer| {
+          importer
+            .ecma_view
+            .dynamic_import_called_names
+            .keys()
+            .any(|rec_idx| importer.import_records[*rec_idx].resolved_module == Some(module_idx))
+        })
+    });
   if json_ns_has_props
+    && !dynamic_call_widens_to_complete
     && let Some(DynamicImportExportsUsage::Partial(names)) =
       link_staged.dynamic_import_exports_usage_map.get(&module_idx)
   {
@@ -354,7 +370,7 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
                 && (!p.computed || matches!(&p.key, ast::PropertyKey::StringLiteral(_)))
                 && p.key
                   .static_name()
-                  .and_then(oxc::ast::ast::StaticPropertyName::into_cow_str)
+                .and_then(oxc::ast::StaticPropertyName::into_cow_str)
                   .is_some()
           )
         }),
@@ -366,8 +382,7 @@ fn json_object_expr_to_esm(link_staged: &mut LinkStage, module_idx: ModuleIdx) -
     let any_split = match stmt.expression.without_parentheses() {
       Expression::ObjectExpression(obj_expr) => obj_expr.properties.iter().any(|prop| {
         let ast::ObjectPropertyKind::ObjectProperty(p) = prop else { return true };
-        let Some(key) =
-          p.key.static_name().and_then(oxc::ast::ast::StaticPropertyName::into_cow_str)
+        let Some(key) = p.key.static_name().and_then(oxc::ast::StaticPropertyName::into_cow_str)
         else {
           return false;
         };
