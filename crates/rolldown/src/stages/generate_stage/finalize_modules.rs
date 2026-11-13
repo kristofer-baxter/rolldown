@@ -858,6 +858,17 @@ impl GenerateStage<'_> {
       temp_acc = (temp_acc.0.wrapping_add(d0), temp_acc.1.wrapping_add(d1));
     }
     h.write_unordered(7, meta.temporal_symbols.len(), temp_acc);
+    // The reads that the link stage proved initialized print without a guard, and a change
+    // elsewhere in the import graph can unprove one without touching this module.
+    let mut proven_acc = (0u128, 0u128);
+    for reference in &meta.proven_temporal_reads {
+      let mut eh = DualHasher::new();
+      eh.write_val(&reference.index());
+      let [d0, d1] = eh.finish();
+      proven_acc = (proven_acc.0.wrapping_add(d0), proven_acc.1.wrapping_add(d1));
+    }
+    h.write_unordered(9, meta.proven_temporal_reads.len(), proven_acc);
+    h.write_val(&meta.engine_temporal);
     h.write_val(&(
       order_state
         .esm_init_target(module_idx, meta)

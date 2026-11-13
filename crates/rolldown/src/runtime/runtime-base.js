@@ -239,7 +239,10 @@ export var __rejectModuleResolution = async (message, options) => {
   throw error;
 };
 export var __checkTDZ = (initialized, name, readonly) => {
-  if (!initialized) throw new ReferenceError("Cannot access '" + name + "' before initialization");
+  if (!initialized)
+    throw new ReferenceError(
+      name ? "Cannot access '" + name + "' before initialization" : 'Cannot access a binding before initialization',
+    );
   if (readonly) throw new TypeError("Assignment to constant variable.");
 };
 export var __startAsync = (pending, result) => {

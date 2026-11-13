@@ -216,6 +216,7 @@ mod compute_cross_chunk_links;
 mod compute_wrapped_esm_init_metadata;
 mod detect_ineffective_dynamic_imports;
 mod dynamic_already_loaded;
+mod engine_temporal;
 mod entry_facades;
 mod finalize_chunk_plan;
 mod finalize_modules;
@@ -1843,6 +1844,17 @@ impl<'a> GenerateStage<'a> {
       temp_acc = (temp_acc.0.wrapping_add(d0), temp_acc.1.wrapping_add(d1));
     }
     h.write_unordered(7, meta.temporal_symbols.len(), temp_acc);
+    // The reads that the link stage proved initialized print without a guard, and a change
+    // elsewhere in the import graph can unprove one without touching this module.
+    let mut proven_acc = (0u128, 0u128);
+    for reference in &meta.proven_temporal_reads {
+      let mut eh = DualHasher::new();
+      eh.write_val(&reference.index());
+      let [d0, d1] = eh.finish();
+      proven_acc = (proven_acc.0.wrapping_add(d0), proven_acc.1.wrapping_add(d1));
+    }
+    h.write_unordered(9, meta.proven_temporal_reads.len(), proven_acc);
+    h.write_val(&meta.engine_temporal);
 
     let mut def_acc = (0u128, 0u128);
     for (rec_idx, target_sym) in &meta.deferred_imports {

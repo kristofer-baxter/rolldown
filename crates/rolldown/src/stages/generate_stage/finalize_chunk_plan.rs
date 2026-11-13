@@ -56,6 +56,9 @@ impl GenerateStage<'_> {
       self.finalized_module_namespace_ref_usage(chunk_graph, &order_state);
       order_analysis = self.analyze_execution_order(chunk_graph, used_symbol_refs_builder);
     }
+    self.enforce_unwrapped_temporal_bindings_natively(
+      order_analysis.as_ref().map(|analysis| &analysis.plan),
+    );
     if let Some(analysis) = &order_analysis
       && self.apply_order_wraps(chunk_graph, analysis, used_symbol_refs_builder, &mut order_state)
     {

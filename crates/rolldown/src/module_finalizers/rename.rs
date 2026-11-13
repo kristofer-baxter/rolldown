@@ -57,7 +57,12 @@ impl<'ast> ScopeHoistingFinalizer<'_, 'ast> {
         read
       });
     }
-    let (mut expr, _) = self.finalized_expr_for_symbol_ref(symbol_ref, is_callee, false);
+    // The link stage proved that this read runs after the binding's initialization.
+    let (mut expr, _) = if self.ctx.linking_info.proven_temporal_reads.contains(&reference_id) {
+      self.finalized_expr_without_temporal_guard(symbol_ref, is_callee, false)
+    } else {
+      self.finalized_expr_for_symbol_ref(symbol_ref, is_callee, false)
+    };
 
     // See https://github.com/oxc-project/oxc/issues/4606
 

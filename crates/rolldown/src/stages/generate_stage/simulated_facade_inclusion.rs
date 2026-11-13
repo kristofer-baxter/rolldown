@@ -46,6 +46,25 @@ impl GenerateStage<'_> {
           .map(|export| self.link_output.symbol_db.canonical_ref_for(export.symbol_ref))
           .collect::<FxHashSet<SymbolRef>>()
       });
+      let keeps = |symbol_ref: &SymbolRef| {
+        used_symbol_refs_builder.contains(symbol_ref)
+          && dynamically_read.as_ref().is_none_or(|read| {
+            read.contains(&self.link_output.symbol_db.canonical_ref_for(*symbol_ref))
+          })
+      };
+      // A kept export's getter still needs the flag that guards its binding, which nothing else
+      // may have used.
+      let flags = self.link_output.stmt_infos[entry_module_idx][StmtInfos::NAMESPACE_STMT_IDX]
+        .referenced_symbols
+        .iter()
+        .filter_map(|item| match item {
+          rolldown_common::SymbolOrMemberExprRef::Symbol(symbol_ref) if keeps(symbol_ref) => {
+            let binding = self.link_output.symbol_db.canonical_ref_for(*symbol_ref);
+            self.link_output.metas[binding.owner].temporal_symbols.get(&binding).copied()
+          }
+          _ => None,
+        })
+        .collect::<FxHashSet<SymbolRef>>();
       // Filter in place to avoid cloning
       self.link_output.stmt_infos[entry_module_idx][StmtInfos::NAMESPACE_STMT_IDX]
         .referenced_symbols
@@ -53,6 +72,7 @@ impl GenerateStage<'_> {
           rolldown_common::SymbolOrMemberExprRef::Symbol(symbol_ref) => {
             // module namespace symbol requires `__exportAll` runtime helper
             symbol_ref.owner == runtime_module_idx
+              || flags.contains(symbol_ref)
               || (used_symbol_refs_builder.contains(symbol_ref)
                 && dynamically_read.as_ref().is_none_or(|read| {
                   read.contains(&self.link_output.symbol_db.canonical_ref_for(*symbol_ref))

@@ -887,6 +887,131 @@ async fn native_partial_scan_marks_a_dropped_require_dependency_failure_unreache
   Ok(())
 }
 
+#[tokio::test]
+async fn production_temporal_proofs_and_engine_temporal_match_node() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import fallback,{VALUE,Shape}from'./leaf.js';\
+       import{early}from'./peer-a.js';\
+       const attempt=(name,read)=>{try{events.push(`${name}=${read()}`)}catch(e){events.push(`${name}!${e.name}`)}};\
+       const closure=()=>[VALUE,new Shape().kind,fallback].join();\
+       attempt('closure',closure);\
+       events.push(`top=${VALUE}`);\
+       function hoisted(){return VALUE;}\
+       attempt('hoisted',hoisted);\
+       const reader=()=>LATER;\
+       const LATER='later';\
+       attempt('later',reader);\
+       const probe=()=>TOO_LATE;\
+       attempt('probe',probe);\
+       const TOO_LATE=globalThis.make?.('too-late')??'too-late';\
+       attempt('probe-again',probe);\
+       attempt('cycle',early);",
+    ),
+    (
+      "leaf.js",
+      "export const VALUE=globalThis.make?.('leaf')??'leaf';\
+       export class Shape{kind=globalThis.make?.('shape')??'shape';}\
+       export default globalThis.make?.('default')??'default';",
+    ),
+    (
+      "peer-a.js",
+      "import{ready}from'./peer-b.js';\
+       export function early(){return `${ready}:${CYCLIC}`;}\
+       export const CYCLIC=globalThis.make?.('cyclic')??'cyclic';",
+    ),
+    (
+      "peer-b.js",
+      "import{early}from'./peer-a.js';\
+       export let ready='unset';\
+       try{ready=early();}catch(e){ready=e.name;}",
+    ),
+  ])?;
+  let native = fixture.execute("./main.js")?;
+  assert_eq!(
+    native,
+    serde_json::json!([
+      "closure=leaf,shape,default",
+      "top=leaf",
+      "hoisted=leaf",
+      "later=later",
+      "probe!ReferenceError",
+      "probe-again=too-late",
+      "cycle=ReferenceError:cyclic"
+    ])
+  );
+
+  // Strict compatibility build: proves acyclic and post-init reads, omits unused flags, and drops
+  // binding names under full minification.
+  for minify in [false, true] {
+    let mut opts = fixture.options();
+    opts.strict_execution_order = Some(true);
+    opts.minify = Some(RawMinifyOptions::Bool(minify));
+    opts.experimental =
+      Some(ExperimentalOptions { resolve_new_url_to_asset: Some(true), ..Default::default() });
+    let mut bundler = Bundler::new(opts)?;
+    let output = bundler.generate().await?;
+    bundler.close().await?;
+    fixture.output(&output)?;
+    assert_eq!(fixture.execute("./dist/main.js")?, native, "strict minify={minify}");
+    let code = fs::read_to_string(fixture.0.join("dist/main.js"))?;
+    if !minify {
+      ensure!(code.matches(", \"VALUE\")").count() == 1, "expected 1 VALUE guard:\n{code}");
+      ensure!(!code.contains(", \"Shape\")") && !code.contains(", \"LATER\")"), "{code}");
+      ensure!(code.matches(", \"TOO_LATE\")").count() == 1, "{code}");
+      ensure!(code.matches(", \"CYCLIC\")").count() == 1, "{code}");
+    } else {
+      ensure!(
+        !code.contains("TOO_LATE")
+          && !code.contains("CYCLIC")
+          && code.contains("Cannot access a binding before initialization"),
+        "minified guard should omit binding names:\n{code}"
+      );
+    }
+  }
+
+  // Non-strict compatibility build: leaves unwrapped modules to the engine without `__checkTDZ`.
+  let mut eager_opts = fixture.options();
+  eager_opts.strict_execution_order = Some(false);
+  eager_opts.minify = Some(RawMinifyOptions::Bool(false));
+  eager_opts.experimental =
+    Some(ExperimentalOptions { resolve_new_url_to_asset: Some(true), ..Default::default() });
+  let mut eager_bundler = Bundler::new(eager_opts)?;
+  let eager_out = eager_bundler.generate().await?;
+  eager_bundler.close().await?;
+  fixture.output(&eager_out)?;
+  assert_eq!(fixture.execute("./dist/main.js")?, native);
+  let eager_code = fs::read_to_string(fixture.0.join("dist/main.js"))?;
+  ensure!(
+    !eager_code.contains("__checkTDZ") && !eager_code.contains("__initialized"),
+    "unwrapped eager output must leave TDZ to the engine:\n{eager_code}"
+  );
+
+  // Self-imported cyclic class keeps its guard even without strict execution order.
+  let class_fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import{C as Alias}from'./main.js';import*as barrel from'./barrel.js';\
+       const attempt=r=>{try{return typeof r()}catch(e){return e.name}};\
+       export class C{static results=[attempt(()=>Alias),attempt(()=>barrel.C),typeof C];}\
+       events.push(...C.results);",
+    ),
+    ("barrel.js", "export*from'./main.js';"),
+  ])?;
+  let class_native = class_fixture.execute("./main.js")?;
+  assert_eq!(class_native, serde_json::json!(["ReferenceError", "ReferenceError", "function"]));
+  let mut class_opts = class_fixture.options();
+  class_opts.strict_execution_order = Some(false);
+  class_opts.experimental =
+    Some(ExperimentalOptions { resolve_new_url_to_asset: Some(true), ..Default::default() });
+  let mut class_bundler = Bundler::new(class_opts)?;
+  class_fixture.output(&class_bundler.generate().await?)?;
+  class_bundler.close().await?;
+  assert_eq!(class_fixture.execute("./dist/main.js")?, class_native);
+  Ok(())
+}
+
 #[derive(Debug)]
 struct ContextLoadPanic {
   helper: String,

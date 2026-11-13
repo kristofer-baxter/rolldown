@@ -1429,3 +1429,94 @@ async fn development_mode_cache_tracks_absorbed_facade_and_star_namespace_comple
   star_cached.close().await?;
   Ok(())
 }
+
+#[tokio::test]
+async fn hmr_reshaped_exports_emit_reshaped_hook_and_reload_on_moved_binding() -> Result<()> {
+  let fixture = Fixture::new(&[
+    (
+      "main.js",
+      "import { a } from './barrel.js';import './solo.js';\
+       events.push(a);import.meta.hot.accept();",
+    ),
+    ("barrel.js", "export * from './leaf.js';export { x as kept } from './one.js';"),
+    ("leaf.js", "export const a = 1;"),
+    ("solo.js", "export const unheld = 10;import.meta.hot.accept();"),
+    ("one.js", "export const x = 'one';"),
+    ("two.js", "export const x = 'two';"),
+  ])?;
+  let mut bundler = Bundler::new(options(&fixture, true, false))?;
+  fixture.output(&bundler.incremental_generate(ScanMode::Full).await?)?;
+  let mut stamps = HmrStampTable::default();
+  let (evaluated, ..) = bundler.compute_top_level_evaluated_modules(&stamps);
+  let mut shipped = evaluated.clone();
+  let next = Arc::new(AtomicU32::new(0));
+
+  // Reshaping `leaf.js` (held through `barrel.js`) and `solo.js` (imported for side effects only)
+  // patches the page and lists both in `reshaped(all, unheld)`, with only `solo.js` in `unheld`.
+  fixture.write("leaf.js", "export const a = 1;export const added = 2;")?;
+  fixture.write(
+    "solo.js",
+    "export const unheld = 10;export const extra = 20;import.meta.hot.accept();",
+  )?;
+  let changes = FxIndexMap::from_iter([
+    (fixture.0.join("leaf.js").to_string_lossy().into_owned(), WatcherChangeKind::Update),
+    (fixture.0.join("solo.js").to_string_lossy().into_owned(), WatcherChangeKind::Update),
+  ]);
+  let updates = bundler
+    .compute_hmr_update_for_file_changes(
+      &changes,
+      &[ClientHmrInput {
+        client_id: "fixture",
+        shipped: &shipped,
+        top_level_evaluated: &evaluated,
+      }],
+      &mut stamps,
+      Arc::clone(&next),
+      false,
+      false,
+    )
+    .await?;
+  ensure!(updates.len() == 1);
+  let HmrUpdate::Patch(patch) = &updates[0].update else {
+    anyhow::bail!("expected reshaped export edit to patch, got {:?}", updates[0].update);
+  };
+  ensure!(
+    patch.code.contains(
+      "__rolldown_runtime__.reshaped?.([\"barrel.js\",\"leaf.js\",\"solo.js\"],[\"solo.js\"]);"
+    ),
+    "unexpected reshaped hook payload:\n{}",
+    patch.code
+  );
+  shipped.extend(patch.carried.iter().cloned());
+
+  // Moving a kept export (`kept`) to a different binding reloads cleanly.
+  fixture.write("barrel.js", "export * from './leaf.js';export { x as kept } from './two.js';")?;
+  let moved_changes = FxIndexMap::from_iter([(
+    fixture.0.join("barrel.js").to_string_lossy().into_owned(),
+    WatcherChangeKind::Update,
+  )]);
+  let moved_updates = bundler
+    .compute_hmr_update_for_file_changes(
+      &moved_changes,
+      &[ClientHmrInput {
+        client_id: "fixture",
+        shipped: &shipped,
+        top_level_evaluated: &evaluated,
+      }],
+      &mut stamps,
+      Arc::clone(&next),
+      false,
+      false,
+    )
+    .await?;
+  ensure!(moved_updates.len() == 1);
+  let HmrUpdate::FullReload { reason } = &moved_updates[0].update else {
+    anyhow::bail!("expected moved export binding to reload, got {:?}", moved_updates[0].update);
+  };
+  ensure!(
+    reason.contains("the binding of its export kept moved"),
+    "unexpected reload reason: {reason}"
+  );
+  bundler.close().await?;
+  Ok(())
+}

@@ -987,12 +987,21 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       optimize_namespace_alias_transform,
     );
     let canonical = self.ctx.symbol_db.canonical_ref_for(symbol_ref);
-    let expression = match self.ctx.linking_infos[canonical.owner].temporal_symbols.get(&canonical)
-    {
-      Some(flag) => self.guard_temporal_expression(*flag, canonical, expression),
+    let expression = match self.temporal_flag(canonical) {
+      Some(flag) => self.guard_temporal_expression(flag, canonical, expression),
       None => expression,
     };
     (expression, hint)
+  }
+
+  /// The flag that guards reads of `binding`. A production build gives a binding a flag only
+  /// when the link stage found a read that needs one, and its module initializes no other.
+  fn temporal_flag(&self, binding: SymbolRef) -> Option<SymbolRef> {
+    let flag = *self.ctx.linking_infos[binding.owner].temporal_symbols.get(&binding)?;
+    let production = self.ctx.options.experimental.is_resolve_new_url_to_asset_enabled()
+      && !self.ctx.options.is_dev_mode_enabled()
+      && !crate::utils::native_records::enabled(self.ctx.options);
+    (!production || self.ctx.used_symbol_refs.contains(&flag)).then_some(flag)
   }
 
   fn finalized_expr_without_temporal_guard(
@@ -2300,6 +2309,11 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
       return Err(class);
     }
 
+    // The engine guards an unwrapped production module's bindings, which a `var` would undo.
+    if self.ctx.linking_info.engine_temporal {
+      return Err(class);
+    }
+
     if self.scope.scoping().scope_parent_id(scope_id) != Some(self.scope.scoping().root_scope_id())
     {
       return Err(class);
@@ -3245,7 +3259,9 @@ impl<'me, 'ast> ScopeHoistingFinalizer<'me, 'ast> {
                   }
                 }
 
-                if self.ctx.linking_info.native_default_expression && owns_initial_bindings {
+                if (self.ctx.linking_info.native_default_expression && owns_initial_bindings)
+                  || self.ctx.linking_info.engine_temporal
+                {
                   // `let local = ({ default: <expr> }).default;` keeps the engine's TDZ, names
                   // an anonymous function or class "default", and is a writable binding cell.
                   if init_expr.without_parentheses().is_anonymous_function_definition() {
