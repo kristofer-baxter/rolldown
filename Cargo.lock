@@ -3265,6 +3265,7 @@ dependencies = [
  "memchr",
  "oxc",
  "oxc_sourcemap",
+ "sugar_path",
 ]
 
 [[package]]
