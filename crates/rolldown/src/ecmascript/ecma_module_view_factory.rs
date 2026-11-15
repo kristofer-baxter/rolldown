@@ -12,6 +12,7 @@ use rolldown_utils::{ecmascript::legitimize_identifier_name, indexmap::FxIndexSe
 
 use crate::{
   ast_scanner::{AstScanner, ScanResult},
+  stages::link_stage::DeferredWriteConstant,
   types::module_factory::{CreateModuleContext, CreateModuleViewArgs},
   utils::parse_to_ecma_ast::{ParseToEcmaAstResult, parse_to_ecma_ast},
 };
@@ -24,6 +25,7 @@ pub struct CreateEcmaViewReturn {
   /// the task result into a centralized map on the link stage so it doesn't
   /// need to live on every `EcmaView`.
   pub tla_keyword_span: Option<Span>,
+  pub deferred_write_constants: Vec<DeferredWriteConstant>,
 }
 
 pub async fn create_ecma_view(
@@ -109,6 +111,7 @@ pub async fn create_ecma_view(
     directive_range,
     dummy_record_set,
     constant_export_map,
+    deferred_write_constants,
     cjs_reexport_require_node_ids: _,
     cjs_reexport_import_record_ids,
   } = scan_result;
@@ -173,7 +176,13 @@ pub async fn create_ecma_view(
 
   let ecma_related =
     EcmaRelated { ast, symbols, dynamic_import_rec_exports_usage, preserve_jsx, stmt_infos };
-  Ok(CreateEcmaViewReturn { ecma_view, ecma_related, raw_import_records, tla_keyword_span })
+  Ok(CreateEcmaViewReturn {
+    ecma_view,
+    ecma_related,
+    raw_import_records,
+    tla_keyword_span,
+    deferred_write_constants,
+  })
 }
 
 /// The side effects priority is:

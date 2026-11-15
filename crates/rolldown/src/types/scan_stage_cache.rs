@@ -1221,6 +1221,8 @@ impl ScanStageCache {
       let idx = self.module_id_to_idx[new_module.id()].idx();
 
       let incoming_tla_span = scan_stage_output.tla_keyword_span_map.get(&new_idx).copied();
+      let incoming_deferred_write_constants =
+        scan_stage_output.deferred_write_constants_map.remove(&new_idx);
       let incoming_dynamic_import_usage =
         scan_stage_output.dynamic_import_exports_usage_by_importer.remove(&new_idx);
 
@@ -1273,6 +1275,9 @@ impl ScanStageCache {
         }
         if let Some(span) = incoming_tla_span {
           cache.tla_keyword_span_map.insert(new_module_idx, span);
+        }
+        if let Some(constants) = incoming_deferred_write_constants {
+          cache.deferred_write_constants_map.insert(new_module_idx, constants);
         }
         if let Some(usages) = incoming_dynamic_import_usage {
           cache.dynamic_import_exports_usage_by_importer.insert(new_module_idx, usages);
@@ -1368,6 +1373,14 @@ impl ScanStageCache {
         }
         None => {
           cache.tla_keyword_span_map.remove(&idx);
+        }
+      }
+      match incoming_deferred_write_constants {
+        Some(constants) => {
+          cache.deferred_write_constants_map.insert(idx, constants);
+        }
+        None => {
+          cache.deferred_write_constants_map.remove(&idx);
         }
       }
       match incoming_dynamic_import_usage {
@@ -1607,6 +1620,7 @@ impl ScanStageCache {
       user_defined_entry_modules: FxHashSet::default(),
       tla_module_count: cache.tla_module_count,
       tla_keyword_span_map: FxHashMap::default(),
+      deferred_write_constants_map: FxHashMap::default(),
     }
   }
 
@@ -1662,6 +1676,7 @@ impl ScanStageCache {
       user_defined_entry_modules: cache.user_defined_entry_modules.clone(),
       tla_module_count: cache.tla_module_count,
       tla_keyword_span_map: cache.tla_keyword_span_map.clone(),
+      deferred_write_constants_map: cache.deferred_write_constants_map.clone(),
     }
   }
 }

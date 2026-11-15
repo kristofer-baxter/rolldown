@@ -7,8 +7,8 @@ use rolldown_common::common_debug_symbol_ref;
 use rolldown_common::{
   ConstExportMeta, DependedRuntimeHelperMap, EntryPoint, EntryPointKind, FlatOptions, ImportKind,
   IndexModules, ModuleId, ModuleIdx, ModuleTable, NormalModule, PreserveEntrySignatures,
-  RetainedExportSymbols, RuntimeModuleBrief, SymbolRef, SymbolRefDb, UsedExternalSymbols,
-  UsedSymbolRefsBuilder, dynamic_import_usage::DynamicImportExportsUsage,
+  RetainedExportSymbols, RuntimeModuleBrief, StmtInfoIdx, SymbolRef, SymbolRefDb,
+  UsedExternalSymbols, UsedSymbolRefsBuilder, dynamic_import_usage::DynamicImportExportsUsage,
 };
 use rolldown_error::Diagnostics;
 #[cfg(target_family = "wasm")]
@@ -50,6 +50,8 @@ mod patch_module_dependencies;
 mod plain_object_reads;
 pub use plain_object_reads::PlainObjectReads;
 pub use plain_object_reads::static_read_key;
+mod promote_deferred_write_constants;
+pub use promote_deferred_write_constants::DeferredWriteConstant;
 mod prune_constant_branches;
 mod reference_needed_symbols;
 mod refine_stmt_side_effects;
@@ -296,10 +298,13 @@ pub struct LinkStage<'a> {
   /// Centralized map of modules that use top-level `await` → span of the
   /// first TLA keyword. Populated during the scan stage.
   pub tla_keyword_span_map: FxHashMap<ModuleIdx, Span>,
+  pub deferred_write_constants_map: FxHashMap<ModuleIdx, Vec<DeferredWriteConstant>>,
   /// Computed during `include_statements`, reused when building `LinkStageOutput`.
   pub has_enum_inlining: bool,
   pub pre_lazy_export_asts: FxHashMap<ModuleIdx, rolldown_ecmascript::EcmaAst>,
   pub pre_lazy_export_symbols: FxHashMap<ModuleIdx, rolldown_common::SymbolRefDbForModule>,
+  /// The writer statements of each constant that `promote_deferred_write_constants` added.
+  promoted_constant_writers: Vec<(ModuleIdx, Vec<StmtInfoIdx>)>,
   /// Module side-effect verdicts as the scan stage left them. See
   /// `recompute_analyzed_side_effects`.
   pub scan_time_side_effects: IndexVec<ModuleIdx, ScanTimeSideEffects>,
@@ -484,10 +489,12 @@ impl<'a> LinkStage<'a> {
       unreachable_modules: UnreachableModules::default(),
       tla_module_count: scan_stage_output.tla_module_count,
       tla_keyword_span_map: scan_stage_output.tla_keyword_span_map,
+      deferred_write_constants_map: scan_stage_output.deferred_write_constants_map,
       has_enum_inlining: false,
       pre_lazy_export_asts: FxHashMap::default(),
       pre_lazy_export_symbols: FxHashMap::default(),
       plain_object_reads: PlainObjectReads::default(),
+      promoted_constant_writers: Vec::new(),
     }
   }
 
@@ -504,6 +511,7 @@ impl<'a> LinkStage<'a> {
     self.determine_side_effects();
     self.bind_imports_and_exports();
     self.create_exports_for_ecma_modules();
+    self.promote_deferred_write_constants();
     self.preserve_temporal_bindings();
     self.reference_async_evaluation_helpers();
     let unreachable_import_expression_node_ids = self.cross_module_optimization();
@@ -516,6 +524,7 @@ impl<'a> LinkStage<'a> {
     self.reference_needed_symbols();
     self.prune_constant_branches();
     self.include_statements(&unreachable_import_expression_node_ids);
+    self.assert_promoted_writers_excluded();
     self.check_lazy_barrel_uncertain_bindings();
     self.patch_module_dependencies();
 

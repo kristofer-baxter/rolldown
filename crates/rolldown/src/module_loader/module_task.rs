@@ -179,6 +179,7 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
       mut ecma_related,
       raw_import_records,
       tla_keyword_span,
+      deferred_write_constants,
     } = create_ecma_view(
       &mut CreateModuleContext {
         stable_id: &stable_id,
@@ -289,6 +290,14 @@ impl<Fs: FileSystem + Clone + 'static> ModuleTask<Fs> {
     self.ctx.plugin_driver.set_module_info(&module.id, Arc::clone(&module_info));
     self.ctx.plugin_driver.module_parsed(Arc::clone(&module_info), &module).await?;
     self.ctx.plugin_driver.mark_context_load_modules_loaded(module.id.clone());
+    if !deferred_write_constants.is_empty() {
+      self
+        .ctx
+        .deferred_write_constants
+        .lock()
+        .expect("deferred_write_constants lock poisoned")
+        .insert(self.module_idx, deferred_write_constants);
+    }
 
     let result = ModuleLoaderMsg::NormalModuleDone(Box::new(NormalModuleTaskResult {
       module: module.into(),

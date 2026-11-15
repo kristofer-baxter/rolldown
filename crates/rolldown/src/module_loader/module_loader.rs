@@ -36,7 +36,7 @@ use sugar_path::SugarPath;
 use tracing::Instrument;
 
 use crate::module_loader::module_task::ModuleTaskOwner;
-use crate::stages::link_stage::exports_namespace_as_then;
+use crate::stages::link_stage::{DeferredWriteConstant, exports_namespace_as_then};
 use crate::types::scan_stage_cache::ScanStageCache;
 use crate::utils::load_entry_module::load_entry_module;
 use crate::{SharedOptions, SharedResolver};
@@ -146,6 +146,7 @@ pub struct ModuleLoader<'a, Fs: FileSystem + Clone + 'static> {
   /// of the first TLA keyword. Stored here instead of on every `EcmaView`
   /// because top-level await is rarely used in real-world apps.
   tla_keyword_span_map: FxHashMap<ModuleIdx, Span>,
+  deferred_write_constants_map: FxHashMap<ModuleIdx, Vec<DeferredWriteConstant>>,
   dynamic_import_exports_usage_by_importer:
     FxHashMap<ModuleIdx, Vec<(ModuleIdx, DynamicImportExportsUsage)>>,
   errors: Vec<BuildDiagnostic>,
@@ -179,6 +180,7 @@ pub struct ModuleLoaderOutput {
   pub user_defined_entry_modules: FxHashSet<ModuleIdx>,
   pub tla_module_count: usize,
   pub tla_keyword_span_map: FxHashMap<ModuleIdx, Span>,
+  pub deferred_write_constants_map: FxHashMap<ModuleIdx, Vec<DeferredWriteConstant>>,
 }
 
 impl<Fs: FileSystem + Clone> Drop for ModuleLoader<'_, Fs> {
@@ -256,6 +258,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       meta,
       deferred_parse_errors: std::sync::Mutex::default(),
       deferred_resolution_targets,
+      deferred_write_constants: std::sync::Mutex::default(),
       compact_module_arenas,
     });
 
@@ -280,6 +283,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       magic_string_tx,
       tla_module_count: 0,
       tla_keyword_span_map: FxHashMap::default(),
+      deferred_write_constants_map: FxHashMap::default(),
       dynamic_import_exports_usage_by_importer: FxHashMap::default(),
       errors: Vec::new(),
     })
@@ -807,6 +811,15 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           if let Some(span) = tla_keyword_span {
             self.tla_keyword_span_map.insert(module_idx, span);
           }
+          if let Some(constants) = self
+            .shared_context
+            .deferred_write_constants
+            .lock()
+            .expect("deferred_write_constants lock poisoned")
+            .remove(&module_idx)
+          {
+            self.deferred_write_constants_map.insert(module_idx, constants);
+          }
           let mut import_records = IndexVec::with_capacity(raw_import_records.len());
 
           let mut tracked_records = FxHashMap::default();
@@ -1311,6 +1324,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       user_defined_entry_modules: user_defined_entry_ids,
       tla_module_count: self.tla_module_count,
       tla_keyword_span_map: std::mem::take(&mut self.tla_keyword_span_map),
+      deferred_write_constants_map: std::mem::take(&mut self.deferred_write_constants_map),
     })
   }
 
@@ -1914,6 +1928,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         self.tla_module_count = self.tla_module_count.saturating_sub(1);
       }
       self.tla_keyword_span_map.remove(&idx);
+      self.deferred_write_constants_map.remove(&idx);
       self.dynamic_import_exports_usage_by_importer.remove(&idx);
       module.ecma_view = result.ecma_view;
       module.ecma_view.imported_ids.insert(leaf_id);
@@ -2466,6 +2481,7 @@ mod tests {
       meta: TaskContextMeta { replace_global_define_config: None },
       deferred_parse_errors: Mutex::new(FxHashMap::default()),
       deferred_resolution_targets: Mutex::new(FxHashMap::default()),
+      deferred_write_constants: Mutex::new(FxHashMap::default()),
       compact_module_arenas: false,
     });
 

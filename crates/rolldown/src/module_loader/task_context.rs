@@ -1,11 +1,12 @@
-use crate::utils::replace_global_defines::ReplaceGlobalDefinesConfig;
+use crate::{
+  SharedOptions, SharedResolver, stages::link_stage::DeferredWriteConstant,
+  utils::replace_global_defines::ReplaceGlobalDefinesConfig,
+};
 use rolldown_common::{ModuleId, ModuleIdx, ModuleLoaderMsg};
 use rolldown_error::BuildDiagnostic;
 use rolldown_fs::FileSystem;
 use rolldown_plugin::SharedPluginDriver;
 use rustc_hash::FxHashMap;
-
-use crate::{SharedOptions, SharedResolver};
 
 /// A deferred resolution's diagnostic inputs, from which a [`BuildDiagnostic`] can be built more
 /// than once across scans (#700).
@@ -45,6 +46,7 @@ pub struct TaskContext<Fs: FileSystem> {
   pub deferred_parse_errors: std::sync::Mutex<FxHashMap<ModuleIdx, Vec<BuildDiagnostic>>>,
   pub deferred_resolution_targets:
     std::sync::Mutex<FxHashMap<ModuleId, DeferredResolutionDiagnostic>>,
+  pub deferred_write_constants: std::sync::Mutex<FxHashMap<ModuleIdx, Vec<DeferredWriteConstant>>>,
   /// Whether module tasks right-size the arenas of the ASTs and scope trees that an incremental
   /// build retains ([`crate::utils::retained_memory`]).
   pub compact_module_arenas: bool,
