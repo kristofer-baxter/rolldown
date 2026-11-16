@@ -9,6 +9,14 @@ use rustc_hash::{FxHashMap, FxHashSet};
 
 use crate::{SharedOptions, stages::link_stage::LinkStageOutput};
 
+/// A static import of a chunk, from another chunk or from an external module, in the order in which
+/// the rendered chunk imports them.
+#[derive(Debug, Hash, PartialEq, Eq, Clone, Copy)]
+pub enum StaticImport {
+  Chunk(ChunkIdx),
+  External(ModuleIdx),
+}
+
 #[derive(Debug)]
 pub struct ChunkGraph {
   pub chunk_table: ChunkTable,
@@ -19,6 +27,7 @@ pub struct ChunkGraph {
   /// If the namespace is not merged, `Key` == `Value`.
   /// If the namespace is merged, `Key` is the original namespace symbol, and `Value` is the linked namespace symbol.
   pub finalized_cjs_ns_map_idx_vec: IndexVec<ChunkIdx, FxHashMap<SymbolRef, SymbolRef>>,
+  pub static_imports: IndexVec<ChunkIdx, Vec<StaticImport>>,
   pub chunk_idx_to_reference_ids: FxHashMap<ChunkIdx, Vec<ArcStr>>,
   pub common_chunk_exported_facade_chunk_namespace: FxHashMap<ChunkIdx, FxHashSet<ModuleIdx>>,
   /// Modules from emitted chunks with AllowExtension that were merged into common chunks.
@@ -47,6 +56,7 @@ impl ChunkGraph {
       sorted_chunk_idx_vec: Vec::new(),
       entry_module_to_entry_chunk: FxHashMap::default(),
       finalized_cjs_ns_map_idx_vec: index_vec![],
+      static_imports: index_vec![],
       chunk_idx_to_reference_ids: FxHashMap::default(),
       common_chunk_exported_facade_chunk_namespace: FxHashMap::default(),
       common_chunk_preserve_export_names_modules: FxHashMap::default(),
@@ -63,6 +73,7 @@ impl ChunkGraph {
   pub fn add_chunk(&mut self, chunk: Chunk) -> ChunkIdx {
     let idx = self.chunk_table.push(chunk);
     self.finalized_cjs_ns_map_idx_vec.push(FxHashMap::default());
+    self.static_imports.push(Vec::new());
     idx
   }
 
@@ -141,9 +152,7 @@ impl ChunkGraph {
       let mut runtime_related = vec![];
       for &module_idx in &chunk.modules {
         let module = &link_output.module_table[module_idx];
-        if module.id().as_str().starts_with("rolldown:")
-          || module.id().as_str().starts_with("\0rolldown/")
-        {
+        if module.id().as_str().starts_with("\0rolldown/") {
           runtime_related.push(module_idx);
           continue;
         }

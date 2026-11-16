@@ -500,6 +500,8 @@ impl GenerateStage<'_> {
       let chunk = &mut relink.chunk_graph.chunk_table[chunk_idx];
       chunk.cross_chunk_imports = imports.keys().copied().collect();
       chunk.imports_from_other_chunks = imports;
+      relink.chunk_graph.static_imports[chunk_idx] =
+        self.recompute_chunk_static_imports(&relink.chunk_graph, chunk_idx);
     }
     // The other records keep the imports that the cached link sorted by authored rank, then by
     // execution order. An update that reorders execution keeps them only if linking the updated

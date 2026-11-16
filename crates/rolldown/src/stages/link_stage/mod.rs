@@ -39,7 +39,7 @@ pub use bind_imports_and_exports::{
   commonjs_exports_public, fold_namespace_in_check, inlined_commonjs_constants,
   split_json_defaults,
 };
-mod compute_tla;
+pub(crate) mod compute_tla;
 mod create_exports_for_ecma_modules;
 mod cross_module_optimization;
 mod deferred_imports;
@@ -503,7 +503,7 @@ impl<'a> LinkStage<'a> {
     self.exclude_unreachable_modules();
     self.collect_deferred_imports();
     self.sort_modules();
-    self.compute_tla();
+    self.compute_tla_initial();
     self.determine_module_exports_kind();
     self.determine_safely_merge_cjs_ns();
     self.wrap_modules();
@@ -524,6 +524,7 @@ impl<'a> LinkStage<'a> {
     self.reference_needed_symbols();
     self.prune_constant_branches();
     self.include_statements(&unreachable_import_expression_node_ids);
+    self.compute_tla();
     self.assert_promoted_writers_excluded();
     self.check_lazy_barrel_uncertain_bindings();
     self.patch_module_dependencies();

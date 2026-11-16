@@ -39,7 +39,7 @@ pub fn render_ecma_module(
 
   // A native cell is virtual, but its loaded map points at its donor's authored file.
   let enable_sourcemap = options.sourcemap.is_some()
-    && (!module.is_virtual() || crate::utils::native_records::is_native_cell(&module.id));
+    && (!module.id.starts_with('\0') || crate::utils::native_records::is_native_cell(&module.id));
   let mut warnings = vec![];
 
   // Because oxc codegen sourcemap is last of sourcemap chain,

@@ -183,6 +183,7 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
         callee_member: None,
         resolve_file_url_errors: Vec::new(),
         surviving_import_meta_spans: FxIndexMap::default(),
+        unsupported_jsx_element_names: Vec::new(),
       };
       finalizer.visit_program(oxc_program);
 
@@ -228,6 +229,16 @@ impl<'me> ScopeHoistingFinalizerContext<'me> {
           BuildDiagnostic::plugin_error(CausedPlugin::new(plugin_name), anyhow::anyhow!(message))
         }));
       }
+
+      let module = finalizer.ctx.module;
+      diagnostics.extend(finalizer.unsupported_jsx_element_names.into_iter().map(|span| {
+        BuildDiagnostic::unsupported_feature(
+          module.id.as_arc_str().clone(),
+          module.ecma_view.source.clone(),
+          span,
+          "A JSX element name can't refer to an import that has to be read as a bracketed property, because the imported name is not a valid identifier, while `transform.jsx` is 'preserve'. Assign the import to a variable and use the variable as the element name.".to_string(),
+        )
+      }));
 
       (finalizer.transferred_import_record, diagnostics)
     })

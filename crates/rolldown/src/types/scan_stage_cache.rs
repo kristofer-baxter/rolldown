@@ -1122,6 +1122,10 @@ impl ScanStageCache {
         modules
       }
     };
+    // A rebuild can add the first module that preserves JSX.
+    if scan_stage_output.symbol_ref_db.has_module_preserve_jsx() {
+      cache.symbol_ref_db.set_has_module_preserve_jsx();
+    }
     let rescanned_module_idxs = modules.iter().map(|(idx, _)| *idx).collect::<FxHashSet<_>>();
     // A fast native relink inserts appended modules at the end of its cached tables, so they
     // must follow the cached modules contiguously.

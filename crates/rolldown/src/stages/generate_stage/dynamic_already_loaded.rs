@@ -21,6 +21,9 @@ use super::{
   simulated_facade_inclusion::include_simulated_facade_namespace,
 };
 
+/// The target of the trace event each module-table scan for a raw CommonJS module emits.
+const RAW_COMMONJS_SCAN_TARGET: &str = "rolldown::dynamic_already_loaded::raw_commonjs_scan";
+
 struct ChunkAtom {
   modules: Vec<ModuleIdx>,
   dependent_entries: BitSet,
@@ -162,10 +165,14 @@ impl GenerateStage<'_> {
           crate::utils::topology_config::CycleMergingPolicy::AllowWrapped
         }
       });
+    // One scan of the module table: `compute_atom_dependencies` reads the answer for every module.
+    let raw_commonjs = self.options.is_strict_execution_order_enabled()
+      && crate::utils::native_records::runtime_module_semantics_enabled(self.options)
+      && self.has_raw_commonjs_module();
     let keep_acyclic =
       if crate::utils::native_records::runtime_module_semantics_enabled(self.options) {
         !self.options.is_strict_execution_order_enabled()
-          || self.has_raw_commonjs_module()
+          || raw_commonjs
           || self.options.experimental.is_on_demand_wrapping_enabled()
           || matches!(cycle_merging, crate::utils::topology_config::CycleMergingPolicy::Forbid)
       } else {
@@ -177,6 +184,7 @@ impl GenerateStage<'_> {
       &flattened_entry_modules,
       used_symbol_refs_builder,
       keep_acyclic,
+      raw_commonjs,
     );
     // Indexed by entry bit, so `ReducedChunkGraph` can pair each facade chunk with its entry
     // module's host atom.
@@ -857,7 +865,11 @@ impl GenerateStage<'_> {
   /// entry that nothing imports does in cjs output without code-splitting groups (`wrap_modules`).
   /// Its body runs at the top level of its chunk, outside the order analysis, so a chunk cycle
   /// through that chunk can run it before the chunk defines what the cycle imports from it.
+  ///
+  /// It reads every module, so a caller asks once per pass (#1549); the trace event lets a test
+  /// count the scans.
   fn has_raw_commonjs_module(&self) -> bool {
+    tracing::trace!(target: RAW_COMMONJS_SCAN_TARGET, "scanning for a raw CommonJS module");
     self.link_output.module_table.modules.iter().filter_map(Module::as_normal).any(|module| {
       let meta = &self.link_output.metas[module.idx];
       matches!(module.exports_kind, ExportsKind::CommonJs)
@@ -940,6 +952,7 @@ impl GenerateStage<'_> {
     flattened_entry_modules: &[ModuleIdx],
     used_symbol_refs_builder: &UsedSymbolRefsBuilder,
     keep_acyclic: bool,
+    raw_commonjs: bool,
   ) -> AtomDependencyGraphs {
     let strict_execution_order = self.options.is_strict_execution_order_enabled();
 
@@ -964,7 +977,7 @@ impl GenerateStage<'_> {
           }
           if keep_acyclic {
             if !crate::utils::native_records::runtime_module_semantics_enabled(self.options)
-              || self.has_raw_commonjs_module()
+              || raw_commonjs
             {
               for &dep_module_idx in &self.link_output.metas[module_idx].dependencies {
                 add(dep_module_idx, &mut cycle_deps);

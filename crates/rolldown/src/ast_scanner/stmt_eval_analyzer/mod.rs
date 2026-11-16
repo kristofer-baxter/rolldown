@@ -427,6 +427,17 @@ impl<'a> StmtEvalAnalyzer<'a> {
   }
 
   fn analyze_call_expr(&self, expr: &CallExpression) -> StmtEvalFacts {
+    if let Some(Expression::Identifier(ident)) =
+      utils::temporal_reads::temporal_read_call_argument(expr)
+      && ident
+        .reference_id
+        .get()
+        .and_then(|ref_id| self.constant_value_for_reference_id(ref_id))
+        .is_some()
+    {
+      return StmtEvalFacts::default();
+    }
+
     let is_pure_annotated =
       !self.flat_options.ignore_annotations() && (expr.pure || self.is_call_expr_marked_pure(expr));
 
@@ -628,6 +639,9 @@ impl<'a> StmtEvalAnalyzer<'a> {
         }
       }
       Expression::BinaryExpression(e) => self.fold_compound(expr, [&e.left, &e.right]),
+      Expression::UnaryExpression(e) if e.operator == UnaryOperator::LogicalNot => {
+        self.analyze_expr(&e.argument)
+      }
       Expression::UnaryExpression(e) => self.fold_compound(expr, [&e.argument]),
 
       // Class expressions: same definition-time order-sensitivity as class declarations (heritage,
@@ -1119,6 +1133,11 @@ impl<'ast> VisitJs<'ast> for EagerEvaluationOrderReasonCollector<'_, '_> {
   }
 
   fn visit_call_expression(&mut self, call: &CallExpression<'ast>) {
+    if let Some(argument) = utils::temporal_reads::temporal_read_call_argument(call) {
+      self.visit_expression(argument);
+      return;
+    }
+
     let is_pure_annotated = !self.analyzer.flat_options.ignore_annotations()
       && (call.pure || self.analyzer.is_call_expr_marked_pure(call));
     let is_manual_pure =
@@ -1295,6 +1314,10 @@ impl<'ast> VisitJs<'ast> for ConstantTrustFinder<'_, '_> {
   }
 
   fn visit_call_expression(&mut self, it: &CallExpression<'ast>) {
+    if let Some(argument) = utils::temporal_reads::temporal_read_call_argument(it) {
+      self.visit_expression(argument);
+      return;
+    }
     self.found |= self.analyzer.is_global_callee(&it.callee);
     walk_js::walk_call_expression(self, it);
   }

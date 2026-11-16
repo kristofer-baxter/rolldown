@@ -134,10 +134,9 @@ impl<Fs: FileSystem + Clone + 'static> DerefMut for HmrStage<'_, Fs> {
 }
 
 /// Module ids the `hotUpdate` hook must not see or return: lazy-compilation proxies are internal
-/// artifacts and runtime modules are never re-fetched. Runtime ids use both prefixes (cf. the
-/// same pair in `ChunkGraph`); the `\0` one covers `RUNTIME_MODULE_KEY`.
+/// artifacts and runtime modules are never re-fetched.
 fn is_hidden_from_hot_update_hook(id: &str) -> bool {
-  is_lazy_proxy(id) || id.starts_with("rolldown:") || id.starts_with("\0rolldown/")
+  is_lazy_proxy(id) || id.starts_with("\0rolldown/")
 }
 
 /// Whether a partial scan that re-fetched only the module at `idx` found it as `cached` holds
@@ -2527,7 +2526,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> HmrStage<'a, Fs> {
 
     let enable_sourcemap = with_sourcemap
       && self.options.sourcemap.is_some()
-      && (!module.is_virtual() || crate::utils::native_records::is_native_cell(&module.id));
+      && (!module.id.starts_with('\0') || crate::utils::native_records::is_native_cell(&module.id));
     let use_pife_for_module_wrappers =
       self.options.optimization.is_pife_for_module_wrappers_enabled();
     let modules = &self.module_table().modules;
@@ -3202,7 +3201,6 @@ mod tests {
   #[test]
   fn hidden_ids_cover_runtime_and_lazy_proxy_modules() {
     assert!(is_hidden_from_hot_update_hook(rolldown_common::RUNTIME_MODULE_KEY));
-    assert!(is_hidden_from_hot_update_hook("rolldown:hmr"));
     assert!(is_hidden_from_hot_update_hook("/app/main.js?rolldown-lazy=1"));
     assert!(!is_hidden_from_hot_update_hook("/app/main.js"));
     assert!(!is_hidden_from_hot_update_hook("\0virtual:team"));

@@ -28,7 +28,7 @@ use rustc_hash::{FxHashMap, FxHashSet};
 use xxhash_rust::xxh3::Xxh3;
 
 use crate::{
-  chunk_graph::ChunkGraph,
+  chunk_graph::{ChunkGraph, StaticImport},
   stages::link_stage::LinkStageOutput,
   type_alias::{AssetVec, IndexChunkToInstances, IndexInstantiatedChunks},
   types::scan_stage_cache::{CachedChunkFinalize, CachedMultiModuleChunk},
@@ -395,42 +395,43 @@ pub async fn finalize_assets(
       (&mut ins_chunk.meta, ins_chunk.originate_from)
     {
       let chunk = &chunk_graph.chunk_table[originate_from];
-      ecma_meta.imports = chunk
-        .cross_chunk_imports
+      ecma_meta.imports = chunk_graph.static_imports[originate_from]
         .iter()
-        .flat_map(|importee_idx| {
-          let instances = &index_chunk_to_instances[*importee_idx];
-          let mut filenames = if instances.is_empty() && chunk_hashes_by_placeholder.is_empty() {
-            chunk_graph.chunk_table[*importee_idx]
-              .preliminary_filename
-              .as_ref()
-              .map(|f| ArcStr::from(f.as_str()))
-              .into_iter()
-              .collect::<Vec<_>>()
-          } else {
-            instances
-              .iter()
-              .map(|importee_asset_idx| index_ins_chunk_to_filename[*importee_asset_idx].clone())
-              .collect::<Vec<_>>()
-          };
-          if let Some(suffix) = crate::utils::native_records::commonjs_import_suffix(
-            link_output,
-            chunk_graph,
-            chunk,
-            *importee_idx,
-          ) {
-            for filename in &mut filenames {
-              *filename = format!("{filename}{suffix}").into();
+        .flat_map(|static_import| match *static_import {
+          StaticImport::Chunk(importee_idx) => {
+            let instances = &index_chunk_to_instances[importee_idx];
+            let mut filenames = if instances.is_empty() && chunk_hashes_by_placeholder.is_empty() {
+              chunk_graph.chunk_table[importee_idx]
+                .preliminary_filename
+                .as_ref()
+                .map(|f| ArcStr::from(f.as_str()))
+                .into_iter()
+                .collect::<Vec<_>>()
+            } else {
+              instances
+                .iter()
+                .map(|importee_asset_idx| index_ins_chunk_to_filename[*importee_asset_idx].clone())
+                .collect::<Vec<_>>()
+            };
+            if let Some(suffix) = crate::utils::native_records::commonjs_import_suffix(
+              link_output,
+              chunk_graph,
+              chunk,
+              importee_idx,
+            ) {
+              for filename in &mut filenames {
+                *filename = format!("{filename}{suffix}").into();
+              }
             }
+            filenames
           }
-          filenames
+          StaticImport::External(module_idx) => vec![
+            link_output.module_table[module_idx]
+              .as_external()
+              .expect("a static import that is not a chunk should be an external module")
+              .get_file_name(resolved_paths),
+          ],
         })
-        .chain(super::static_external_imports(chunk, &link_output.module_table).map(|idx| {
-          link_output.module_table[idx]
-            .as_external()
-            .expect("static external imports should only contain external modules")
-            .get_file_name(resolved_paths)
-        }))
         .collect();
 
       ecma_meta.dynamic_imports = chunk

@@ -85,6 +85,9 @@ fn shrink_relink_chunk_metadata(chunk_graph: &mut ChunkGraph) {
     chunk.entry_level_external_module_idx.shrink_to_fit();
     chunk.import_symbol_from_external_modules.shrink_to_fit();
   }
+  for static_imports in &mut chunk_graph.static_imports {
+    static_imports.shrink_to_fit();
+  }
 }
 
 /// The names of a preserved module's chunk, from which its file name and `[name]` derive.
@@ -1774,6 +1777,19 @@ impl<'a> GenerateStage<'a> {
         chunk,
         importee_chunk_idx,
       ));
+    }
+    h.write_val(&chunk_graph.static_imports[chunk_idx].len());
+    for &static_import in &chunk_graph.static_imports[chunk_idx] {
+      match static_import {
+        crate::chunk_graph::StaticImport::Chunk(importee_chunk_idx) => {
+          h.write_val(&0u8);
+          h.write_val(&importee_chunk_idx.raw());
+        }
+        crate::chunk_graph::StaticImport::External(module_idx) => {
+          h.write_val(&1u8);
+          h.write_val(&module_idx.raw());
+        }
+      }
     }
 
     h.write_val(&chunk_graph.native_commonjs_definitions.get(&chunk_idx));

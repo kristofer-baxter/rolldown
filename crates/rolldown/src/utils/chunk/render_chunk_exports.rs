@@ -4,9 +4,9 @@ use std::fmt::Write as _;
 
 use oxc_str::CompactStr;
 use rolldown_common::{
-  Chunk, ChunkKind, ChunkMeta, EntryPointKind, ExportsKind, IndexModules, Module, ModuleIdx,
-  NormalizedBundlerOptions, OutputExports, OutputFormat, Platform, SymbolRef, SymbolRefDb,
-  WrapKind,
+  Chunk, ChunkKind, ChunkMeta, EntryPointKind, ExportsKind, GetLocalDb, IndexModules, Module,
+  ModuleIdx, NormalizedBundlerOptions, OutputExports, OutputFormat, Platform, SymbolRef,
+  SymbolRefDb, SymbolRefFlags, WrapKind,
 };
 use rolldown_utils::{
   concat_string,
@@ -18,6 +18,7 @@ use rolldown_utils::{
 };
 use rustc_hash::FxHashSet;
 
+use crate::ast_scanner::const_eval::eval_can_assign;
 use crate::esm_init_obligations::{WrappedEsmInitTarget, collect_entry_reexported_wrapper_inits};
 use crate::{stages::link_stage::LinkStageOutput, types::generator::GenerateContext};
 
@@ -636,8 +637,24 @@ fn must_keep_live_binding(
     return false;
   }
 
-  if canonical_ref.is_not_reassigned(symbol_db) {
-    // For unknown case, we consider it as reassigned.
+  // Unlike `is_not_reassigned`, this ignores `ReadBeforeAssigned`: a read before the declaration
+  // assigns the binding does not change the value the export ends up with. `IsNotReassigned` does
+  // not see an assignment inside direct `eval`. For unknown case, we consider it as reassigned.
+  let is_not_reassigned_after_decl = canonical_ref
+    .flags(symbol_db)
+    .is_some_and(|flags| flags.contains(SymbolRefFlags::IsNotReassigned))
+    || {
+      let local_db = symbol_db.local_db(canonical_ref.owner);
+      let scoping = local_db.scoping();
+      scoping.symbol_flags(canonical_ref.symbol).is_function_scoped_declaration()
+        && !local_db
+          .get_resolved_references(canonical_ref.symbol)
+          .any(oxc::semantic::Reference::is_write)
+        && scoping.symbol_redeclarations(canonical_ref.symbol).is_empty()
+    };
+  if is_not_reassigned_after_decl
+    && !eval_can_assign(symbol_db.local_db(canonical_ref.owner).scoping(), canonical_ref.symbol)
+  {
     return false;
   }
 

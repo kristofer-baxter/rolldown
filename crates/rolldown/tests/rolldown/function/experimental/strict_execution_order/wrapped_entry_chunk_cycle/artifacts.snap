@@ -22,8 +22,8 @@ export { useDep as i, dep_exports as n, init_dep as r, __initialized as t };
 ## hub.js
 
 ```js
-import { i as useDep } from "./dep.js";
 import { r as extend, t as init_hub } from "./hub2.js";
+import { i as useDep } from "./dep.js";
 init_hub();
 export { extend, useDep };
 
@@ -56,14 +56,14 @@ export { init_shared as i, __initialized as n, extend as r, init_hub as t };
 
 ```js
 import { r as __esmMin, t as __checkTDZ } from "./rolldown-runtime.js";
-import { i as useDep, t as __initialized } from "./dep.js";
-import { n as __initialized$1, r as extend, t as init_hub } from "./hub2.js";
+import { n as __initialized, r as extend, t as init_hub } from "./hub2.js";
+import { i as useDep, t as __initialized$1 } from "./dep.js";
 // main.js
 var go;
 function init_main() {
 	return (init_main = __esmMin((() => {
 		init_hub();
-		go = () => [(__checkTDZ(__initialized, "useDep"), useDep), (__checkTDZ(__initialized$1, "extend"), extend)];
+		go = () => [(__checkTDZ(__initialized$1, "useDep"), useDep), (__checkTDZ(__initialized, "extend"), extend)];
 	})))();
 }
 init_main();
@@ -205,8 +205,8 @@ Object.defineProperty(exports, "useDep", {
 
 ```js
 Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-const require_dep = require("./dep.js");
 const require_hub = require("./hub2.js");
+const require_dep = require("./dep.js");
 require_hub.init_hub();
 exports.extend = require_hub.extend;
 exports.useDep = require_dep.useDep;
@@ -264,8 +264,8 @@ Object.defineProperty(exports, "init_shared", {
 ```js
 Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 const require_rolldown_runtime = require("./rolldown-runtime.js");
-const require_dep = require("./dep.js");
 const require_hub = require("./hub2.js");
+const require_dep = require("./dep.js");
 // main.js
 var go;
 function init_main() {
@@ -436,8 +436,8 @@ Object.defineProperty(exports, "useDep", {
 
 ```js
 Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
-const require_dep = require("./dep.js");
 const require_hub = require("./hub2.js");
+const require_dep = require("./dep.js");
 require_hub.init_hub();
 exports.extend = require_hub.extend;
 exports.useDep = require_dep.useDep;
@@ -495,8 +495,8 @@ Object.defineProperty(exports, "init_shared", {
 ```js
 Object.defineProperty(exports, Symbol.toStringTag, { value: "Module" });
 const require_rolldown_runtime = require("./rolldown-runtime.js");
-const require_dep = require("./dep.js");
 const require_hub = require("./hub2.js");
+const require_dep = require("./dep.js");
 // main.js
 var go;
 function init_main() {
@@ -643,8 +643,8 @@ export { useDep as i, dep_exports as n, init_dep as r, __initialized as t };
 ### hub.js
 
 ```js
-import { i as useDep } from "./dep.js";
 import { r as extend, t as init_hub } from "./hub2.js";
+import { i as useDep } from "./dep.js";
 init_hub();
 export { extend, useDep };
 
@@ -677,14 +677,14 @@ export { init_shared as i, __initialized as n, extend as r, init_hub as t };
 
 ```js
 import { r as __esmMin, t as __checkTDZ } from "./rolldown-runtime.js";
-import { i as useDep, t as __initialized } from "./dep.js";
-import { n as __initialized$1, r as extend, t as init_hub } from "./hub2.js";
+import { n as __initialized, r as extend, t as init_hub } from "./hub2.js";
+import { i as useDep, t as __initialized$1 } from "./dep.js";
 // main.js
 var go;
 function init_main() {
 	return (init_main = __esmMin((() => {
 		init_hub();
-		go = () => [(__checkTDZ(__initialized, "useDep"), useDep), (__checkTDZ(__initialized$1, "extend"), extend)];
+		go = () => [(__checkTDZ(__initialized$1, "useDep"), useDep), (__checkTDZ(__initialized, "extend"), extend)];
 	})))();
 }
 init_main();
