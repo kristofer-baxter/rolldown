@@ -528,6 +528,11 @@ pub struct ScanStageCache {
   pub deferred_resolution_diagnostics:
     FxHashMap<ModuleId, crate::module_loader::task_context::DeferredResolutionDiagnostic>,
   pub pending_rescans: Vec<ResolvedId>,
+  /// Files of a build that failed after its scan had updated the cache, in `buildEnd` for example;
+  /// every build fetches them again until one gets through its scan, so the error keeps surfacing
+  /// until the files are fixed. HMR updates leave them queued: they do not run `buildEnd`. Only
+  /// files the graph still needs are queued; see [`Self::still_needed`].
+  pub pending_build_rescans: Vec<ResolvedId>,
   /// Whether the last scan was a partial one that failed only in modules that the graph it leaves
   /// no longer reaches (`ModuleLoader::unreached`): in their tasks, or in the parse or link
   /// failures that the scan finds once it loaded every module. It failed all the same, but a
@@ -1061,6 +1066,34 @@ impl ScanStageCache {
       }
     }
     importers
+  }
+
+  /// Of `resolved_ids`, the files to fetch again after a failed build: entries, or files something
+  /// still imports on `importers`, the freshest edge state. A broken file whose last import was
+  /// removed must not fail every later build; a fresh build of the same tree would succeed without
+  /// it.
+  ///
+  /// # Panic
+  /// - if the snapshot is unset
+  pub fn still_needed(
+    &self,
+    importers: &IndexVec<ModuleIdx, Vec<ImporterRecord>>,
+    resolved_ids: Vec<ResolvedId>,
+  ) -> Vec<ResolvedId> {
+    resolved_ids
+      .into_iter()
+      .filter(|resolved_id| {
+        if self.user_defined_entry.contains(&resolved_id.id) {
+          return true;
+        }
+        let Some(state) = self.module_id_to_idx.get(&resolved_id.id) else {
+          return false;
+        };
+        let idx = state.idx();
+        self.get_snapshot().user_defined_entry_modules.contains(&idx)
+          || importers.get(idx).is_some_and(|records| !records.is_empty())
+      })
+      .collect()
   }
 
   #[expect(clippy::too_many_lines, clippy::items_after_statements)]

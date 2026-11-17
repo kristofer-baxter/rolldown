@@ -1441,9 +1441,12 @@ fn derive_entries_aware_chunk_name(
   }
 }
 
-/// `visited` guards one walk against cycles and repeated paths, and nothing more. A set shared
-/// across matched modules gave no measured gain. It would also have to belong to one
-/// `ModuleGroup`, because a dynamic `name` splits one match group across several groups.
+/// When the walk does not depend on the seed (`DependencyBoundary::All` outside a Module Federation
+/// shared group), a module already in `module_group` is skipped with its dependencies because its
+/// dependencies were already walked under the same rule. Seed-dependent walks (`SameOriginKind`,
+/// `SamePackage`, or Module Federation shared groups) use a per-seed `visited` set instead so an
+/// earlier seed that stopped at a package/origin boundary does not block a later seed from walking
+/// through a shared intermediate module.
 #[expect(clippy::too_many_arguments)]
 fn add_module_and_dependencies_to_group_recursively(
   module_group: &mut ModuleGroup,
@@ -1457,9 +1460,15 @@ fn add_module_and_dependencies_to_group_recursively(
   is_mf_shared_group: bool,
   mf_shared_packages: &[String],
 ) {
-  let is_visited = !visited.insert(module_idx);
-
-  if is_visited {
+  let seed_dependent_walk = matches!(
+    boundary,
+    DependencyBoundary::SameOriginKind | DependencyBoundary::SamePackage
+  ) || (is_mf_shared_group && !mf_shared_packages.is_empty());
+  if seed_dependent_walk {
+    if !visited.insert(module_idx) {
+      return;
+    }
+  } else if module_group.modules.contains(&module_idx) {
     return;
   }
 

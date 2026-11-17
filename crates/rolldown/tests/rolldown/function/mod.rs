@@ -5,6 +5,7 @@ pub mod compiler_compatibility;
 pub mod exports_kind_discovery_order;
 pub mod external_chunk_imports;
 pub mod external_interop_invariants;
+pub mod incremental_build_end_error;
 pub mod inline_common_chunks;
 pub mod path_external_common_dir;
 pub mod strict_execution_order_invariants;

@@ -514,6 +514,7 @@ impl<'a> LinkStage<'a> {
     self.promote_deferred_write_constants();
     self.preserve_temporal_bindings();
     self.reference_async_evaluation_helpers();
+    self.exclude_cyclic_vars_from_inline_const();
     let unreachable_import_expression_node_ids = self.cross_module_optimization();
     self.collect_plain_object_reads();
     self.exclude_jsx_element_names_from_inline_const();
