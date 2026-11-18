@@ -932,7 +932,6 @@ impl LinkStage<'_> {
           &self.module_table.modules,
           &self.metas,
           &mut self.star_reexport_records_by_imported_symbol,
-          &mut FxHashSet::default(),
         );
       }
     }
@@ -1739,7 +1738,6 @@ impl BindImportsAndExportsContext<'_> {
           self.index_modules,
           self.metas,
           self.star_reexport_records_by_imported_symbol,
-          &mut FxHashSet::default(),
         );
       }
       let is_external = matches!(self.index_modules[resolved_module_idx], Module::External(_));
@@ -1772,7 +1770,6 @@ impl BindImportsAndExportsContext<'_> {
       }
       matching_ctx.tracker_stack.clear();
       let ret = self.match_import_with_export(
-        self.index_modules,
         &mut matching_ctx,
         ImportTracker {
           importer: module_idx,
@@ -2079,13 +2076,12 @@ impl BindImportsAndExportsContext<'_> {
   /// Match one `export *` candidate for the name `tracker` is looking up.
   fn match_star_branch(
     &mut self,
-    index_modules: &IndexModules,
     ctx: &MatchingContext,
     tracker: &ImportTracker,
     reexports: &[SymbolRef],
     ambiguous_ref: SymbolRef,
   ) -> (MatchImportKind, StarBranchPromotion) {
-    let ambiguous_ref_owner = index_modules[ambiguous_ref.owner].as_normal().unwrap();
+    let ambiguous_ref_owner = self.index_modules[ambiguous_ref.owner].as_normal().unwrap();
     let mut reexports_prefix = reexports.to_vec();
     let result = match ambiguous_ref_owner.named_imports.get(&ambiguous_ref) {
       Some(another_named_import) => {
@@ -2094,7 +2090,6 @@ impl BindImportsAndExportsContext<'_> {
           Some(resolved_module_idx) => {
             reexports_prefix.push(another_named_import.imported_as);
             self.match_import_with_export(
-              index_modules,
               &mut MatchingContext { tracker_stack: ctx.tracker_stack.clone() },
               ImportTracker {
                 importer: ambiguous_ref_owner.idx,
@@ -2126,14 +2121,13 @@ impl BindImportsAndExportsContext<'_> {
 
   fn match_import_with_export(
     &mut self,
-    index_modules: &IndexModules,
     ctx: &mut MatchingContext,
     mut tracker: ImportTracker,
   ) -> MatchImportKind {
     let tracking_span = tracing::trace_span!(
       "TRACKING_MATCH_IMPORT",
-      importer = index_modules[tracker.importer].stable_id().as_str(),
-      importee = index_modules[tracker.importee].stable_id().as_str(),
+      importer = self.index_modules[tracker.importer].stable_id().as_str(),
+      importee = self.index_modules[tracker.importee].stable_id().as_str(),
       imported_specifier = tracker.imported.to_string()
     );
     let _enter = tracking_span.enter();
@@ -2149,8 +2143,8 @@ impl BindImportsAndExportsContext<'_> {
     let stack_base = ctx.tracker_stack.len();
     let mut cycle_in_own_frames = false;
     let ret = loop {
-      let imported =
-        &index_modules[tracker.importer].as_normal().unwrap().named_imports[&tracker.imported_as];
+      let imported = &self.index_modules[tracker.importer].as_normal().unwrap().named_imports
+        [&tracker.imported_as];
       if self.metas[tracker.importer].deferred_imports.contains_key(&imported.record_idx) {
         break MatchImportKind::Normal(MatchImportKindNormal {
           symbol: tracker.imported_as,
@@ -2212,14 +2206,13 @@ impl BindImportsAndExportsContext<'_> {
         }
         ImportStatus::Found { symbol, potentially_ambiguous_export_star_refs } => {
           for ambiguous_ref in &potentially_ambiguous_export_star_refs {
-            let branch =
-              self.match_star_branch(index_modules, ctx, &tracker, &reexports, *ambiguous_ref);
+            let branch = self.match_star_branch(ctx, &tracker, &reexports, *ambiguous_ref);
             ambiguous_results.push(branch);
           }
 
           // If this is a re-export of another import, continue for another
           // iteration of the loop to resolve that import as well
-          let owner = &index_modules[symbol.owner];
+          let owner = &self.index_modules[symbol.owner];
           if let Some(another_named_import) = owner.as_normal().unwrap().named_imports.get(&symbol)
           {
             let rec = &owner.as_normal().unwrap().import_records[another_named_import.record_idx];
@@ -2556,10 +2549,10 @@ pub(super) fn record_star_reexport_path(
   modules: &IndexModules,
   metas: &LinkingMetadataVec,
   records_by_imported_symbol: &mut FxHashMap<SymbolRef, Vec<Vec<(ModuleIdx, ImportRecordIdx)>>>,
-  visited: &mut FxHashSet<(ModuleIdx, CompactStr)>,
 ) {
   let mut path = vec![];
-  collect_star_reexport_path(module_idx, export_name, modules, metas, &mut path, visited);
+  let mut visited = FxHashSet::default();
+  collect_star_reexport_path(module_idx, export_name, modules, metas, &mut path, &mut visited);
   if path.is_empty() {
     return;
   }

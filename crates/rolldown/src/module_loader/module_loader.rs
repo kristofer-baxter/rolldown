@@ -457,39 +457,33 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
   /// preserve all of its exports. Request `All` from it: if it has already been
   /// loaded as a barrel, load its remaining (deferred) records now; otherwise
   /// record the request so they get loaded once it finishes loading.
-  #[expect(clippy::rc_buffer)]
-  fn request_all_exports_for_entry(
-    &mut self,
-    idx: ModuleIdx,
-    user_defined_entries: &Arc<Vec<(Option<ArcStr>, ResolvedId)>>,
-  ) {
+  fn request_all_exports_for_entry(&mut self, idx: ModuleIdx) {
     if let Some(barrel_module_state) = self.cache.barrel_state.barrel_infos.get(&idx) {
       // If the module is already a barrel module, we need to load its remaining re-export import records
       if barrel_module_state.is_some() {
-        self.process_barrel_import_record(
-          &mut VecDeque::from_iter([(idx, ImportedExports::All, Demand::Exports)]),
-          user_defined_entries,
-        );
+        self.process_barrel_import_record(&mut VecDeque::from_iter([(
+          idx,
+          ImportedExports::All,
+          Demand::Exports,
+        )]));
       }
     } else {
       self.cache.barrel_state.requested_exports.insert(idx, ImportedExports::All);
     }
   }
 
-  #[expect(clippy::rc_buffer)]
   fn try_spawn_new_task(
     &mut self,
     resolved_id: ResolvedId,
     owner: Option<ModuleTaskOwner>,
     is_user_defined_entry: bool,
     assert_module_type: Option<&ModuleType>,
-    user_defined_entries: &Arc<Vec<(Option<ArcStr>, ResolvedId)>>,
   ) -> ModuleIdx {
     let idx = match self.cache.module_id_to_idx.get(&resolved_id.id).copied() {
       Some(VisitState::Seen(idx)) => {
         self.check_external_conflict(idx, &resolved_id, owner.as_ref());
         if self.flat_options.is_lazy_barrel_enabled() && is_user_defined_entry {
-          self.request_all_exports_for_entry(idx, user_defined_entries);
+          self.request_all_exports_for_entry(idx);
         }
         return idx;
       }
@@ -518,7 +512,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       }
     };
     if self.flat_options.is_lazy_barrel_enabled() && is_user_defined_entry {
-      self.request_all_exports_for_entry(idx, user_defined_entries);
+      self.request_all_exports_for_entry(idx);
     }
     let ctx = Arc::clone(&self.shared_context);
     let module_id = resolved_id.id.clone();
@@ -618,10 +612,10 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       self.remaining += 1;
     }
 
-    let user_defined_entries = Arc::new(match fetch_mode {
+    let user_defined_entries = match fetch_mode {
       ScanMode::Full => self.resolve_user_defined_entries().await?,
       ScanMode::Partial(_) => vec![],
-    });
+    };
 
     let entries_count = user_defined_entries.len() + /* runtime */ 1;
     self.intermediate_normal_modules.modules.reserve(entries_count);
@@ -631,7 +625,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     let mut entry_points = FxIndexSet::default();
     let mut user_defined_entry_ids = FxHashSet::with_capacity(user_defined_entries.len());
     for (name, resolved_id) in user_defined_entries.iter().cloned() {
-      let idx = self.try_spawn_new_task(resolved_id, None, true, None, &user_defined_entries);
+      let idx = self.try_spawn_new_task(resolved_id, None, true, None);
       user_defined_entry_ids.insert(idx);
       entry_points.insert(EntryPoint {
         idx,
@@ -700,13 +694,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
       // Setting `Owner` to `None` is safe here since `Owner` is only used to emit
       // `Unloadable` diagnostics, and we know this module exists in the filesystem.
       // TODO: copy assert_module_type
-      self.try_spawn_new_task(
-        resolved_id,
-        None,
-        is_user_defined_entry,
-        None,
-        &user_defined_entries,
-      );
+      self.try_spawn_new_task(resolved_id, None, is_user_defined_entry, None);
     }
 
     // The exports that a module's importers request from it, and what else they need of it.
@@ -862,7 +850,6 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
               Some(ModuleTaskOwner::new(normal_module, raw_rec.span)),
               false,
               raw_rec.asserted_module_type.as_ref(),
-              &user_defined_entries,
             );
             if raw_rec.meta.contains(ImportRecordMeta::IsExportStar) {
               star_targets.push(idx);
@@ -972,7 +959,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
             if commonjs || star_targets.iter().any(|&target| self.dynamic_exports(target)) {
               self.load_bodies_above(module_idx, &mut work_queue);
             }
-            self.process_barrel_import_record(&mut work_queue, &user_defined_entries);
+            self.process_barrel_import_record(&mut work_queue);
           }
 
           self.symbol_ref_db.store_local_db(module_idx, symbols);
@@ -1012,7 +999,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           // So does an external module.
           if self.flat_options.is_lazy_barrel_enabled() {
             self.load_bodies_above(idx, &mut work_queue);
-            self.process_barrel_import_record(&mut work_queue, &user_defined_entries);
+            self.process_barrel_import_record(&mut work_queue);
           }
           self.remaining -= 1;
         }
@@ -1031,13 +1018,8 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
 
           let mut import_records = IndexVec::with_capacity(raw_import_records.len());
           for (raw_rec, info) in raw_import_records.into_iter().zip(resolved_deps) {
-            let idx = self.try_spawn_new_task(
-              info,
-              None,
-              false,
-              raw_rec.asserted_module_type.as_ref(),
-              &user_defined_entries,
-            );
+            let idx =
+              self.try_spawn_new_task(info, None, false, raw_rec.asserted_module_type.as_ref());
             self.intermediate_normal_modules.importers[idx].push(ImporterRecord {
               kind: raw_rec.kind,
               importer_path: module.id.clone(),
@@ -1060,7 +1042,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
         }
         ModuleLoaderMsg::FetchModule(resolve_id) => {
           let module_id = resolve_id.id.clone();
-          let idx = self.try_spawn_new_task(*resolve_id, None, false, None, &user_defined_entries);
+          let idx = self.try_spawn_new_task(*resolve_id, None, false, None);
           // `this.load` waits for a load signal, and only a normal module task sends it.
           // A `this.load` of an id that is already external is a conflict, and
           // `try_spawn_new_task` records it as an error. The code below ends the wait, so
@@ -1082,9 +1064,7 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
           .await;
 
           let module_idx = match result {
-            Ok(resolved_id) => {
-              self.try_spawn_new_task(resolved_id, None, true, None, &user_defined_entries)
-            }
+            Ok(resolved_id) => self.try_spawn_new_task(resolved_id, None, true, None),
             Err(e) => {
               self.errors.push(e);
               continue;
@@ -2204,11 +2184,9 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
     )
   }
 
-  #[expect(clippy::rc_buffer)]
   fn process_barrel_import_record(
     &mut self,
     work_queue: &mut VecDeque<(ModuleIdx, ImportedExports, Demand)>,
-    user_defined_entries: &Arc<Vec<(Option<ArcStr>, ResolvedId)>>,
   ) {
     while let Some((idx, imported_exports, demand)) = work_queue.pop_front() {
       let runs = demand == Demand::Run;
@@ -2321,7 +2299,6 @@ impl<'a, Fs: FileSystem + Clone + 'static> ModuleLoader<'a, Fs> {
               Some(ModuleTaskOwner::new(barrel_normal_module, import_record_state.span)),
               false,
               import_record_state.asserted_module_type.as_ref(),
-              user_defined_entries,
             );
             self.intermediate_normal_modules.importers[new_idx].push(importer_record);
             self.mark_module_importers_changed(new_idx);

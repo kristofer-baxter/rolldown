@@ -367,9 +367,7 @@ impl Generator for EcmaGenerator {
       OutputFormat::Esm => {
         render_esm(ctx, addon_render_context(), &rendered_module_sources, &carried_sources)
       }
-      OutputFormat::Cjs => {
-        render_cjs(ctx, addon_render_context(), &rendered_module_sources, &mut warnings)
-      }
+      OutputFormat::Cjs => render_cjs(ctx, addon_render_context(), &rendered_module_sources),
       OutputFormat::Iife => {
         match render_iife(ctx, addon_render_context(), &rendered_module_sources, &mut warnings)
           .await
@@ -408,6 +406,14 @@ impl Generator for EcmaGenerator {
       });
       MultiModuleChunkRender { key, skip_sourcemap_join: ctx.skip_sourcemap_join, new_entry }
     });
+
+    {
+      // The output can be held long after the build. Drop the other handles to the module
+      // sources, so their maps can be freed.
+      drop(source_joiner);
+      drop(rendered_module_sources);
+      drop(carried_sources);
+    }
 
     Ok(Ok(GenerateOutput {
       chunks: vec![instantiated_chunk(ctx, rendered_chunk, content, map, post_banner, post_footer)],
@@ -500,10 +506,9 @@ fn multi_module_chunk_key(
     first.exec_order,
     Some(Arc::from(vec![Box::new(MODULES_SENTINEL) as Box<dyn Source + Send + Sync>])),
   )];
-  let mut warnings = Vec::new();
   let mut source_joiner = match ctx.options.format {
     OutputFormat::Esm => render_esm(ctx, addon_render_context, &sentinel, &[]),
-    OutputFormat::Cjs => render_cjs(ctx, addon_render_context, &sentinel, &mut warnings),
+    OutputFormat::Cjs => render_cjs(ctx, addon_render_context, &sentinel),
     OutputFormat::Iife | OutputFormat::Umd => return None,
   };
   prepend_debug_info(ctx, &mut source_joiner);

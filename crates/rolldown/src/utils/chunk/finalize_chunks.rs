@@ -547,7 +547,7 @@ fn hash_sourcemap_comment(
       let normalized_filename =
         String::from_utf8(normalized_filename).expect("placeholder normalization preserves UTF-8");
       hasher.update(b"\n//# sourceMappingURL=");
-      hasher.update(sourcemap_file_url(options, &normalized_filename, false)?.as_bytes());
+      hasher.update(sourcemap_file_url(options, &normalized_filename)?.as_bytes());
     }
   }
   Ok(())
@@ -795,7 +795,6 @@ async fn finalize_sourcemaps(
                 map,
                 &map_filename,
                 ecma_meta.debug_id,
-                /*is_css*/ false,
                 precomputed_json,
               )?
             {

@@ -626,7 +626,6 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
         };
 
         let (commonjs_ref_expr, _) = self.finalized_expr_for_symbol_ref(commonjs_ref, false, false);
-
         let mut stmts_inside_closure = allocator::Vec::new_in(self);
         if !self.top_level_var_bindings.is_empty() {
           // Guarded CommonJS lexicals belong to the evaluator's scope, not the chunk.
@@ -648,6 +647,11 @@ impl<'ast> VisitJsMut<'ast> for ScopeHoistingFinalizer<'_, 'ast> {
             false,
             self,
           ));
+        }
+        // Keep UMD dependencies on their CommonJS path. See internal-docs/renaming/design.md,
+        // principle 7.
+        if self.scope.scoping().root_unresolved_references().contains_key("define") {
+          stmts_inside_closure.push(Statement::new_var_decl_no_init("define", self));
         }
         // CJS exposes these as mutable wrapper-local bindings, not as aliases to import.meta.
         self.prepend_cjs_ambient_path_bindings(&mut stmts_inside_closure);

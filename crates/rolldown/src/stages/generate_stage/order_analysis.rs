@@ -787,7 +787,6 @@ impl GenerateStage<'_> {
       &input,
       &reexport_usage,
       &mut probe_state,
-      self.options.code_splitting.is_disabled(),
       reverse_static_imports,
     );
     // Lowering gives each consumer-local route the targets of its namespace once it has routed
