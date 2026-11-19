@@ -102,18 +102,18 @@ impl LinkStage<'_> {
     // collect all modules that has dynamic import record
     // two dimension map module_idx -> stmt_idx -> dynamic_import_expression_node_id
     let mut module_idx_and_stmt_idx_to_dynamic_import_expr_node_id_map = FxHashMap::default();
-    self.entries.values().flatten().for_each(|entry| {
-      entry.related_stmt_infos.iter().for_each(
-        |(module_idx, stmt_idx, node_id, _import_record_idx)| {
+    if self.options.treeshake.is_some() {
+      for entry in self.entries.values().flatten() {
+        for &(module_idx, stmt_idx, node_id, _) in &entry.related_stmt_infos {
           module_idx_and_stmt_idx_to_dynamic_import_expr_node_id_map
-            .entry(*module_idx)
+            .entry(module_idx)
             .or_insert_with(FxHashMap::default)
-            .entry(*stmt_idx)
+            .entry(stmt_idx)
             .or_insert_with(FxHashSet::default)
-            .insert(*node_id);
-        },
-      );
-    });
+            .insert(node_id);
+        }
+      }
+    }
     // Track modules to process in subsequent passes. None means process all modules (first pass).
     let mut modules_to_process: Option<FxHashSet<ModuleIdx>> = None;
     while ctx.config.pass > 0 && ctx.changed {

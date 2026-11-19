@@ -1582,7 +1582,8 @@ impl GenerateStage<'_> {
   /// consumes (`collect_entry_reexported_wrapper_inits`), so everything the entry chunk may call
   /// is imported by construction; `None` for the names because registration runs before chunk
   /// names exist — it is what makes a wrapper reachable. The entry's own wrapper is not part of
-  /// the walk; the caller's `esm_init_target` arm covers it.
+  /// the walk; the caller's `esm_init_target` arm covers it. `entry_export_needs_service` drops
+  /// the owners that an entry without a preserved signature does not need to run.
   pub(super) fn register_entry_export_depended_symbols(
     &self,
     chunk_graph: &ChunkGraph,
@@ -1592,6 +1593,7 @@ impl GenerateStage<'_> {
     entry_meta: &crate::types::linking_metadata::LinkingMetadata,
   ) {
     let symbols = &self.link_output.symbol_db;
+    let mut verdicts = FxHashMap::default();
     let native_namespace =
       self.link_output.module_table[entry_idx].as_normal().is_some_and(|module| {
         crate::utils::native_records::has_native_namespace(
@@ -1613,7 +1615,14 @@ impl GenerateStage<'_> {
       .map(|(_, export)| export)
       // A chunk should always consume a cjs export symbol by property access, so filter
       // out a exported symbol that came from a cjs module.
-      .filter(|resolved_export| !resolved_export.came_from_commonjs);
+      .filter(|resolved_export| !resolved_export.came_from_commonjs)
+      .filter(|export| {
+        self.entry_export_needs_service(
+          entry_idx,
+          symbols.canonical_ref_resolving_namespace(export.symbol_ref).owner,
+          &mut verdicts,
+        )
+      });
     if self.options.is_strict_execution_order_enabled() {
       for export_ref in sorted_export_refs {
         self.add_depended_symbol_with_wrapped_esm_init(
@@ -1635,7 +1644,9 @@ impl GenerateStage<'_> {
         symbols,
         None,
       ) {
-        depended_symbols.insert(init.wrapper_ref);
+        if self.entry_export_needs_service(entry_idx, init.owner, &mut verdicts) {
+          depended_symbols.insert(init.wrapper_ref);
+        }
       }
     }
   }
