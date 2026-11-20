@@ -1,4 +1,6 @@
-use rolldown_common::{Module, ModuleIdx, ModuleType, RuntimeHelper, SymbolRef};
+use rolldown_common::{
+  ImportKind, Module, ModuleIdx, ModuleType, RuntimeHelper, StmtInfos, SymbolRef,
+};
 use rolldown_utils::{
   index_vec_ext::IndexVecRefExt, indexmap::FxIndexSet, rayon::ParallelIterator,
 };
@@ -24,6 +26,7 @@ impl LinkStage<'_> {
 
     let tree_shaking = self.options.treeshake.is_some();
     let strict_execution_order = self.options.is_strict_execution_order_enabled();
+    let codeless_entries = self.codeless_entries();
     let runtime_id = self.runtime.id();
     let processed_module_results = self
       .metas
@@ -162,7 +165,7 @@ impl LinkStage<'_> {
                   .dependencies
                   .iter()
                   .copied()
-                  .filter(|dep_idx| self.entries.contains_key(dep_idx)),
+                  .filter(|dep_idx| codeless_entries.contains(dep_idx)),
               )
               .collect()
           } else {
@@ -171,7 +174,7 @@ impl LinkStage<'_> {
               .copied()
               .chain(meta.dependencies.iter().copied().filter(|dep_idx| {
                 !tree_shaking
-                  || self.entries.contains_key(dep_idx)
+                  || codeless_entries.contains(dep_idx)
                   || self.module_table[*dep_idx].side_effects().has_side_effects()
               }))
               .collect()
@@ -229,5 +232,35 @@ impl LinkStage<'_> {
         }
       }
     }
+  }
+
+  /// Entry modules whose included statements only import or re-export: they declare nothing and
+  /// evaluate nothing of their own.
+  fn codeless_entries(&self) -> FxHashSet<ModuleIdx> {
+    self
+      .entries
+      .keys()
+      .copied()
+      .filter(|&entry_idx| {
+        let Some(module) = self.module_table[entry_idx].as_normal() else {
+          return false;
+        };
+        let meta = &self.metas[entry_idx];
+        self.stmt_infos[entry_idx].iter_enumerated().all(|(stmt_idx, stmt_info)| {
+          // Only `import` and `export … from` declarations hold `ImportKind::Import` records. A
+          // declaration that contains `import()` or `require()` is code of the entry's own.
+          let is_import_or_reexport = !stmt_info.import_records.is_empty()
+            && stmt_info
+              .import_records
+              .iter()
+              .all(|&rec_idx| module.import_records[rec_idx].kind == ImportKind::Import);
+          stmt_idx == StmtInfos::NAMESPACE_STMT_IDX
+            || !meta.stmt_info_included.has_bit(stmt_idx)
+            || is_import_or_reexport
+            || (stmt_info.declared_symbols.is_empty()
+              && !stmt_info.eval_flags.has_side_effect_for_tree_shaking())
+        })
+      })
+      .collect()
   }
 }

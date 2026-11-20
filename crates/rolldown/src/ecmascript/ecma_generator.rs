@@ -99,13 +99,21 @@ impl Generator for EcmaGenerator {
           .collect::<Vec<_>>();
 
         let mut sourcemap_broken_warnings: Vec<BuildDiagnostic> = Vec::new();
-        let rendered_module_sources: RenderedModuleSources = rendered_pairs
+        let mut rendered_module_sources: RenderedModuleSources = rendered_pairs
           .into_iter()
           .map(|(source, warnings)| {
             sourcemap_broken_warnings.extend(warnings);
             source
           })
           .collect();
+        if !ctx.options.is_strict_execution_order_enabled()
+          && ctx.order_wrap_state.has_order_wrappers()
+        {
+          rendered_module_sources.sort_by_key(|source| {
+            source.module_idx != ctx.link_output.runtime.id()
+              && !ctx.order_wrap_state.has_order_wrapper(source.module_idx)
+          });
+        }
         (rendered_module_sources, sourcemap_broken_warnings)
       };
 

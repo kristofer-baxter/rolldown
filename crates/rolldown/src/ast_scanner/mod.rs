@@ -961,6 +961,21 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
     });
   }
 
+  /// Marks a top-level function binding side-effect free. Direct `eval` can replace a `let`, a
+  /// `var` or a function declaration without a write reference, which `IsNotReassigned` cannot see,
+  /// so such a binding is not marked.
+  fn mark_side_effect_free_function(&mut self, symbol_id: SymbolId, is_pure_annotation_only: bool) {
+    if eval_can_assign(self.result.symbol_ref_db.scoping(), symbol_id) {
+      return;
+    }
+    self.result.ecma_view_meta.insert(EcmaViewMeta::TopExportedSideEffectsFreeFunction);
+    let flags = self.result.symbol_ref_db.flags.entry(symbol_id).or_default();
+    flags.insert(SymbolRefFlags::SideEffectsFreeFunction);
+    if is_pure_annotation_only {
+      flags.insert(SymbolRefFlags::PureAnnotationOnly);
+    }
+  }
+
   fn scan_export_decl(&mut self, export_decl: &ExportDeclaration<'ast>) {
     match &export_decl.declaration {
       ast::Declaration::VariableDeclaration(var_decl) => {
@@ -978,23 +993,18 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
               .as_ref()
               .map(|expr| match expr {
                 Expression::FunctionExpression(func) => {
-                  let empty = func.is_side_effect_free();
+                  let empty = func.is_side_effect_free() && has_plain_rest(&func.params);
                   (empty || func.pure, func.pure && !empty)
                 }
                 Expression::ArrowFunctionExpression(func) => {
-                  let empty = func.is_side_effect_free();
+                  let empty = func.is_side_effect_free() && has_plain_rest(&func.params);
                   (empty || func.pure, func.pure && !empty)
                 }
                 _ => (false, false),
               })
               .unwrap_or((false, false));
             if is_side_effect_free_function {
-              self.result.ecma_view_meta.insert(EcmaViewMeta::TopExportedSideEffectsFreeFunction);
-              let flags = self.result.symbol_ref_db.flags.entry(symbol_id).or_default();
-              flags.insert(SymbolRefFlags::SideEffectsFreeFunction);
-              if is_pure_annotation_only {
-                flags.insert(SymbolRefFlags::PureAnnotationOnly);
-              }
+              self.mark_side_effect_free_function(symbol_id, is_pure_annotation_only);
             }
           }
         });
@@ -1003,14 +1013,9 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         let binding_id = fn_decl.id.as_ref().unwrap();
         let symbol_id = binding_id.symbol_id();
         self.add_local_export(binding_id.name.as_str(), symbol_id, binding_id.span);
-        let empty = fn_decl.is_side_effect_free();
+        let empty = fn_decl.is_side_effect_free() && has_plain_rest(&fn_decl.params);
         if empty || fn_decl.pure {
-          self.result.ecma_view_meta.insert(EcmaViewMeta::TopExportedSideEffectsFreeFunction);
-          let flags = self.result.symbol_ref_db.flags.entry(symbol_id).or_default();
-          flags.insert(SymbolRefFlags::SideEffectsFreeFunction);
-          if fn_decl.pure && !empty {
-            flags.insert(SymbolRefFlags::PureAnnotationOnly);
-          }
+          self.mark_side_effect_free_function(symbol_id, fn_decl.pure && !empty);
         }
       }
       ast::Declaration::ClassDeclaration(cls_decl) => {
@@ -1059,7 +1064,7 @@ impl<'me, 'ast: 'me> AstScanner<'me, 'ast> {
         None
       }
       ast::ExportDefaultDeclarationKind::FunctionDeclaration(fn_decl) => {
-        let empty = fn_decl.is_side_effect_free();
+        let empty = fn_decl.is_side_effect_free() && has_plain_rest(&fn_decl.params);
         if empty || fn_decl.pure {
           self.result.ecma_view_meta.insert(EcmaViewMeta::TopExportedSideEffectsFreeFunction);
           let flags = self
@@ -1709,4 +1714,14 @@ fn member_name<'a>(kind: &AstKind<'a>, node: Span) -> Option<&'a str> {
     }
     _ => None,
   }
+}
+
+/// `FunctionExt::is_side_effect_free` in `rolldown_ecmascript_utils = "=1.3.1"` does not check the
+/// rest parameter, so it treats `function f(...[a = effect()]) {}` as empty. Only a plain `...rest`
+/// keeps the function empty.
+fn has_plain_rest(params: &ast::FormalParameters) -> bool {
+  params
+    .rest
+    .as_ref()
+    .is_none_or(|rest| matches!(rest.rest.argument, BindingPattern::BindingIdentifier(_)))
 }

@@ -72,7 +72,7 @@ module.exports = require_a.value + 1;
 ### a.js
 
 ```js
-var e=/* @__PURE__ */ ((e,t)=>()=>(t||(e((t={exports:{}}).exports,t,t.exports),e=null),t.exports))(((e,t)=>{t.exports={value:42}}));module.exports=e();
+var e=/* @__PURE__ */ ((e,t,n)=>()=>{if(!t){t={exports:{}};try{e(t.exports,t,t.exports),e=null}catch(e){throw t=void 0,n?.(e),e}}return t.exports})(((e,t)=>{t.exports={value:42}}));module.exports=e();
 ```
 
 ### b.js
@@ -94,7 +94,7 @@ const e=require("./a.js");module.exports=e.value+1;
 ### a.js
 
 ```js
-var e=/* @__PURE__ */ ((e,t)=>()=>(t||(e((t={exports:{}}).exports,t,t.exports),e=null),t.exports))(((e,t)=>{t.exports={value:42}}));module.exports=e();
+var e=/* @__PURE__ */ ((e,t,n)=>()=>{if(!t){t={exports:{}};try{e(t.exports,t,t.exports),e=null}catch(e){throw t=void 0,n?.(e),e}}return t.exports})(((e,t)=>{t.exports={value:42}}));module.exports=e();
 ```
 
 ### b.js
