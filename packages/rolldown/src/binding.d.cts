@@ -2523,6 +2523,7 @@ export interface BindingInjectImportNamespace {
  */
 export interface BindingInlineCommonChunksOptions {
   maxSize?: number
+  maxDuplicatedSize?: number
   exclude?: Array<string | RegExp | ((ids: Array<string>) => Uint8Array)>
 }
 
