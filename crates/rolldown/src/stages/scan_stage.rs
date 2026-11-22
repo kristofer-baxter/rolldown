@@ -230,11 +230,30 @@ impl<Fs: FileSystem + Clone + 'static> ScanStage<Fs> {
     Ok(module_loader_output.into())
   }
 
+  /// Whether Rolldown starts its own offload threads with `std::thread::spawn`,
+  /// such as the scan stage's sourcemap drainer (`false` on Wasm targets).
+  /// Kept local while `rolldown_utils` is pinned at `=1.3.1` in `developer-bundler`.
+  #[inline]
+  const fn can_spawn_os_threads() -> bool {
+    cfg!(not(target_family = "wasm"))
+  }
+
   fn create_sourcemap_channel(&self) -> SourcemapChannel {
+    // Gated on the target, not the scheduler flavor: the drainer is an OS
+    // thread, so it cannot starve the executor that feeds it, even on
+    // `CurrentThread`. Both wasm builds generate maps inline; see
+    // `can_spawn_os_threads` for why the threaded one does too.
+    if !Self::can_spawn_os_threads() {
+      return (None, None);
+    }
+
     if self.options.experimental.is_native_magic_string_enabled()
       && self.options.is_sourcemap_enabled()
     {
       let (tx, rx) = std::sync::mpsc::channel::<SourceMapGenMsg>();
+      // Dedicated OS thread, never a runtime `spawn_blocking`: a drainer that
+      // took this consumer inline would block in `rx.recv()` forever, leaving
+      // the module tasks that feed the channel unpolled -> deadlock.
       let handler = thread::spawn(move || {
         let mut map: FxHashMap<ModuleIdx, Vec<_>> = FxHashMap::default();
         while let Ok(msg) = rx.recv() {

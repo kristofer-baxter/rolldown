@@ -76,6 +76,7 @@ mod tests {
     )
   }
 
+  #[cfg(not(windows))]
   fn sources(map: &SourceMap) -> Vec<&str> {
     map.get_sources().collect()
   }
