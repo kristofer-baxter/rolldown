@@ -116,7 +116,7 @@ jobs:
     name: Rust Validation
     needs: changes
     if: ${{ needs.changes.outputs.rust-changes == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
@@ -258,7 +258,7 @@ jobs:
     if: |
       always() &&
       (needs.build-rolldown-ubuntu.result == 'success' || needs.build-rolldown-ubuntu.result == 'skipped')
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     timeout-minutes: 30
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
@@ -365,7 +365,7 @@ jobs:
     name: Node Validation
     needs: [changes, build-rolldown-ubuntu]
     if: ${{ needs.changes.outputs.node-changes == 'true' }}
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 
@@ -425,7 +425,7 @@ jobs:
 
   repo-validation:
     name: Repo Validation
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     steps:
       - uses: taiki-e/checkout-action@7d1e50e93dc4fb3bba58f85018fadf77898aee8b # v1.4.2
 

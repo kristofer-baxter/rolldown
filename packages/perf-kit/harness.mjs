@@ -61,9 +61,12 @@ import {
 } from './lib/paint-diagnostics.mjs';
 import {
   deferAllInto,
+  entryIndices,
   evalOverrides,
   loadModuleGraph,
   moduleGraphCandidates,
+  moduleLabel,
+  moduleQuery,
   reportDirFor,
   reportDistMismatch,
   resolveModule,
@@ -1571,7 +1574,7 @@ function printVerdict(target, opts = {}) {
           .slice(0, 3)
           .map(
             (m) =>
-              `${m.id} retains ${kb(m.retainedBytes)}/${m.retainedModuleCount} module(s)${m.idom != null ? ` via ${mods[m.idom].id}` : ''}`,
+              `${moduleLabel(mg.graph, m)} retains ${kb(m.retainedBytes)}/${m.retainedModuleCount} module(s)${m.idom != null ? ` via ${moduleLabel(mg.graph, mods[m.idom])}` : ''}`,
           )
           .join(', '),
         `${CLI} what-if <module> prices the deferral (exact modules+bytes freed; --keep a,b holds needed parts eager); ${CLI} cut <module> lists the fewest import edits when several paths reach it; make the importer use dynamic import(). Retained is potential, not proof - if the first render genuinely needs it, justify with a measurement or constraint`,
@@ -1595,7 +1598,7 @@ function printVerdict(target, opts = {}) {
       'unknown',
       'static module graph',
       'not collected - this app builds with rolldown, so one config line enables static split-candidate ranking',
-      `vite >= 8: add build.rolldownOptions.devtools = { mode: "report" } to the vite config, rebuild, re-scan - \`${CLI} graph\` then ranks every candidate by the bytes a deferral frees, \`${CLI} what-if\` prices one cut, no browser run needed`,
+      `vite >= 8 with rolldown >= 1.2.16: add build.rolldownOptions.devtools = { mode: "report" } to the vite config, rebuild, re-scan - \`${CLI} graph\` then ranks every candidate by the bytes a deferral frees, \`${CLI} what-if\` prices one cut, no browser run needed`,
     );
   }
 
@@ -2857,15 +2860,15 @@ function rolldownBuildDetected(appRoot) {
 // the module the HTML loads is a blank page, and their children surface in the
 // ranking anyway. Children of a JS entry are ordinary candidates.
 function retainedLeadRows(graph) {
-  const entrySet = new Set(graph.entryModules);
+  const entrySet = new Set(entryIndices(graph));
   const mods = graph.modules;
   const isHtmlBootChild = (m) =>
-    m.idom != null && entrySet.has(mods[m.idom].id) && /\.html?$/i.test(mods[m.idom].id);
+    m.idom != null && entrySet.has(m.idom) && /\.html?$/i.test(mods[m.idom].id);
   return mods
     .filter(
-      (m) =>
+      (m, i) =>
         m.staticReachable &&
-        !entrySet.has(m.id) &&
+        !entrySet.has(i) &&
         m.retainedBytes >= GRAPH_RETAINED_OPEN_BYTES &&
         !isHtmlBootChild(m) &&
         !GRAPH_FRAMEWORK_RE.test(m.id),
@@ -2916,14 +2919,14 @@ function printGraphSection(target, builtAtMs = null) {
   }
   if (mg.state === 'absent-rolldown') {
     console.log(
-      `static module graph: not collected - this app builds with rolldown. vite >= 8: add build.rolldownOptions.devtools = { mode: "report" } to the vite config, rebuild, re-scan (unlocks \`${CLI} graph\` / \`${CLI} what-if\`)\n`,
+      `static module graph: not collected - this app builds with rolldown. vite >= 8 with rolldown >= 1.2.16: add build.rolldownOptions.devtools = { mode: "report" } to the vite config, rebuild, re-scan (unlocks \`${CLI} graph\` / \`${CLI} what-if\`)\n`,
     );
     return;
   }
   const mods = mg.graph.modules;
-  const entrySet = new Set(mg.graph.entryModules);
+  const entrySet = new Set(entryIndices(mg.graph));
   const rows = mods
-    .filter((m) => m.staticReachable && m.retainedBytes > 0 && !entrySet.has(m.id))
+    .filter((m, i) => m.staticReachable && m.retainedBytes > 0 && !entrySet.has(i))
     .sort((a, b) => b.retainedBytes - a.retainedBytes || a.id.localeCompare(b.id))
     .slice(0, 8);
   if (!rows.length) return;
@@ -2932,7 +2935,7 @@ function printGraphSection(target, builtAtMs = null) {
   );
   for (const mod of rows) {
     console.log(
-      `  ${kb(mod.retainedBytes).padStart(10)}  ${mod.id}${mod.idom != null ? `  via ${mods[mod.idom].id}` : ''}`,
+      `  ${kb(mod.retainedBytes).padStart(10)}  ${moduleLabel(mg.graph, mod)}${mod.idom != null ? `  via ${moduleLabel(mg.graph, mods[mod.idom])}` : ''}`,
     );
   }
   const note = packageRootNote(rows);
@@ -3044,7 +3047,7 @@ function requireModuleGraph(opts) {
     throw new Error(
       (cause ? `${cause}\n\n` : '') +
         'no module-graph.json found - it is written by rolldown devtools report builds.\n' +
-        'vite >= 8: add `build.rolldownOptions.devtools = { mode: "report" }` to the vite config\n' +
+        'vite >= 8 with rolldown >= 1.2.16: add `build.rolldownOptions.devtools = { mode: "report" }` to the vite config\n' +
         '(report lands in node_modules/.rolldown/report/<output dir>), rebuild, then re-run.\n' +
         `For a Cloudflare Worker: \`${CLI} worker-config --app <appDir>\` writes a config that puts the report\n` +
         'on every environment. Or point at an existing report with --report <dir>.',
@@ -3070,6 +3073,18 @@ function assertReportMatchesDist(graph, dist) {
   );
 }
 
+function requireModuleIndex(graph, query) {
+  const hit = resolveModule(graph, query);
+  if (!hit)
+    throw new Error(`no module matches '${query}' (ids are project-relative, e.g. src/router.ts)`);
+  if (hit.ambiguous) {
+    throw new Error(
+      `'${query}' is ambiguous:\n  ${hit.ambiguous.join('\n  ')}\nuse an exact module ID or a shown index:<number>.`,
+    );
+  }
+  return hit.index;
+}
+
 async function cmdGraph(argv) {
   const opts = parse(argv, {
     ...TARGET_OPTS,
@@ -3086,18 +3101,21 @@ async function cmdGraph(argv) {
   console.log(
     `initial-load view: ${staticMods.length} modules / ${kb(staticBytes)} statically reachable; ${lazyCount} already lazy (dynamic-import only)\n`,
   );
-  const entrySet = new Set(graph.entryModules);
-  const rows = staticMods
-    .filter((m) => m.retainedBytes > 0 && !entrySet.has(m.id))
+  const entrySet = new Set(entryIndices(graph));
+  const rows = mods
+    .filter((m, i) => m.staticReachable && m.retainedBytes > 0 && !entrySet.has(i))
     .sort((a, b) => b.retainedBytes - a.retainedBytes || a.id.localeCompare(b.id))
     .slice(0, Number(opts.top));
   console.log(
     "retained size - what deferring each module's import edge would remove from the initial load:",
   );
   for (const mod of rows) {
-    const via = mod.idom != null ? `  via ${mods[mod.idom].id}` : '  (directly under the entries)';
+    const via =
+      mod.idom != null
+        ? `  via ${moduleLabel(graph, mods[mod.idom])}`
+        : '  (directly under the entries)';
     console.log(
-      `  ${kb(mod.retainedBytes).padStart(10)}  ${mod.id}  (own ${kb(mod.bytes)}, ${mod.retainedModuleCount} module(s))${via}`,
+      `  ${kb(mod.retainedBytes).padStart(10)}  ${moduleLabel(graph, mod)}  (own ${kb(mod.bytes)}, ${mod.retainedModuleCount} module(s))${via}`,
     );
   }
   if (!rows.length)
@@ -3127,34 +3145,25 @@ async function cmdWhatIf(argv) {
       `usage: ${CLI} what-if <module> [<module> ...] [--keep a,b] [--root a,b] [--report <dir>]`,
     );
   const built = requireModuleGraph(opts);
-  const resolve = (q) => {
-    const hit = resolveModule(built, q);
-    if (!hit)
-      throw new Error(`no module matches '${q}' (ids are project-relative, e.g. src/router.ts)`);
-    if (hit.ambiguous) {
-      throw new Error(
-        `'${q}' is ambiguous:\n  ${hit.ambiguous.join('\n  ')}\nuse a longer suffix.`,
-      );
-    }
-    return hit.index;
-  };
+  const resolve = (q) => requireModuleIndex(built, q);
   const resolved = positionals.map(resolve);
   const keep = (opts.keep ?? '').split(',').filter(Boolean).map(resolve);
   // `--root`: modules that load on every start without a static import from an entry
   // (see withRoots) - the initial load priced below is the entries + their closure.
-  const graph = withRoots(built, (opts.root ?? '').split(',').filter(Boolean).map(resolve));
+  const roots = (opts.root ?? '').split(',').filter(Boolean).map(resolve);
+  const graph = withRoots(built, roots);
   printRootedLoad(graph);
   // Entries cannot be deferred - they ARE the initial load (no import edge to cut).
   // Filtered up front so single and group queries answer the same way.
-  const entrySet = new Set(graph.entryModules);
-  const rootSet = new Set(graph.rootModules ?? []);
+  const entrySet = new Set(entryIndices(built));
+  const rootSet = new Set(roots.filter((r) => !entrySet.has(r)));
   const targets = [];
   for (const t of resolved) {
-    if (rootSet.has(graph.modules[t].id)) {
+    if (rootSet.has(t)) {
       console.log(
         `${graph.modules[t].id} is a --root - it stays eager with its closure, so there is no import edge to defer. Skipped.`,
       );
-    } else if (entrySet.has(graph.modules[t].id)) {
+    } else if (entrySet.has(t)) {
       console.log(
         `${graph.modules[t].id} is an entry - it IS the initial load, so there is no import edge to defer. Skipped; \`${CLI} graph\` ranks its heavy children instead.`,
       );
@@ -3170,7 +3179,7 @@ async function cmdWhatIf(argv) {
   const target = targets[0];
   const result = whatIf(graph, target, keep);
 
-  console.log(`what-if deferred: ${result.target.id}`);
+  console.log(`what-if deferred: ${moduleLabel(graph, result.target)}`);
   if (result.notStaticallyReachable) {
     console.log(
       result.alreadyLazy
@@ -3210,7 +3219,7 @@ async function cmdWhatIf(argv) {
     cut.flow < result.cutEdges.length
   ) {
     console.log(
-      `\nmin cut: ${cut.flow} edge(s) instead of ${result.cutEdges.length} - \`${CLI} cut ${result.target.id}\` lists them.`,
+      `\nmin cut: ${cut.flow} edge(s) instead of ${result.cutEdges.length} - \`${CLI} cut ${moduleQuery(graph, result.target)}\` lists them.`,
     );
   }
   console.log(
@@ -3252,7 +3261,7 @@ function printCombinedWhatIf(graph, targets, keep, cpu = null) {
   const combined = evalOverrides(graph, overrides, keepRoots.length ? keepRoots : null);
   const singles = targets.map((t) => whatIf(graph, t, keep));
   const summed = singles.reduce((sum, r) => sum + r.removedBytes, 0);
-  const ids = targets.map((t) => graph.modules[t].id);
+  const ids = targets.map((t) => moduleLabel(graph, graph.modules[t]));
   console.log(`what-if deferred (combined): ${ids.join(', ')}`);
   console.log(
     `removes ${kb(combined.removedBytes)} / ${combined.removedCount} module(s) from the initial load` +
@@ -3304,17 +3313,7 @@ async function cmdCut(argv) {
     throw new Error(`usage: ${CLI} cut <module> [--keep a,b] [--root a,b] [--report <dir>]`);
   }
   const graph = requireModuleGraph(opts);
-  const resolve = (q) => {
-    const hit = resolveModule(graph, q);
-    if (!hit)
-      throw new Error(`no module matches '${q}' (ids are project-relative, e.g. src/router.ts)`);
-    if (hit.ambiguous) {
-      throw new Error(
-        `'${q}' is ambiguous:\n  ${hit.ambiguous.join('\n  ')}\nuse a longer suffix.`,
-      );
-    }
-    return hit.index;
-  };
+  const resolve = (q) => requireModuleIndex(graph, q);
   const target = resolve(query);
   const keep = (opts.keep ?? '').split(',').filter(Boolean).map(resolve);
   // `--root`: modules whose whole closure must stay eager because the runtime loads them
@@ -3326,12 +3325,13 @@ async function cmdCut(argv) {
   const roots = (opts.root ?? '').split(',').filter(Boolean).map(resolve);
   const rooted = withRoots(graph, roots);
   const mod = rooted.modules[target];
+  const label = moduleLabel(rooted, mod);
   printRootedLoad(rooted);
 
   // Trivial cases reuse what-if's flags: a module that costs the initial load nothing
   // has nothing to cut.
   if (mod.staticReachable === false) {
-    console.log(`min cut for ${mod.id}`);
+    console.log(`min cut for ${label}`);
     console.log(
       mod.dynamicOnly === true
         ? `already lazy: every path to this module crosses a dynamic import - nothing to cut.${roots.length ? '' : ROOT_HINT}`
@@ -3341,7 +3341,7 @@ async function cmdCut(argv) {
   }
   const cut = minCut(rooted, target, keepProtectedEdges(rooted, keep));
   if (cut.hasUncuttableSink) {
-    console.log(`min cut for ${mod.id}`);
+    console.log(`min cut for ${label}`);
     console.log(
       roots.includes(target)
         ? 'this module is a --root - it stays eager with its closure; drop it from --root to cut it.'
@@ -3350,14 +3350,14 @@ async function cmdCut(argv) {
     return;
   }
   if (cut.blockedByProtected) {
-    console.log(`min cut for ${mod.id}`);
+    console.log(`min cut for ${label}`);
     console.log(
       'every path to it runs through a --keep-protected import - no cut avoids them. Relax --keep to cut it.',
     );
     return;
   }
   if (cut.flow === 0 || !cut.cutEdges.length) {
-    console.log(`min cut for ${mod.id}`);
+    console.log(`min cut for ${label}`);
     console.log('nothing to cut - it is already detached from the initial load.');
     return;
   }
@@ -3367,10 +3367,12 @@ async function cmdCut(argv) {
     cut.cutEdges.map((e) => ({ ...e, kind: 'defer' })),
   );
   console.log(
-    `min cut for ${mod.id} - ${cut.flow} import edge(s) to make dynamic (naive what-if would touch ${naive}):`,
+    `min cut for ${label} - ${cut.flow} import edge(s) to make dynamic (naive what-if would touch ${naive}):`,
   );
   for (const e of cut.cutEdges) {
-    console.log(`  ${rooted.modules[e.from].id}  ->  ${rooted.modules[e.to].id}`);
+    console.log(
+      `  ${moduleLabel(rooted, rooted.modules[e.from])}  ->  ${moduleLabel(rooted, rooted.modules[e.to])}`,
+    );
   }
   console.log(
     `make each import dynamic (import()) -> frees ${kb(priced.removedBytes)} / ${priced.removedCount} module(s) from the initial load` +
@@ -3402,7 +3404,7 @@ async function cmdGraphDiff(argv) {
     throw new Error(
       (cause ? `${cause}\n\n` : '') +
         'no current module-graph.json found - it is written by rolldown devtools report builds.\n' +
-        'vite >= 8: add `build.rolldownOptions.devtools = { mode: "report" }` to the vite config,\n' +
+        'vite >= 8 with rolldown >= 1.2.16: add `build.rolldownOptions.devtools = { mode: "report" }` to the vite config,\n' +
         'rebuild, then re-run. Or point at an existing report with --report <dir>.',
     );
   }
@@ -5428,7 +5430,7 @@ async function cmdWorkerAttrib(argv) {
   );
   for (const r of rows) {
     console.log(`  ${String(r.ms).padStart(7)}ms  ${r.module}`);
-    if (r.chain?.length) console.log(`             via ${r.chain.join(' -> ')}`);
+    if (r.chain?.length) console.log(`             via ${formatImportChain(r.chain)}`);
     const own = calls.filter((c) => c.module === r.module && c.ms >= 0.5).slice(0, 2);
     for (const c of own)
       console.log(`             calls ${c.fn}() ${c.ms}ms at ${shortModule(c.at)}`);
@@ -5515,6 +5517,10 @@ async function cmdRolldownInstall(argv) {
   );
 }
 
+function formatImportChain(chain) {
+  return chain.map((id) => id.replace(/^\0/, '\\0')).join(' -> ');
+}
+
 /** `why <module>`: direct static importers and one chain from the entry. */
 async function cmdWhy(argv) {
   const { values: opts, positionals } = parseArgs({
@@ -5525,23 +5531,18 @@ async function cmdWhy(argv) {
   const query = positionals[0];
   if (!query) throw new Error(`usage: ${CLI} why <module> [--report <dir>]`);
   const graph = requireModuleGraph(opts);
-  const hit = resolveModule(graph, query);
-  if (!hit)
-    throw new Error(`no module matches '${query}' (ids are project-relative, e.g. src/router.ts)`);
-  if (hit.ambiguous) {
-    throw new Error(
-      `'${query}' is ambiguous:\n  ${hit.ambiguous.join('\n  ')}\nuse a longer suffix.`,
-    );
-  }
-  const why = whyModule(graph, hit.index);
-  console.log(`${why.module} (${kb(why.bytes)}): ${why.importers.length} static importer(s)`);
+  const target = requireModuleIndex(graph, query);
+  const mod = graph.modules[target];
+  const why = whyModule(graph, target);
+  console.log(
+    `${moduleLabel(graph, mod)} (${kb(why.bytes)}): ${why.importers.length} static importer(s)`,
+  );
   for (const imp of why.importers.slice(0, 12))
     console.log(`  <- ${imp.module} (${kb(imp.bytes)})`);
   if (why.importers.length > 12) console.log(`  ... ${why.importers.length - 12} more`);
-  const chain = why.chain.filter((id) => !/^(\\0|\0)/.test(id));
-  console.log(`chain from the entry: ${[...chain, why.module].join(' -> ')}`);
+  console.log(`chain from the entry: ${formatImportChain([...why.chain, why.module])}`);
   console.log(
-    `\nnext: \`${CLI} cut ${why.module}\` lists the fewest imports to make dynamic; add --root <module> for a class the runtime loads by name (Durable Object, Workflow).`,
+    `\nnext: \`${CLI} cut ${moduleQuery(graph, mod)}\` lists the fewest imports to make dynamic; add --root <module> for a class the runtime loads by name (Durable Object, Workflow).`,
   );
 }
 
@@ -5605,8 +5606,8 @@ individual commands (same target rules):
   coverage | profile                        one signal each
   graph                                     STATIC split candidates ranked by retained size (what
                                             deferring each module removes from the initial load) -
-                                            needs a rolldown devtools report build (vite >= 8:
-                                            build.rolldownOptions.devtools = { mode: "report" })
+                                            needs a rolldown devtools report build (rolldown >= 1.2.16;
+                                            vite >= 8: build.rolldownOptions.devtools = { mode: "report" })
   what-if <module> [<module>...] [--keep a,b] [--root a,b]  exact modules+bytes one deferral frees;
                                             sentries stay eager. TWO+ modules = one combined plan, priced
                                             with a single overlay + a vs-summed-individually line
@@ -5679,7 +5680,7 @@ server startup mode (node/deno - a process coming up, not a page loading):
   --ready <spec>            how the target signals it is up. This is part of the target -
                             two scans with different specs are not comparable:
                               port:3000            a TCP listener is accepting
-                              'stdout:ready on'    a line matching this regex is printed
+                              'stdout:ready on'    a stdout line matches this regex
                               http://127.0.0.1:3000/health   an HTTP probe returns 2xx
                               exit                 the process exits 0 (CLIs, lambda entries)
   --cache cold|warm|off     V8 compile cache. cold (default) gives every run an empty cache,
@@ -5690,6 +5691,7 @@ server startup mode (node/deno - a process coming up, not a page loading):
   graph | what-if | cut | graph-diff       work unchanged on a server build - pass
                             --dist <builtDir> or --report <dir>. A top-level import and a
                             render-blocking import are the same edge in the module graph.
+                            A server pin saves no module graph: graph-diff needs --against.
   There is no throttle in this mode: server startup does no network I/O, so a throttle
   would invent a dimension the measurement does not have.
 
@@ -5716,8 +5718,8 @@ Cloudflare Worker startup mode (a V8 isolate coming up under the app's own worke
                             the copy the app's vite resolves; the default source is the
                             rolldown package next to this one (an installed perf-kit has none:
                             pass --from a checkout built with \`just build-rolldown-release\`).
-                            The npm release has no report mode, so without this no build
-                            writes the report; worker-config says when that is the case. The
+                            A rolldown release before 1.2.16 has no report mode, so on one
+                            no build writes the report; worker-config says when that is the case. The
                             swap is not a config change. Rebuild and re-pin afterwards.
                             \`<package manager> install --force\` restores the release.
   --request <path>          a route to hit after startup on the real entry; the first hit
@@ -5749,8 +5751,9 @@ the loop:
      enable it, it is one config line)
   3. read the app source; find why the landing page pays for each finding. On rolldown
      devtools report builds, \`graph\` + \`what-if <module>\` answer this statically: the
-     exact import chain (via/idom) and the bytes a deferral frees; \`cut <module>\` gives the
-     fewest import edits to detach a multi-path module - no chain-tracing by hand
+     module every import path goes through (via/idom) and the bytes a deferral frees;
+     \`cut <module>\` gives the fewest import edits to detach a multi-path module - no
+     chain-tracing by hand
   4. change the app (never remove features); one change at a time
   5. rebuild; run the app's functional check; scan (--quick to probe, full scan to decide)
   6. "improvement beyond noise" + check passes -> keep, scan --pin (or baseline), commit;

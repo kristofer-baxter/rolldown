@@ -28,7 +28,7 @@ concurrency:
 jobs:
   update-rollup:
     name: Update Rollup Submodule
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     permissions:
       contents: write # for create-pull-request
       pull-requests: write # for create-pull-request
@@ -121,7 +121,7 @@ jobs:
           vp install
           vp run --filter rollup-tests test --update
 
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -156,7 +156,7 @@ jobs:
 
   update-test262:
     name: Update Test262 Submodule
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     permissions:
       contents: write # for create-pull-request
       pull-requests: write # for create-pull-request
@@ -240,7 +240,7 @@ jobs:
           # Update snapshots https://insta.rs/docs/advanced/#controlling-snapshot-updating
           INSTA_UPDATE: always
 
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
@@ -275,7 +275,7 @@ jobs:
 
   update-esbuild:
     name: Update esbuild Version
-    runs-on: ubuntu-latest
+    runs-on: namespace-profile-linux-x64-default
     permissions:
       contents: write # for create-pull-request
       pull-requests: write # for create-pull-request
@@ -362,7 +362,7 @@ jobs:
           vp install
           vp run --filter scripts gen-esbuild-tests all
 
-      - uses: actions/create-github-app-token@64ab729a6294000f5aa4a4bc0b73d1f32bc45510 # v3.3.0
+      - uses: actions/create-github-app-token@f418cff399f7aef4c2f0ad47e25ca7a6abbdd6fc # v3.4.0
         id: app-token
         with:
           client-id: ${{ secrets.APP_ID }}
